@@ -1,57 +1,59 @@
 # HunkMark
 
-GitHub Pull Request の **Files changed** 画面に、hunk・行単位の `Viewed` と折りたたみ機能を追加する Chrome 拡張です。
+[日本語](README.ja.md)
 
-> HunkMark は独立したオープンソースプロジェクトであり、GitHub, Inc. とは提携していません。GitHub は GitHub, Inc. の商標です。
+A Chrome extension that adds hunk-level and line-level `Viewed` controls and hunk collapsing to GitHub pull request **Files changed** pages.
 
-## 主な機能
+> HunkMark is an independent open-source project and is not affiliated with GitHub, Inc. GitHub is a trademark of GitHub, Inc.
 
-- hunk と追加・削除行を個別に `Viewed` に設定
-- 行のコントロールを上下へドラッグして範囲をまとめて切り替え
-- 確認済み hunk の自動折りたたみと、任意の `Collapse / Expand`
-- ファイルごと・ページ全体のレビュー進捗を表示
-- Split diff の左右を連動、または独立して操作
-- GitHub アカウント、PR、表示コミット範囲ごとに状態をローカル保存
-- ファイル内の diff が完全に読み込まれた場合だけ、GitHub 公式のファイル単位 `Viewed` と一方向に同期
-- GitHub の遅延読み込みやページ内遷移後にも自動復帰
+## Features
 
-## インストール
+- Mark individual hunks and added or deleted lines as `Viewed`
+- Drag line controls up or down to update a range at once
+- Automatically collapse reviewed hunks, with manual `Collapse / Expand` controls
+- Track review progress per file and across the page
+- Link the two sides of a split diff or review them independently
+- Save state locally per GitHub account, pull request, and displayed commit range
+- One-way sync to GitHub's file-level `Viewed` control only when the complete file diff is loaded
+- Restore controls after GitHub lazy loading and client-side navigation
 
-Chrome Web Store 公開前は、リポジトリを取得してデベロッパーモードで読み込みます。
+## Installation
+
+Until HunkMark is available in the Chrome Web Store, clone the repository and load it in developer mode.
 
 ```sh
 git clone https://github.com/Pon57/HunkMark.git
 ```
 
-1. Chrome で `chrome://extensions` を開く
-2. 「デベロッパー モード」をオンにする
-3. 「パッケージ化されていない拡張機能を読み込む」を選ぶ
-4. クローンした `HunkMark` フォルダーを指定する
-5. GitHub の PR の **Files changed** を再読み込みする
+1. Open `chrome://extensions` in Chrome.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose the cloned `HunkMark` directory.
+5. Reload the **Files changed** page of a GitHub pull request.
 
-更新後は `chrome://extensions` で HunkMark を再読み込みしてください。
+After updating the repository, reload HunkMark from `chrome://extensions`.
 
-## レビュー状態
+## Review state
 
-- 確認状態は `chrome.storage.local` にだけ保存し、外部へ送信しません
-- 内容・変更ブロック・前後の文脈が安定した行だけ状態を引き継ぎ、編集・移動・不可視 Unicode の変更は未確認へ戻します
-- `Reset page` は現在表示しているコミット範囲の状態だけを削除します
-- GitHub 公式の `Viewed` は自動解除せず、ユーザーが手動解除した場合はその操作を尊重します
+- Review state is stored only in `chrome.storage.local` and is never sent elsewhere.
+- A line keeps its state only while its content, changed block, and surrounding context remain stable. Edits, relocation to a different context, and invisible Unicode changes reset it to unviewed.
+- `Reset page` removes state only for the currently displayed commit range.
+- HunkMark never automatically clears GitHub's file-level `Viewed` state and respects manual changes made by the user.
 
-保存期間や処理するデータの詳細は [PRIVACY.md](PRIVACY.md)、状態引き継ぎと同期の設計は [ARCHITECTURE.md](ARCHITECTURE.md) を参照してください。
+See [PRIVACY.md](PRIVACY.md) for retention and data-handling details, and [ARCHITECTURE.md](ARCHITECTURE.md) for the state-restoration and synchronization design.
 
-## 対応範囲
+## Supported pages
 
-- GitHub.com の Pull Request の **Files changed** 画面
-- Unified / Split のソース diff
-- 従来の table 型 diff と React/grid 型 diff
+- GitHub.com pull request **Files changed** pages
+- Unified and split source diffs
+- Legacy table-based diffs and React/grid-based diffs
 - Chrome Manifest V3
 
-GitHub Enterprise Server、コミット単体の diff、リッチ diff は現在の対象外です。
+GitHub Enterprise Server, individual commit diffs, and rich diffs are not currently supported.
 
-## 開発
+## Development
 
-Node.js 22.13 以降で次を実行できます。
+Use Node.js 22.13 or later.
 
 ```sh
 npm install
@@ -59,12 +61,13 @@ npm run verify
 npm run package
 ```
 
-`npm run package` は Chrome Web Store 用の `dist/hunkmark-<version>.zip` を生成します。
+`npm run package` creates `dist/hunkmark-<version>.zip` for the Chrome Web Store.
 
-## ドキュメント
+## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md): 変更履歴
-- [CONTRIBUTING.md](CONTRIBUTING.md): 開発・コントリビューション手順
+- [README.ja.md](README.ja.md): Japanese README
+- [CHANGELOG.md](CHANGELOG.md): release history
+- [CONTRIBUTING.md](CONTRIBUTING.md): development and contribution guide
 
 ## License
 

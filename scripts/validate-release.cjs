@@ -20,6 +20,11 @@ assert.equal(
 );
 assert.equal(manifest.short_name, "HunkMark", "Unexpected extension short name");
 assert.equal(packageJson.name, "hunkmark", "Unexpected package name");
+assert.equal(
+  packageJson.description,
+  "A Chrome extension for reviewing GitHub pull request diffs by hunk or line.",
+  "Unexpected package description",
+);
 assert.equal(manifest.version, version, "Manifest and VERSION versions differ");
 assert.equal(packageJson.version, version, "Package and VERSION versions differ");
 assert.equal(packageLock.version, version, "Package lock and VERSION versions differ");
@@ -71,6 +76,7 @@ for (const file of [
   "LICENSE",
   "PRIVACY.md",
   "README.md",
+  "README.ja.md",
   "CONTRIBUTING.md",
 ]) {
   assert.ok(fs.existsSync(path.join(root, file)), `Missing ${file}`);
