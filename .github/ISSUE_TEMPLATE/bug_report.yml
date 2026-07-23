@@ -1,0 +1,53 @@
+name: Bug report
+description: Report reproducible HunkMark behavior
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include private repository URLs, diff contents, account identifiers, or other confidential information.
+  - type: input
+    id: version
+    attributes:
+      label: HunkMark version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: chrome
+    attributes:
+      label: Chrome version
+      placeholder: 138.0.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: layout
+    attributes:
+      label: Diff layout
+      options:
+        - Unified
+        - Split
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a public pull request when a URL is necessary.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

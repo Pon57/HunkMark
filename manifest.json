@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "HunkMark – Diff Review for GitHub",
+  "short_name": "HunkMark",
+  "version": "1.0.0",
+  "description": "Review GitHub pull request diffs by hunk or line, collapse reviewed changes, and track progress.",
+  "minimum_chrome_version": "111",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://github.com/*"
+      ],
+      "js": [
+        "core.js",
+        "content/app.js",
+        "content/discovery.js",
+        "content/storage.js",
+        "content/official-viewed.js",
+        "content/controllers.js",
+        "content/drag.js",
+        "content/panel.js",
+        "content/lifecycle.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

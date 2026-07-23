@@ -1,0 +1,29 @@
+{
+  "name": "hunkmark",
+  "version": "1.0.0",
+  "description": "Review GitHub pull request diffs by hunk or line.",
+  "license": "MIT",
+  "author": "Pon",
+  "homepage": "https://github.com/Pon57/HunkMark#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pon57/HunkMark.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Pon57/HunkMark/issues"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "check": "node scripts/check-source.cjs",
+    "test": "node --test tests/*.test.cjs",
+    "validate-release": "node scripts/validate-release.cjs",
+    "verify": "npm run check && npm test && npm run validate-release",
+    "package": "sh scripts/package.sh"
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1"
+  }
+}
