@@ -15,6 +15,14 @@
   },
   "packageRules": [
     {
+      "description": "Track Node.js releases only after they reach LTS",
+      "matchDatasources": [
+        "node-version",
+      ],
+      "versioning": "node",
+      "rangeStrategy": "replace",
+    },
+    {
       "matchUpdateTypes": [
         "patch",
       ],

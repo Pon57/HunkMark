@@ -53,7 +53,7 @@ GitHub Enterprise Server, individual commit diffs, and rich diffs are not curren
 
 ## Development
 
-Use Node.js 22.13 or later.
+Use the active Node.js LTS release.
 
 ```sh
 npm install

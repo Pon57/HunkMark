@@ -4,7 +4,7 @@ Thank you for helping improve HunkMark.
 
 ## Development
 
-Use Node.js 22.13 or later.
+Use the active Node.js LTS release.
 
 ```sh
 npm ci
