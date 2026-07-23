@@ -19,6 +19,7 @@
   "scripts": {
     "check": "node scripts/check-source.cjs",
     "test": "node --test tests/*.test.cjs",
+    "sync-version": "node scripts/sync-version.cjs",
     "validate-release": "node scripts/validate-release.cjs",
     "verify": "npm run check && npm test && npm run validate-release",
     "package": "sh scripts/package.sh"

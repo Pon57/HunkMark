@@ -21,9 +21,9 @@ The generated ZIP and SHA-256 checksum are written to `dist/`.
 
 ## Releases
 
-Publishing a GitHub Release from a `v<version>` tag runs the release workflow
-and attaches the generated ZIP and SHA-256 checksum to that release. The tag
-must match the version in `manifest.json`.
+Releases are managed by tagpr. Merging its release pull request creates the
+matching `v<version>` tag and GitHub Release; the release workflow then attaches
+the generated ZIP and SHA-256 checksum.
 
 ## Pull requests
 

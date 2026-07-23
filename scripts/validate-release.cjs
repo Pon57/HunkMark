@@ -7,6 +7,10 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const packageLock = JSON.parse(
+  fs.readFileSync(path.join(root, "package-lock.json"), "utf8"),
+);
+const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(
@@ -16,7 +20,14 @@ assert.equal(
 );
 assert.equal(manifest.short_name, "HunkMark", "Unexpected extension short name");
 assert.equal(packageJson.name, "hunkmark", "Unexpected package name");
-assert.equal(manifest.version, packageJson.version, "Manifest and package versions differ");
+assert.equal(manifest.version, version, "Manifest and VERSION versions differ");
+assert.equal(packageJson.version, version, "Package and VERSION versions differ");
+assert.equal(packageLock.version, version, "Package lock and VERSION versions differ");
+assert.equal(
+  packageLock.packages?.[""]?.version,
+  version,
+  "Package lock root and VERSION versions differ",
+);
 assert.equal(packageJson.license, "MIT", "Unexpected package license");
 assert.equal(packageJson.author, "Pon", "Unexpected package author");
 assert.equal(packageJson.private, true, "The npm package must remain private");

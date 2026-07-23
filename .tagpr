@@ -1,0 +1,5 @@
+[tagpr]
+	vPrefix = true
+	releaseBranch = main
+	versionFile = VERSION
+	postVersionCommand = npm run sync-version
