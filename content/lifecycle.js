@@ -272,6 +272,7 @@
       }
 
       this.updateProgress();
+      this.clearSettledOfficialViewedRestoreGuards();
     },
 
     isExtensionContextInvalidated(error) {
@@ -315,22 +316,28 @@
       this.document.body.append(notice);
     },
 
-    scheduleRefresh() {
+    scheduleRefresh({ immediate = false } = {}) {
       if (this.stopped) {
         return;
       }
 
       if (this.refreshRunning) {
         this.refreshAgain = true;
+        this.refreshAgainImmediate ||= immediate;
         return;
       }
 
       if (this.refreshQueued) {
-        return;
+        if (!immediate || this.refreshTimer === null) {
+          return;
+        }
+        this.window.clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+        this.refreshQueued = false;
       }
 
       this.refreshQueued = true;
-      this.refreshTimer = this.window.setTimeout(async () => {
+      const runRefresh = async () => {
         this.refreshTimer = null;
         this.refreshQueued = false;
         if (this.stopped) {
@@ -346,11 +353,21 @@
         } finally {
           this.refreshRunning = false;
           if (!this.stopped && this.refreshAgain) {
+            const rerunImmediately = this.refreshAgainImmediate;
             this.refreshAgain = false;
-            this.scheduleRefresh();
+            this.refreshAgainImmediate = false;
+            this.scheduleRefresh({ immediate: rerunImmediately });
           }
         }
-      }, this.constants.REFRESH_DELAY_MS);
+      };
+      if (immediate) {
+        this.window.queueMicrotask(runRefresh);
+      } else {
+        this.refreshTimer = this.window.setTimeout(
+          runRefresh,
+          this.constants.REFRESH_DELAY_MS,
+        );
+      }
     },
 
     handleStorageChanged(changes, areaName) {
@@ -473,7 +490,12 @@
           this.mutationAffectsDiff(mutation),
       );
       if (hostDiffChanged) {
-        this.scheduleRefresh();
+        const progressRemoved =
+          this.removeProgressForFilesWithoutRenderedHunks();
+        const restored =
+          this.preserveOfficialViewedRestoredState() ||
+          this.restoreCachedOfficialViewedControllers();
+        this.scheduleRefresh({ immediate: restored || progressRemoved });
       }
     },
 
@@ -488,6 +510,8 @@
       this.boundPointerEnd = (event) => this.lineDragPointerEnd(event);
       this.boundOfficialViewedClick = (event) =>
         this.handleOfficialViewedClick(event);
+      this.boundFileToggleClick = (event) =>
+        this.handleFileToggleClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
       this.boundNavigationChange = () => this.checkForNavigation();
       this.boundWindowBlur = () => {
@@ -514,6 +538,11 @@
       this.document.addEventListener(
         "click",
         this.boundOfficialViewedClick,
+        true,
+      );
+      this.document.addEventListener(
+        "click",
+        this.boundFileToggleClick,
         true,
       );
       this.document.addEventListener(
@@ -554,6 +583,7 @@
       }
       this.refreshQueued = false;
       this.refreshAgain = false;
+      this.refreshAgainImmediate = false;
       this.observer?.disconnect();
       this.observer = null;
       try {
@@ -574,6 +604,11 @@
       this.document.removeEventListener(
         "click",
         this.boundOfficialViewedClick,
+        true,
+      );
+      this.document.removeEventListener(
+        "click",
+        this.boundFileToggleClick,
         true,
       );
       this.document.removeEventListener(

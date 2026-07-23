@@ -512,6 +512,8 @@
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((element) => element.remove());
+      this.fileExpandRestorePending.clear();
+      this.fileProgressStateByKey.clear();
       this.removePanel();
       this.document
         .getElementById(this.constants.RECONNECT_NOTICE_ID)
