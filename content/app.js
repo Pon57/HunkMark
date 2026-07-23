@@ -74,9 +74,13 @@
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
       this.officialViewedProgrammaticClicks = new WeakSet();
+      this.officialViewedRestoreGuards = new Map();
       this.officialViewedStateByKey = new Map();
       this.officialViewedSyncPending = new WeakSet();
       this.officialViewedSyncSuppressed = new Set();
+      this.fileExpandRestorePending = new Set();
+      this.fileProgressStateByKey = new Map();
+      this.lineReviewContextByKey = new Map();
       this.reviewContextAccessedAtById = new Map();
       this.reviewStorageKeys = new Set();
 
@@ -92,6 +96,7 @@
       this.refreshQueued = false;
       this.refreshRunning = false;
       this.refreshAgain = false;
+      this.refreshAgainImmediate = false;
       this.refreshTimer = null;
       this.stopped = false;
       this.storagePruned = false;

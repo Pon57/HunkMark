@@ -350,10 +350,12 @@ function modernGridFixture() {
               </h3>
             </div>
             <button aria-label="Not Viewed" aria-pressed="false">Viewed</button>
+            <button aria-labelledby="modern-file-toggle-label">Collapse</button>
+            <span id="modern-file-toggle-label">Collapse file</span>
           </div>
         </div>
         <div role="row">
-          <div role="gridcell" class="diff-hunk-cell">@@ -4 +4,2 @@ render()</div>
+          <div role="gridcell" class="diff-hunk-cell" style="padding-right: 16px">@@ -4 +4,2 @@ render()</div>
         </div>
         <div role="row" data-line-type="deletion">
           <div role="gridcell" class="diff-text-cell left-side-diff-cell" data-line-anchor="diff-modernL4" style="line-height: 24px; padding-right: 24px">
@@ -581,6 +583,311 @@ test("distinguishes a manual official Viewed removal from a host reset", async (
     await waitFor(() => {
       assert.equal(officialClicks, 3);
       assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("restores collapsed hunks before paint after GitHub removes its diff body", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+    });
+    const cleanFixture = new JSDOM(commitSelectionFixture());
+    const cleanTable =
+      cleanFixture.window.document.querySelector("table").outerHTML;
+    cleanFixture.window.close();
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    let officialClicks = 0;
+    officialControl.addEventListener("click", () => {
+      officialClicks += 1;
+      const viewed = officialControl.getAttribute("aria-pressed") !== "true";
+      officialControl.setAttribute(
+        "aria-label",
+        viewed ? "Viewed" : "Not Viewed",
+      );
+      officialControl.setAttribute("aria-pressed", String(viewed));
+      if (viewed) {
+        fileElement.querySelector("table")?.remove();
+      } else {
+        fileElement.insertAdjacentHTML("beforeend", cleanTable);
+      }
+    });
+
+    Array.from(app.controllersByRow.values()).forEach((controller) => {
+      controller.input.checked = true;
+      controller.input.dispatchEvent(
+        new dom.window.Event("change", { bubbles: true }),
+      );
+    });
+    await waitFor(() => {
+      assert.equal(officialClicks, 1);
+      assert.equal(
+        Array.from(app.controllersByRow.values()).every(
+          (controller) => controller.collapsed,
+        ),
+        true,
+      );
+    });
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(fileElement.querySelector("table"), null);
+    });
+
+    officialControl.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+
+    const rows = Array.from(dom.window.document.querySelectorAll("tbody tr"));
+    assert.equal(rows.length, 4);
+    assert.equal(rows[1].classList.contains("hunkmark-collapsed"), true);
+    assert.equal(rows[3].classList.contains("hunkmark-collapsed"), true);
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+      assert.equal(
+        Array.from(app.controllersByRow.values()).every(
+          (controller) => controller.collapsed,
+        ),
+        true,
+      );
+      assert.equal(app.officialViewedRestoreGuards.size, 0);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("restores cached controls before paint when GitHub expands a Viewed file", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+    });
+    const cleanFixture = new JSDOM(commitSelectionFixture());
+    const cleanTable =
+      cleanFixture.window.document.querySelector("table").outerHTML;
+    cleanFixture.window.close();
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    officialControl.addEventListener("click", () => {
+      officialControl.setAttribute("aria-label", "Viewed");
+      officialControl.setAttribute("aria-pressed", "true");
+      fileElement.querySelector("table")?.remove();
+    });
+
+    Array.from(app.controllersByRow.values()).forEach((controller) => {
+      controller.input.checked = true;
+      controller.input.dispatchEvent(
+        new dom.window.Event("change", { bubbles: true }),
+      );
+    });
+    await waitFor(() => {
+      assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(fileElement.querySelector("table"), null);
+    });
+
+    fileElement.insertAdjacentHTML("beforeend", cleanTable);
+    await Promise.resolve();
+
+    const rows = Array.from(fileElement.querySelectorAll("tbody tr"));
+    assert.equal(rows.length, 4);
+    assert.equal(rows[1].classList.contains("hunkmark-collapsed"), true);
+    assert.equal(rows[3].classList.contains("hunkmark-collapsed"), true);
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-hunk-actions").length,
+      2,
+    );
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-line-control").length,
+      2,
+    );
+    assert.match(
+      fileElement.querySelector(".hunkmark-file-progress").textContent,
+      /Hunks 2\/2 · Lines 2\/2/,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("synchronizes modern file progress with expand and collapse before paint", async () => {
+  const { app, dom } = await startExtension(modernGridFixture());
+  try {
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 1);
+    });
+    const controller = Array.from(app.controllersByRow.values())[0];
+    const fileElement = controller.fileElement;
+    const fileToggle = fileElement.querySelector(
+      'button[aria-labelledby="modern-file-toggle-label"]',
+    );
+    const fileToggleLabel = fileElement.querySelector(
+      "#modern-file-toggle-label",
+    );
+    const cleanFixture = new JSDOM(modernGridFixture());
+    const rowsHtml = Array.from(
+      cleanFixture.window.document.querySelectorAll('[role="row"]'),
+      (row) => row.outerHTML,
+    ).join("");
+    cleanFixture.window.close();
+    fileToggle.addEventListener("click", () => {
+      if (fileToggleLabel.textContent === "Collapse file") {
+        fileToggleLabel.textContent = "Expand file";
+        fileElement
+          .querySelectorAll('[role="row"]')
+          .forEach((row) => row.remove());
+        return;
+      }
+      fileToggleLabel.textContent = "Collapse file";
+      fileElement
+        .querySelector(".Diff-module__diffHeaderWrapper__VTI5w")
+        .setAttribute("aria-busy", "true");
+      fileElement.insertAdjacentHTML("beforeend", rowsHtml);
+    });
+
+    fileToggle.click();
+    await Promise.resolve();
+
+    assert.equal(fileElement.querySelector(".hunkmark-file-progress"), null);
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+    });
+
+    fileToggle.click();
+    await Promise.resolve();
+
+    assert.equal(app.controllersByRow.size, 1);
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-hunk-actions").length,
+      1,
+    );
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-line-control").length,
+      2,
+    );
+    assert.match(
+      fileElement.querySelector(".hunkmark-file-progress").textContent,
+      /Hunks 0\/1 · Lines 0\/2/,
+    );
+    assert.equal(
+      fileElement
+        .querySelector(".Diff-module__diffHeaderWrapper__VTI5w")
+        .getAttribute("aria-busy"),
+      "true",
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("restores reviewed line backgrounds before rebuilding controllers", async () => {
+  const autoCollapsePreferenceKey =
+    `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
+  const { app, dom } = await startExtension(
+    commitSelectionFixture(),
+    { [autoCollapsePreferenceKey]: false },
+  );
+  try {
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+      assert.equal(app.autoCollapseViewed, false);
+    });
+    const cleanFixture = new JSDOM(commitSelectionFixture());
+    const cleanTable =
+      cleanFixture.window.document.querySelector("table").outerHTML;
+    cleanFixture.window.close();
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    let progressPresentWhenOfficialViewed = null;
+    officialControl.addEventListener("click", () => {
+      const viewed = officialControl.getAttribute("aria-pressed") !== "true";
+      officialControl.setAttribute(
+        "aria-label",
+        viewed ? "Viewed" : "Not Viewed",
+      );
+      officialControl.setAttribute("aria-pressed", String(viewed));
+      if (viewed) {
+        progressPresentWhenOfficialViewed = Boolean(
+          fileElement.querySelector(".hunkmark-file-progress"),
+        );
+        fileElement.querySelector("table")?.remove();
+      } else {
+        fileElement.insertAdjacentHTML("beforeend", cleanTable);
+      }
+    });
+
+    Array.from(app.controllersByRow.values()).forEach((controller) => {
+      controller.input.checked = true;
+      controller.input.dispatchEvent(
+        new dom.window.Event("change", { bubbles: true }),
+      );
+    });
+    await waitFor(() => {
+      assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+      assert.equal(app.controllersByRow.size, 0);
+    });
+    assert.equal(progressPresentWhenOfficialViewed, false);
+    assert.equal(fileElement.querySelector(".hunkmark-file-progress"), null);
+
+    officialControl.click();
+    await Promise.resolve();
+
+    const restoredLines = Array.from(
+      fileElement.querySelectorAll(".blob-code-addition"),
+    );
+    assert.equal(restoredLines.length, 2);
+    assert.equal(
+      restoredLines.every((line) =>
+        line.classList.contains("hunkmark-line-viewed"),
+      ),
+      true,
+    );
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-line-control").length,
+      0,
+    );
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-collapsed").length,
+      0,
+    );
+    const progress = fileElement.querySelector(".hunkmark-file-progress");
+    assert.ok(progress);
+    assert.match(progress.textContent, /Hunks 2\/2 · Lines 2\/2/);
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+    assert.equal(
+      fileElement.querySelectorAll(".hunkmark-line-control").length,
+      2,
+    );
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+      assert.equal(
+        Array.from(app.controllersByRow.values()).every(
+          (controller) =>
+            !controller.collapsed &&
+            controller.lines.every(
+              (line) =>
+                line.marked &&
+                line.element.classList.contains("hunkmark-line-viewed"),
+            ),
+        ),
+        true,
+      );
+      assert.equal(app.officialViewedRestoreGuards.size, 0);
     });
   } finally {
     app.stop();
@@ -2177,6 +2484,11 @@ test("supports GitHub's current React diff with persistent controls visible", as
     const style = dom.window.document.createElement("style");
     style.textContent = fs.readFileSync(path.join(root, "content.css"), "utf8");
     dom.window.document.head.append(style);
+    const lineHoverRule = Array.from(style.sheet.cssRules).find(
+      (rule) => rule.selectorText === ".hunkmark-line-control:hover",
+    );
+    assert.match(lineHoverRule.style.background, /linear-gradient/);
+    assert.match(lineHoverRule.style.background, /--bgColor-default/);
     assert.equal(
       dom.window.getComputedStyle(controller.actions).visibility,
       "visible",
@@ -2184,6 +2496,14 @@ test("supports GitHub's current React diff with persistent controls visible", as
     assert.equal(dom.window.getComputedStyle(controller.actions).opacity, "1");
     assert.equal(dom.window.getComputedStyle(progress).visibility, "visible");
     assert.equal(dom.window.getComputedStyle(progress).opacity, "1");
+    assert.equal(
+      dom.window.getComputedStyle(controller.hunkCell).paddingRight,
+      "16px",
+    );
+    assert.equal(
+      dom.window.getComputedStyle(controller.lines[0].element).paddingRight,
+      "24px",
+    );
     assert.equal(
       controller.lines[0].element.style.getPropertyValue(
         "--hunkmark-host-line-action-inset",

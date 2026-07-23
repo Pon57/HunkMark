@@ -1,6 +1,4 @@
 .hunkmark-hunk-cell {
-  min-height: 30px;
-  padding-right: 188px !important;
   position: relative;
 }
 
@@ -39,17 +37,32 @@
 }
 
 .hunkmark-control:hover {
-  background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133));
+  background:
+    linear-gradient(
+      var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133)),
+      var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133))
+    ),
+    var(--bgColor-muted, var(--color-canvas-subtle, #f6f8fa));
 }
 
 .hunkmark-control.is-viewed {
-  background: var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1));
+  background:
+    linear-gradient(
+      var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1)),
+      var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1))
+    ),
+    var(--bgColor-muted, var(--color-canvas-subtle, #f6f8fa));
   border-color: var(--borderColor-success-muted, var(--color-success-muted, #4ac26b66));
   color: var(--fgColor-success, var(--color-success-fg, #1a7f37));
 }
 
 .hunkmark-control.is-partial {
-  background: var(--bgColor-attention-muted, var(--color-attention-subtle, #fff8c5));
+  background:
+    linear-gradient(
+      var(--bgColor-attention-muted, var(--color-attention-subtle, #fff8c5)),
+      var(--bgColor-attention-muted, var(--color-attention-subtle, #fff8c5))
+    ),
+    var(--bgColor-muted, var(--color-canvas-subtle, #f6f8fa));
   border-color: var(--borderColor-attention-muted, var(--color-attention-muted, #d4a72c66));
   color: var(--fgColor-attention, var(--color-attention-fg, #9a6700));
 }
@@ -79,16 +92,12 @@
 }
 
 .hunkmark-line-cell {
-  padding-right: calc(
-    112px + var(--hunkmark-host-line-action-inset, 0px)
-  ) !important;
   position: relative;
 }
 
 .hunkmark-line-control {
   align-items: center;
   background: var(--bgColor-default, var(--color-canvas-default, #fff));
-  background: color-mix(in srgb, var(--bgColor-default, #fff) 88%, transparent);
   border: 1px solid var(--borderColor-muted, var(--color-border-muted, #d8dee4));
   border-radius: 5px;
   box-sizing: border-box;
@@ -122,11 +131,21 @@
 }
 
 .hunkmark-line-control:hover {
-  background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133));
+  background:
+    linear-gradient(
+      var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133)),
+      var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133))
+    ),
+    var(--bgColor-default, var(--color-canvas-default, #fff));
 }
 
 .hunkmark-line-control.is-viewed {
-  background: var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1));
+  background:
+    linear-gradient(
+      var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1)),
+      var(--bgColor-success-muted, var(--color-success-subtle, #dafbe1))
+    ),
+    var(--bgColor-default, var(--color-canvas-default, #fff));
   border-color: var(--borderColor-success-muted, var(--color-success-muted, #4ac26b66));
   color: var(--fgColor-success, var(--color-success-fg, #1a7f37));
 }

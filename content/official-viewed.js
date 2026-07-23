@@ -170,6 +170,7 @@
         }
         this.persistOfficialViewedSuppression(key);
       }
+      this.settleOfficialViewedRestoreGuard(key);
     },
 
     observeOfficialViewedState(key, control) {
@@ -186,6 +187,243 @@
       }
 
       return viewed;
+    },
+
+    startOfficialViewedRestoreGuard(key, filePath) {
+      // GitHub can replace diff rows when its Viewed state is removed. Keep the
+      // existing collapsed hunk identities and stored line contexts so the
+      // replacement state is restored before the debounced full refresh runs.
+      const collapsedKeys = new Set(
+        Array.from(this.controllersByRow.values())
+          .filter(
+            (controller) =>
+              controller.hunkRow.isConnected &&
+              controller.filePath === filePath &&
+              controller.collapsed,
+          )
+          .map((controller) => controller.key),
+      );
+
+      const guard = {
+        collapsedKeys,
+        filePath,
+        mutationObserved: false,
+        officialStateSettled: false,
+      };
+      this.officialViewedRestoreGuards.set(key, guard);
+      this.window.setTimeout(() => {
+        if (this.officialViewedRestoreGuards.get(key) === guard) {
+          this.officialViewedRestoreGuards.delete(key);
+        }
+      }, 3000);
+    },
+
+    preserveOfficialViewedRestoredState() {
+      if (this.officialViewedRestoreGuards.size === 0) {
+        return false;
+      }
+
+      let restored = false;
+      const restoredFiles = new Set();
+      this.discoverHunks().forEach((hunk) => {
+        const key = this.officialViewedSuppressionKey(hunk.filePath);
+        const guard = this.officialViewedRestoreGuards.get(key);
+        if (!guard || guard.filePath !== hunk.filePath) {
+          return;
+        }
+        restored = true;
+        guard.mutationObserved = true;
+        if (!restoredFiles.has(hunk.fileElement)) {
+          this.restoreFileProgress(hunk.fileElement, hunk.filePath);
+          restoredFiles.add(hunk.fileElement);
+        }
+        hunk.lines.forEach((line) => {
+          if (
+            this.lineReviewContextByKey.get(line.key) ===
+            line.contextFingerprint
+          ) {
+            line.element.classList.add("hunkmark-line-viewed");
+          }
+        });
+        if (
+          !guard.collapsedKeys.has(hunk.key) &&
+          !this.reviewStorageKeys.has(`${hunk.key}:collapsed`)
+        ) {
+          return;
+        }
+        hunk.groupRows.forEach((row) => {
+          if (row !== hunk.hunkRow) {
+            row.classList.add("hunkmark-collapsed");
+          }
+        });
+      });
+      return restored;
+    },
+
+    restoreCachedOfficialViewedControllers() {
+      if (!this.currentReviewScope) {
+        return false;
+      }
+
+      const candidatesByFile = new Map();
+      this.discoverHunks().forEach((hunk) => {
+        if (this.controllersByRow.has(hunk.hunkRow)) {
+          return;
+        }
+
+        const officialControl = this.officialViewedControlForFile(
+          hunk.fileElement,
+        );
+        const progressKey = this.fileProgressStateKey(hunk.filePath);
+        const explicitExpand =
+          this.fileExpandRestorePending.has(progressKey);
+        if (!explicitExpand && (
+          !officialControl ||
+          !this.officialControlIsViewed(officialControl) ||
+          this.fileDiffHasUnresolvedContent(hunk.fileElement)
+        )) {
+          return;
+        }
+
+        const candidates = candidatesByFile.get(hunk.fileElement) ?? [];
+        candidates.push({
+          hunk,
+          progressKey,
+          lineStates: hunk.lines.map((line) => {
+            const hasStoredLine = this.reviewStorageKeys.has(line.key);
+            const storedContext = this.lineReviewContextByKey.get(line.key);
+            return {
+              invalidated:
+                hasStoredLine &&
+                storedContext !== line.contextFingerprint,
+              marked:
+                hasStoredLine &&
+                storedContext === line.contextFingerprint,
+            };
+          }),
+        });
+        candidatesByFile.set(hunk.fileElement, candidates);
+      });
+
+      let restored = false;
+      candidatesByFile.forEach((candidates) => {
+        const progressKey = candidates[0].progressKey;
+        const explicitExpand =
+          this.fileExpandRestorePending.has(progressKey);
+        const cachedProgress =
+          this.fileProgressStateByKey.get(progressKey);
+        const matchesCachedFile =
+          explicitExpand &&
+          cachedProgress?.hunks === candidates.length &&
+          cachedProgress?.lines === candidates.reduce(
+            (total, { hunk }) => total + hunk.lines.length,
+            0,
+          );
+        const canRestoreEntireFile = candidates.every(
+          ({ hunk, lineStates }) =>
+            (matchesCachedFile ||
+              this.reviewStorageKeys.has(hunk.key) ||
+              this.reviewStorageKeys.has(`${hunk.key}:collapsed`) ||
+              hunk.lines.some((line) =>
+                this.reviewStorageKeys.has(line.key),
+              )) &&
+            lineStates.every((line) => !line.invalidated),
+        );
+        if (!canRestoreEntireFile) {
+          return;
+        }
+
+        this.fileExpandRestorePending.delete(progressKey);
+        candidates.forEach(({ hunk, lineStates }) => {
+          const controller = this.createController(hunk);
+          controller.lines.forEach((line, index) => {
+            line.marked = lineStates[index].marked;
+            line.input.disabled = false;
+          });
+          controller.marked =
+            controller.lines.length === 0 &&
+            this.reviewStorageKeys.has(controller.key);
+          controller.collapsed = this.reviewStorageKeys.has(
+            controller.collapsedKey,
+          );
+          this.updateAggregateFromLines(controller);
+          controller.input.disabled = false;
+          this.applyControllerAppearance(controller);
+        });
+        restored = true;
+      });
+
+      if (restored) {
+        this.updateProgress();
+      }
+      return restored;
+    },
+
+    handleFileToggleClick(event) {
+      const control =
+        event.target instanceof this.window.Element
+          ? event.target.closest("button")
+          : null;
+      if (!control) {
+        return;
+      }
+
+      const labelledBy = (
+        control.getAttribute("aria-labelledby") ?? ""
+      )
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => this.document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      const label = (
+        control.getAttribute("aria-label") ??
+        control.getAttribute("title") ??
+        labelledBy
+      ).trim();
+      if (label !== "Collapse file" && label !== "Expand file") {
+        return;
+      }
+
+      const fileElement =
+        control.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
+        control.closest("article, details, section, [role=region]");
+      if (!fileElement) {
+        return;
+      }
+
+      const filePath = this.resolveFilePath(fileElement, 0);
+      const progressKey = this.fileProgressStateKey(filePath);
+      if (label === "Collapse file") {
+        this.fileExpandRestorePending.delete(progressKey);
+        this.removeFileProgress(fileElement);
+        return;
+      }
+      if (label !== "Expand file") {
+        return;
+      }
+
+      this.fileExpandRestorePending.add(progressKey);
+      this.window.setTimeout(
+        () => this.fileExpandRestorePending.delete(progressKey),
+        3000,
+      );
+    },
+
+    settleOfficialViewedRestoreGuard(key) {
+      const guard = this.officialViewedRestoreGuards.get(key);
+      if (!guard) {
+        return;
+      }
+      guard.officialStateSettled = true;
+      this.scheduleRefresh();
+    },
+
+    clearSettledOfficialViewedRestoreGuards() {
+      this.officialViewedRestoreGuards.forEach((guard, key) => {
+        if (guard.mutationObserved && guard.officialStateSettled) {
+          this.officialViewedRestoreGuards.delete(key);
+        }
+      });
     },
 
     handleOfficialViewedClick(event) {
@@ -207,14 +445,27 @@
           candidate.hunkRow.isConnected &&
           candidate.fileElement.contains(control),
       );
-      if (!controller) {
+      const fileElement =
+        controller?.fileElement ??
+        control.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
+        control.closest("article, details, section, [role=region]");
+      if (!fileElement) {
         return;
       }
 
-      this.officialViewedSyncPending.delete(controller.fileElement);
-      const key = this.officialViewedSuppressionKey(controller.filePath);
-      const viewedBeforeClick = this.officialControlIsViewed(control);
+      this.officialViewedSyncPending.delete(fileElement);
+      const filePath =
+        controller?.filePath ?? this.resolveFilePath(fileElement, 0);
+      const key = this.officialViewedSuppressionKey(filePath);
+      const viewedBeforeClick = control.matches('input[type="checkbox"]')
+        ? !control.checked
+        : this.officialControlIsViewed(control);
       this.officialViewedSyncSuppressed.add(key);
+      if (viewedBeforeClick) {
+        this.startOfficialViewedRestoreGuard(key, filePath);
+      } else {
+        this.removeFileProgress(fileElement);
+      }
       this.window.setTimeout(
         () => this.reconcileOfficialViewedAfterClick(key, viewedBeforeClick),
         0,
@@ -273,6 +524,7 @@
 
       this.officialViewedSyncPending.add(fileElement);
       this.officialViewedProgrammaticClicks.add(control);
+      this.removeFileProgress(fileElement);
       try {
         control.click();
       } finally {
@@ -285,6 +537,7 @@
     },
 
     resetOfficialViewedState() {
+      this.officialViewedRestoreGuards.clear();
       this.officialViewedStateByKey.clear();
       this.officialViewedSyncSuppressed.clear();
     },

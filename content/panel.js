@@ -311,6 +311,107 @@
       }
     },
 
+    fileProgressStateKey(filePath) {
+      return `${this.currentReviewScope ?? ""}\u0000${filePath}`;
+    },
+
+    renderFileProgress(fileElement, state) {
+      if (!fileElement || !state) {
+        return null;
+      }
+
+      const fileNameLink = fileElement.querySelector('a[href^="#diff-"]');
+      const fileInfo = [
+        fileElement.querySelector(".file-header .file-info"),
+        fileElement.querySelector(
+          '[data-testid*="file-header"] [data-testid*="file-name"]',
+        ),
+        fileElement.querySelector('[data-testid*="file-name"]'),
+        fileElement.querySelector("[data-diff-header-wrapper] h3"),
+        fileNameLink?.closest("h1, h2, h3, h4, h5, h6, [role=heading]"),
+        fileElement.querySelector(
+          '[class*="DiffFileHeader-module__file-name"]',
+        ),
+        fileElement.querySelector(".file-header"),
+        fileElement.querySelector('[data-testid*="file-header"]'),
+        fileElement.querySelector("header"),
+      ].find(Boolean);
+      if (!fileInfo) {
+        return null;
+      }
+
+      const pathSection = fileInfo.closest(
+        [
+          '[class*="DiffFileHeader-module__file-path-section"]',
+          '[class*="file-path-section"]',
+        ].join(", "),
+      );
+      const insertAfter =
+        pathSection?.parentElement &&
+        fileElement.contains(pathSection.parentElement)
+          ? pathSection
+          : null;
+
+      let badge = fileElement.querySelector(".hunkmark-file-progress");
+      if (!badge) {
+        badge = this.document.createElement("span");
+        badge.className = "hunkmark-file-progress";
+        badge.title = "Viewed diff hunks in this file";
+      }
+      if (insertAfter) {
+        if (
+          badge.parentElement !== insertAfter.parentElement ||
+          badge.previousElementSibling !== insertAfter
+        ) {
+          insertAfter.after(badge);
+        }
+      } else if (badge.parentElement !== fileInfo) {
+        fileInfo.append(badge);
+      }
+
+      if (badge.textContent !== state.text) {
+        badge.textContent = state.text;
+      }
+      badge.classList.toggle("is-complete", state.complete);
+      return badge;
+    },
+
+    removeFileProgress(fileElement) {
+      fileElement?.querySelector(".hunkmark-file-progress")?.remove();
+    },
+
+    restoreFileProgress(fileElement, filePath) {
+      return this.renderFileProgress(
+        fileElement,
+        this.fileProgressStateByKey.get(
+          this.fileProgressStateKey(filePath),
+        ),
+      );
+    },
+
+    removeProgressForFilesWithoutRenderedHunks() {
+      const controllers = Array.from(this.controllersByRow.values());
+      let removed = false;
+      this.document
+        .querySelectorAll(".hunkmark-file-progress")
+        .forEach((badge) => {
+          const fileElement =
+            controllers.find((controller) =>
+              controller.fileElement?.contains(badge),
+            )?.fileElement ??
+            badge.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
+            badge.closest("article, details, section, [role=region]");
+          if (
+            fileElement &&
+            this.findHunkMarkers(fileElement).length === 0
+          ) {
+            badge.remove();
+            removed = true;
+          }
+        });
+      return removed;
+    },
+
     updateProgress() {
       const connectedControllers = Array.from(
         this.controllersByRow.values(),
@@ -335,55 +436,6 @@
         });
 
       byFile.forEach((controllers, fileElement) => {
-        const fileNameLink = fileElement.querySelector('a[href^="#diff-"]');
-        const fileInfo = [
-          fileElement.querySelector(".file-header .file-info"),
-          fileElement.querySelector(
-            '[data-testid*="file-header"] [data-testid*="file-name"]',
-          ),
-          fileElement.querySelector('[data-testid*="file-name"]'),
-          fileElement.querySelector("[data-diff-header-wrapper] h3"),
-          fileNameLink?.closest("h1, h2, h3, h4, h5, h6, [role=heading]"),
-          fileElement.querySelector(
-            '[class*="DiffFileHeader-module__file-name"]',
-          ),
-          fileElement.querySelector(".file-header"),
-          fileElement.querySelector('[data-testid*="file-header"]'),
-          fileElement.querySelector("header"),
-        ].find(Boolean);
-        if (!fileInfo) {
-          return;
-        }
-
-        const pathSection = fileInfo.closest(
-          [
-            '[class*="DiffFileHeader-module__file-path-section"]',
-            '[class*="file-path-section"]',
-          ].join(", "),
-        );
-        const insertAfter =
-          pathSection?.parentElement &&
-          fileElement.contains(pathSection.parentElement)
-            ? pathSection
-            : null;
-
-        let badge = fileElement.querySelector(".hunkmark-file-progress");
-        if (!badge) {
-          badge = this.document.createElement("span");
-          badge.className = "hunkmark-file-progress";
-          badge.title = "Viewed diff hunks in this file";
-        }
-        if (insertAfter) {
-          if (
-            badge.parentElement !== insertAfter.parentElement ||
-            badge.previousElementSibling !== insertAfter
-          ) {
-            insertAfter.after(badge);
-          }
-        } else if (badge.parentElement !== fileInfo) {
-          fileInfo.append(badge);
-        }
-
         const viewed = controllers.filter(
           (controller) => controller.marked,
         ).length;
@@ -392,10 +444,19 @@
         const lineText =
           lines.length > 0 ? ` · Lines ${viewedLines}/${lines.length}` : "";
         const nextText = `Hunks ${viewed}/${controllers.length}${lineText}`;
-        if (badge.textContent !== nextText) {
-          badge.textContent = nextText;
-        }
-        badge.classList.toggle("is-complete", viewed === controllers.length);
+        const state = {
+          complete: viewed === controllers.length,
+          hunks: controllers.length,
+          lines: lines.length,
+          text: nextText,
+          viewed,
+          viewedLines,
+        };
+        this.fileProgressStateByKey.set(
+          this.fileProgressStateKey(controllers[0].filePath),
+          state,
+        );
+        this.renderFileProgress(fileElement, state);
       });
 
       if (connectedControllers.length === 0) {

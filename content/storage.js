@@ -26,6 +26,20 @@
       );
     },
 
+    rememberLineReviewContext(key, value) {
+      if (
+        typeof key !== "string" ||
+        !key.startsWith(`${this.Core.STORAGE_NAMESPACE}:line:`)
+      ) {
+        return;
+      }
+      if (typeof value?.contextFingerprint === "string") {
+        this.lineReviewContextByKey.set(key, value.contextFingerprint);
+      } else {
+        this.lineReviewContextByKey.delete(key);
+      }
+    },
+
     reviewEntryTimestamp(value) {
       if (!value || typeof value !== "object") {
         return 0;
@@ -98,10 +112,11 @@
       }
 
       await this.chrome.storage.local.set(storedValues);
-      Object.keys(storedValues).forEach((key) => {
+      Object.entries(storedValues).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
         }
+        this.rememberLineReviewContext(key, value);
       });
       if (shouldRecordAccess) {
         this.reviewContextAccessedAtById.set(contextId, now);
@@ -185,6 +200,7 @@
         if (!this.isTrackedReviewStorageKey(key)) {
           return;
         }
+        this.rememberLineReviewContext(key, change.newValue);
         if (change.newValue === undefined) {
           this.reviewStorageKeys.delete(key);
         } else {
@@ -227,10 +243,12 @@
     } = {}) {
       const stored = await this.chrome.storage.local.get(null);
       this.reviewStorageKeys.clear();
-      Object.keys(stored).forEach((key) => {
+      this.lineReviewContextByKey.clear();
+      Object.entries(stored).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
         }
+        this.rememberLineReviewContext(key, value);
       });
       const groups = this.storedReviewContextGroups(stored);
       const currentContextId = currentContext
@@ -317,7 +335,10 @@
         await this.chrome.storage.local.set(metadataValues);
       }
 
-      removals.forEach((key) => this.reviewStorageKeys.delete(key));
+      removals.forEach((key) => {
+        this.reviewStorageKeys.delete(key);
+        this.rememberLineReviewContext(key, undefined);
+      });
       Object.keys(metadataValues).forEach((key) =>
         this.reviewStorageKeys.add(key),
       );
