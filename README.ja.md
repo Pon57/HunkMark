@@ -53,7 +53,7 @@ GitHub Enterprise Server、コミット単体の diff、リッチ diff は現在
 
 ## 開発
 
-Node.js 22.13 以降で次を実行できます。
+開発環境では、Node.js の Active LTS リリースをサポートしています。
 
 ```sh
 npm install
