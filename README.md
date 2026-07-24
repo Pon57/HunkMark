@@ -13,7 +13,7 @@ A Chrome extension that adds hunk-level and line-level `Viewed` controls and hun
 - Automatically collapse reviewed hunks, with manual `Collapse / Expand` controls
 - Track review progress per file and across the page
 - Link the two sides of a split diff or review them independently
-- Save state locally per GitHub account, pull request, and displayed commit range
+- Save state locally per pull request and displayed commit range
 - One-way sync to GitHub's file-level `Viewed` control only when the complete file diff is loaded
 - Restore controls after GitHub lazy loading and client-side navigation
 

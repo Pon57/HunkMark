@@ -6,19 +6,19 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { JSDOM } = require("jsdom");
 const Core = require("../core.js");
+const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
 
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(
   fs.readFileSync(path.join(root, "manifest.json"), "utf8"),
 );
 const extensionScripts = manifest.content_scripts[0].js;
-const DEFAULT_VIEWER_LOGIN = "octocat";
 
-function viewerReviewContext(
-  context,
-  viewerLogin = DEFAULT_VIEWER_LOGIN,
-) {
-  return Core.reviewViewerScope(context, `login:${viewerLogin}`);
+function withViewerMeta(html, viewerLogin) {
+  return html.replace(
+    "<html>",
+    `<html><head><meta name="user-login" content="${viewerLogin}"></head>`,
+  );
 }
 
 function createChromeApi(initial = {}) {
@@ -148,7 +148,6 @@ async function startExtension(
   initialStorage = {},
   {
     url = "https://github.com/octo/repo/pull/123/files",
-    viewerLogin = DEFAULT_VIEWER_LOGIN,
     waitForScope = true,
   } = {},
 ) {
@@ -158,12 +157,6 @@ async function startExtension(
     runScripts: "outside-only",
     url,
   });
-  if (viewerLogin !== null) {
-    const viewerMeta = dom.window.document.createElement("meta");
-    viewerMeta.name = "user-login";
-    viewerMeta.content = viewerLogin;
-    dom.window.document.head.append(viewerMeta);
-  }
   dom.window.chrome = chrome.api;
   dom.window.ResizeObserver = class ResizeObserver {
     observe() {}
@@ -794,7 +787,7 @@ test("synchronizes modern file progress with expand and collapse before paint", 
 
 test("restores reviewed line backgrounds before rebuilding controllers", async () => {
   const autoCollapsePreferenceKey =
-    `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
   const { app, dom } = await startExtension(
     commitSelectionFixture(),
     { [autoCollapsePreferenceKey]: false },
@@ -896,9 +889,7 @@ test("restores reviewed line backgrounds before rebuilding controllers", async (
 });
 
 test("respects a persisted manual official Viewed removal after reload", async () => {
-  const reviewContext = viewerReviewContext(
-    "github.com:octo/repo:pull:123",
-  );
+  const reviewContext = "github.com:octo/repo:pull:123";
   const reviewScope = Core.reviewStateScope(
     reviewContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -1463,10 +1454,10 @@ test("ignores legacy line marks that lack context evidence", async () => {
   }
 });
 
-test("isolates persisted review state by GitHub viewer", async () => {
-  const first = await startExtension(contextualLineFixture(), {}, {
-    viewerLogin: "alice",
-  });
+test("shares persisted review state across GitHub viewers in the same local storage", async () => {
+  const first = await startExtension(
+    withViewerMeta(contextualLineFixture(), "alice"),
+  );
   let stored;
   try {
     await waitFor(() => {
@@ -1487,68 +1478,33 @@ test("isolates persisted review state by GitHub viewer", async () => {
     first.dom.window.close();
   }
 
-  const second = await startExtension(contextualLineFixture(), stored, {
-    viewerLogin: "bob",
-  });
+  const second = await startExtension(
+    withViewerMeta(contextualLineFixture(), "bob"),
+    stored,
+  );
   try {
     await waitFor(() => {
       const controller = Array.from(second.app.controllersByRow.values())[0];
       assert.equal(controller.input.disabled, false);
-      assert.equal(controller.marked, false);
+      assert.equal(controller.marked, true);
     });
   } finally {
     second.app.stop();
     second.dom.window.close();
   }
-
-  const third = await startExtension(contextualLineFixture(), stored, {
-    viewerLogin: "alice",
-  });
-  try {
-    await waitFor(() => {
-      const controller = Array.from(third.app.controllersByRow.values())[0];
-      assert.equal(controller.input.disabled, false);
-      assert.equal(controller.marked, true);
-    });
-  } finally {
-    third.app.stop();
-    third.dom.window.close();
-  }
 });
 
-test("uses an anonymous scope only when GitHub is explicitly signed out", async () => {
-  const signedOut = await startExtension(
-    contextualLineFixture({ signedOut: true }),
-    {},
-    { viewerLogin: null },
-  );
+test("activates without GitHub viewer metadata or sign-in controls", async () => {
+  const { app, dom } = await startExtension(contextualLineFixture());
   try {
     assert.equal(
-      signedOut.app.currentScope,
-      Core.reviewViewerScope(
-        "github.com:octo/repo:pull:123",
-        "anonymous",
-      ),
+      app.currentScope,
+      "github.com:octo/repo:pull:123",
     );
-    assert.equal(signedOut.app.controllersByRow.size, 1);
+    assert.equal(app.controllersByRow.size, 1);
   } finally {
-    signedOut.app.stop();
-    signedOut.dom.window.close();
-  }
-
-  const unidentified = await startExtension(
-    contextualLineFixture(),
-    {},
-    { viewerLogin: null, waitForScope: false },
-  );
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    assert.equal(unidentified.app.currentScope, null);
-    assert.equal(unidentified.app.currentReviewScope, null);
-    assert.equal(unidentified.app.controllersByRow.size, 0);
-  } finally {
-    unidentified.app.stop();
-    unidentified.dom.window.close();
+    app.stop();
+    dom.window.close();
   }
 });
 
@@ -1771,13 +1727,11 @@ test("syncs official Viewed in a selected range when GitHub exposes it", async (
   }
 });
 
-test("backfills access metadata and prunes inactive pull requests as complete units", async () => {
+test("removes account-scoped state and prunes inactive pull requests as complete units", async () => {
   const now = Date.now();
-  const currentContext = viewerReviewContext(
-    "github.com:octo/repo:pull:123",
-  );
-  const expiredContext = viewerReviewContext("github.com:old/repo:pull:9");
-  const recentContext = viewerReviewContext("github.com:recent/repo:pull:7");
+  const currentContext = "github.com:octo/repo:pull:123";
+  const expiredContext = "github.com:old/repo:pull:9";
+  const recentContext = "github.com:recent/repo:pull:7";
   const currentScope = Core.reviewStateScope(
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -1806,7 +1760,7 @@ test("backfills access metadata and prunes inactive pull requests as complete un
     "addition",
     "+expired",
   );
-  const expiredCollapsedKey = `${Core.storageKey(
+  const expiredCollapsedKey = `${Core.hunkStorageKey(
     expiredScope,
     "src/expired.js",
     "@@\n+expired",
@@ -1824,21 +1778,24 @@ test("backfills access metadata and prunes inactive pull requests as complete un
     "+recent",
   );
   const preferenceKey =
-    `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
   const expiredAt = now - 181 * 24 * 60 * 60 * 1000;
   const recentAt = now - 7 * 24 * 60 * 60 * 1000;
-  const obsoleteStateKey =
-    `${Core.STORAGE_NAMESPACE}:line:aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:0`;
-  const obsoleteMetadataKey =
-    `${Core.STORAGE_NAMESPACE}:review-scope:aaaaaaaaaaaaaaaa`;
+  const legacyAccountStateKey =
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:line:aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:cccccccccccccccc:0`;
+  const legacyAccountMetadataKey =
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-context:aaaaaaaaaaaaaaaa`;
+  const obsoleteScopeMetadataKey =
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-scope:aaaaaaaaaaaaaaaa`;
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
     [currentKey]: { viewedAt: expiredAt },
     [expiredLineKey]: { viewedAt: expiredAt },
     [expiredCollapsedKey]: { collapsed: true, updatedAt: expiredAt },
     [expiredSelectedKey]: { viewedAt: expiredAt },
     [recentKey]: { viewedAt: recentAt },
-    [obsoleteStateKey]: { viewedAt: recentAt },
-    [obsoleteMetadataKey]: { lastAccessedAt: recentAt },
+    [legacyAccountStateKey]: { viewedAt: recentAt },
+    [legacyAccountMetadataKey]: { lastAccessedAt: recentAt },
+    [obsoleteScopeMetadataKey]: { lastAccessedAt: recentAt },
     [preferenceKey]: true,
   });
   try {
@@ -1851,8 +1808,9 @@ test("backfills access metadata and prunes inactive pull requests as complete un
         Core.reviewContextMetadataKey(expiredContext) in stored,
         false,
       );
-      assert.equal(obsoleteStateKey in stored, false);
-      assert.equal(obsoleteMetadataKey in stored, false);
+      assert.equal(legacyAccountStateKey in stored, false);
+      assert.equal(legacyAccountMetadataKey in stored, false);
+      assert.equal(obsoleteScopeMetadataKey in stored, false);
       assert.equal(currentKey in stored, true);
       assert.ok(
         stored[Core.reviewContextMetadataKey(currentContext)].lastAccessedAt >=
@@ -1873,9 +1831,7 @@ test("backfills access metadata and prunes inactive pull requests as complete un
 
 test("updates pull-request access metadata at most once per 24 hours", async () => {
   const now = Date.now();
-  const currentContext = viewerReviewContext(
-    "github.com:octo/repo:pull:123",
-  );
+  const currentContext = "github.com:octo/repo:pull:123";
   const currentScope = Core.reviewStateScope(
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -1919,7 +1875,7 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
     assert.equal(afterInterval, true);
     assert.equal(chrome.snapshot()[metadataKey].lastAccessedAt, nextAccess);
 
-    const emptyContext = viewerReviewContext("github.com:empty/repo:pull:99");
+    const emptyContext = "github.com:empty/repo:pull:99";
     const emptyAccess = await app.touchReviewContextAccess(
       emptyContext,
       nextAccess,
@@ -1937,11 +1893,9 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
 
 test("evicts every range of the oldest pull request when over capacity", async () => {
   const now = Date.now();
-  const currentContext = viewerReviewContext(
-    "github.com:octo/repo:pull:123",
-  );
-  const middleContext = viewerReviewContext("github.com:middle/repo:pull:2");
-  const oldestContext = viewerReviewContext("github.com:oldest/repo:pull:1");
+  const currentContext = "github.com:octo/repo:pull:123";
+  const middleContext = "github.com:middle/repo:pull:2";
+  const oldestContext = "github.com:oldest/repo:pull:1";
   const currentScope = Core.reviewStateScope(
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -2033,11 +1987,9 @@ test("evicts every range of the oldest pull request when over capacity", async (
 
 test("enforces the review storage limit after later writes", async () => {
   const now = Date.now();
-  const currentContext = viewerReviewContext(
-    "github.com:octo/repo:pull:123",
-  );
-  const middleContext = viewerReviewContext("github.com:middle/repo:pull:2");
-  const oldestContext = viewerReviewContext("github.com:oldest/repo:pull:1");
+  const currentContext = "github.com:octo/repo:pull:123";
+  const middleContext = "github.com:middle/repo:pull:2";
+  const oldestContext = "github.com:oldest/repo:pull:1";
   const currentScope = Core.reviewStateScope(
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -2382,33 +2334,20 @@ test("activates when the diff DOM arrives before the SPA URL change", async () =
   }
 });
 
-test("retries SPA activation when the GitHub viewer identity arrives late", async () => {
+test("ignores GitHub viewer metadata changes after activation", async () => {
   const { app, dom } = await startExtension(
-    "<!doctype html><html><body><main>Repository home</main></body></html>",
-    {},
-    {
-      url: "https://github.com/octo/repo",
-      viewerLogin: null,
-      waitForScope: false,
-    },
+    duplicateHunkFixture(),
   );
   try {
-    dom.window.history.pushState({}, "", "/octo/repo/pull/123/changes");
-    replacePageBody(dom, duplicateHunkFixture());
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.equal(app.currentScope, null);
-    assert.equal(
-      dom.window.document.querySelectorAll(".hunkmark-hunk-actions").length,
-      0,
-    );
+    const initialScope = app.currentScope;
 
     const viewerMeta = dom.window.document.createElement("meta");
     viewerMeta.name = "user-login";
-    viewerMeta.content = DEFAULT_VIEWER_LOGIN;
+    viewerMeta.content = "another-user";
     dom.window.document.head.append(viewerMeta);
 
     await waitFor(() => {
-      assert.ok(app.currentScope);
+      assert.equal(app.currentScope, initialScope);
       assert.equal(
         dom.window.document.querySelectorAll(".hunkmark-hunk-actions").length,
         2,

@@ -9,17 +9,26 @@
 })(typeof globalThis === "undefined" ? this : globalThis, function createCore() {
   "use strict";
 
-  const STORAGE_NAMESPACE = "hunkmark:v1";
+  const PREFERENCE_STORAGE_NAMESPACE = "hunkmark:v1";
+  const REVIEW_STORAGE_NAMESPACE = "hunkmark:v2";
+  const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
   const ALL_COMMITS_REVIEW_VARIANT = "all";
   const REVIEW_STORAGE_PREFIXES = [
-    `${STORAGE_NAMESPACE}:mark:`,
-    `${STORAGE_NAMESPACE}:line:`,
-    `${STORAGE_NAMESPACE}:official-sync-suppressed:`,
+    `${REVIEW_STORAGE_NAMESPACE}:mark:`,
+    `${REVIEW_STORAGE_NAMESPACE}:line:`,
+    `${REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`,
   ];
   const REVIEW_CONTEXT_METADATA_PREFIX =
-    `${STORAGE_NAMESPACE}:review-context:`;
+    `${REVIEW_STORAGE_NAMESPACE}:review-context:`;
   const OBSOLETE_REVIEW_SCOPE_METADATA_PREFIX =
-    `${STORAGE_NAMESPACE}:review-scope:`;
+    `${REVIEW_STORAGE_NAMESPACE}:review-scope:`;
+  const LEGACY_ACCOUNT_SCOPED_REVIEW_PREFIXES = [
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:mark:`,
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:line:`,
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`,
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-context:`,
+    `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-scope:`,
+  ];
   const HUNK_HEADER_PATTERN = /@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@[^\r\n]*/;
 
   function decodePathSegment(value) {
@@ -60,19 +69,6 @@
 
   function parseReviewVariant(locationLike) {
     return parseReviewLocation(locationLike)?.reviewVariant ?? null;
-  }
-
-  function reviewViewerScope(scope, viewerIdentity) {
-    if (!scope || typeof viewerIdentity !== "string") {
-      return null;
-    }
-
-    const normalizedIdentity = normalizeLineBreaks(viewerIdentity)
-      .trim()
-      .toLowerCase();
-    return normalizedIdentity
-      ? `${scope}:viewer:${hashString(normalizedIdentity)}`
-      : null;
   }
 
   function reviewStateScope(scope, reviewVariant) {
@@ -183,10 +179,10 @@
     return hash.toString(16).padStart(16, "0");
   }
 
-  function storageKey(scope, filePath, signature, occurrence = 0) {
+  function hunkStorageKey(scope, filePath, signature, occurrence = 0) {
     const { contextId, rangeId } = reviewStorageIds(scope);
     const hunkHash = hashString(`${filePath}\n${signature}`);
-    return `${STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:${hunkHash}:${occurrence}`;
+    return `${REVIEW_STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:${hunkHash}:${occurrence}`;
   }
 
   function lineStorageKey(
@@ -204,7 +200,7 @@
       normalizeLineBreaks(lineText),
       `identical-count:${identicalCount}`,
     ].join("\n");
-    return `${STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:${hashString(lineIdentity)}:${occurrence}`;
+    return `${REVIEW_STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:${hashString(lineIdentity)}:${occurrence}`;
   }
 
   function lineReviewContextFingerprint({
@@ -237,9 +233,9 @@
   function reviewStoragePrefixes(scope) {
     const { contextId, rangeId } = reviewStorageIds(scope);
     return [
-      `${STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:`,
-      `${STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:`,
-      `${STORAGE_NAMESPACE}:official-sync-suppressed:${contextId}:${rangeId}:`,
+      `${REVIEW_STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:`,
+      `${REVIEW_STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:`,
+      `${REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:${contextId}:${rangeId}:`,
     ];
   }
 
@@ -331,6 +327,10 @@
       (typeof key === "string" &&
         key.startsWith(OBSOLETE_REVIEW_SCOPE_METADATA_PREFIX)) ||
       (typeof key === "string" &&
+        LEGACY_ACCOUNT_SCOPED_REVIEW_PREFIXES.some((prefix) =>
+          key.startsWith(prefix),
+        )) ||
+      (typeof key === "string" &&
         key.startsWith(REVIEW_CONTEXT_METADATA_PREFIX) &&
         !isReviewContextMetadataKey(key)) ||
       (isReviewStorageKey(key) && reviewStateKeyIdentity(key) === null)
@@ -356,7 +356,8 @@
 
   return Object.freeze({
     ALL_COMMITS_REVIEW_VARIANT,
-    STORAGE_NAMESPACE,
+    PREFERENCE_STORAGE_NAMESPACE,
+    REVIEW_STORAGE_NAMESPACE,
     aggregateLineState,
     buildHunkSignature,
     findHunkHeader,
@@ -379,8 +380,7 @@
     reviewContextMetadataKeyForId,
     reviewContextScope,
     reviewStateScope,
-    reviewViewerScope,
     reviewStorageContextId,
-    storageKey,
+    hunkStorageKey,
   });
 });

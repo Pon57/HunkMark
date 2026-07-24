@@ -606,7 +606,7 @@
           const fingerprint = this.Core.hashString(`${filePath}\n${signature}`);
           const occurrence = occurrences.get(fingerprint) ?? 0;
           occurrences.set(fingerprint, occurrence + 1);
-          const key = this.Core.storageKey(
+          const key = this.Core.hunkStorageKey(
             this.currentReviewScope,
             filePath,
             signature,

@@ -3,6 +3,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Core = require("../core.js");
+const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
+
+test("uses separate stable namespaces for preferences and review state", () => {
+  assert.equal(Core.PREFERENCE_STORAGE_NAMESPACE, "hunkmark:v1");
+  assert.equal(Core.REVIEW_STORAGE_NAMESPACE, "hunkmark:v2");
+});
 
 test("recognizes GitHub pull request files pages", () => {
   const allCommitsLocation = {
@@ -57,8 +63,8 @@ test("isolates review state by the displayed commit range", () => {
 
   assert.notEqual(allCommits, selectedCommit);
   assert.notEqual(
-    Core.storageKey(allCommits, "src/a.js", "@@\n+new", 0),
-    Core.storageKey(selectedCommit, "src/a.js", "@@\n+new", 0),
+    Core.hunkStorageKey(allCommits, "src/a.js", "@@\n+new", 0),
+    Core.hunkStorageKey(selectedCommit, "src/a.js", "@@\n+new", 0),
   );
   assert.notEqual(
     Core.lineStorageKey(allCommits, "src/a.js", "addition", "+new"),
@@ -66,19 +72,8 @@ test("isolates review state by the displayed commit range", () => {
   );
 });
 
-test("isolates review state by the signed-in GitHub viewer", () => {
-  const scope = "github.com:octo/repo:pull:123";
-
-  assert.notEqual(
-    Core.reviewViewerScope(scope, "alice"),
-    Core.reviewViewerScope(scope, "bob"),
-  );
-  assert.equal(
-    Core.reviewViewerScope(scope, "Alice"),
-    Core.reviewViewerScope(scope, "alice"),
-  );
-  assert.equal(Core.reviewViewerScope(scope, null), null);
-  assert.equal(Core.reviewViewerScope(scope, "  "), null);
+test("does not expose GitHub viewer scoping", () => {
+  assert.equal("reviewViewerScope" in Core, false);
 });
 
 test("ignores unrelated and non-GitHub pages", () => {
@@ -175,7 +170,7 @@ test("recognizes file paths without mistaking UI labels for paths", () => {
   assert.equal(Core.looksLikeFilePath("Diff settings"), false);
 });
 
-test("storage key isolates files, PRs, and duplicate hunk occurrences", () => {
+test("hunk storage key isolates files, PRs, and duplicate occurrences", () => {
   const signature = "@@ function example()\n-old\n+new";
   const firstPr = Core.reviewStateScope(
     "github.com:a/r:pull:1",
@@ -185,11 +180,20 @@ test("storage key isolates files, PRs, and duplicate hunk occurrences", () => {
     "github.com:a/r:pull:2",
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
-  const base = Core.storageKey(firstPr, "src/a.js", signature, 0);
+  const base = Core.hunkStorageKey(firstPr, "src/a.js", signature, 0);
 
-  assert.notEqual(base, Core.storageKey(secondPr, "src/a.js", signature, 0));
-  assert.notEqual(base, Core.storageKey(firstPr, "src/b.js", signature, 0));
-  assert.notEqual(base, Core.storageKey(firstPr, "src/a.js", signature, 1));
+  assert.notEqual(
+    base,
+    Core.hunkStorageKey(secondPr, "src/a.js", signature, 0),
+  );
+  assert.notEqual(
+    base,
+    Core.hunkStorageKey(firstPr, "src/b.js", signature, 0),
+  );
+  assert.notEqual(
+    base,
+    Core.hunkStorageKey(firstPr, "src/a.js", signature, 1),
+  );
 });
 
 test("review storage scope matching includes hunk descendants and line marks", () => {
@@ -198,7 +202,12 @@ test("review storage scope matching includes hunk descendants and line marks", (
     context,
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
-  const hunkKey = Core.storageKey(scope, "src/a.js", "@@\n+new", 0);
+  const hunkKey = Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+new",
+    0,
+  );
   const lineKey = Core.lineStorageKey(
     scope,
     "src/a.js",
@@ -224,8 +233,8 @@ test("review storage scope matching includes hunk descendants and line marks", (
     true,
   );
   assert.equal(
-      Core.isReviewStorageKeyForScope(
-      Core.storageKey(
+    Core.isReviewStorageKeyForScope(
+      Core.hunkStorageKey(
         Core.reviewStateScope(
           "github.com:a/r:pull:2",
           Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -240,7 +249,7 @@ test("review storage scope matching includes hunk descendants and line marks", (
   );
   assert.equal(
     Core.isReviewStorageKeyForScope(
-      `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
+      `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
       scope,
     ),
     false,
@@ -259,8 +268,13 @@ test("maps all ranges in a pull request to one review context", () => {
     "selected:abc:view:def",
   );
   const contextId = Core.reviewContextId(context);
-  const hunkKey = Core.storageKey(scope, "src/a.js", "@@\n+new", 0);
-  const selectedKey = Core.storageKey(selected, "src/b.js", "@@\n+other", 0);
+  const hunkKey = Core.hunkStorageKey(scope, "src/a.js", "@@\n+new", 0);
+  const selectedKey = Core.hunkStorageKey(
+    selected,
+    "src/b.js",
+    "@@\n+other",
+    0,
+  );
   const metadataKey = Core.reviewContextMetadataKey(context);
 
   assert.equal(Core.reviewStorageContextId(hunkKey), contextId);
@@ -272,13 +286,13 @@ test("maps all ranges in a pull request to one review context", () => {
   assert.equal(Core.isReviewStorageKey(metadataKey), false);
   assert.equal(
     Core.isObsoleteReviewStorageKey(
-      `${Core.STORAGE_NAMESPACE}:review-context:not-a-context-id`,
+      `${Core.REVIEW_STORAGE_NAMESPACE}:review-context:not-a-context-id`,
     ),
     true,
   );
   assert.equal(
     Core.reviewStorageContextId(
-      `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
+      `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
     ),
     null,
   );
@@ -286,31 +300,52 @@ test("maps all ranges in a pull request to one review context", () => {
 
 test("rejects review-state keys without a displayed commit range", () => {
   assert.throws(
-    () => Core.storageKey("github.com:a/r:pull:1", "src/a.js", "@@\n+new"),
+    () =>
+      Core.hunkStorageKey(
+        "github.com:a/r:pull:1",
+        "src/a.js",
+        "@@\n+new",
+      ),
     /view variant/,
   );
 });
 
 test("review storage matching excludes global preferences", () => {
   assert.equal(
-    Core.isReviewStorageKey(`${Core.STORAGE_NAMESPACE}:mark:scope:hunk:0`),
-    true,
-  );
-  assert.equal(
-    Core.isReviewStorageKey(`${Core.STORAGE_NAMESPACE}:line:scope:line:0`),
-    true,
-  );
-  assert.equal(
     Core.isReviewStorageKey(
-      `${Core.STORAGE_NAMESPACE}:official-sync-suppressed:scope:file`,
+      `${Core.REVIEW_STORAGE_NAMESPACE}:mark:scope:hunk:0`,
     ),
     true,
   );
   assert.equal(
     Core.isReviewStorageKey(
-      `${Core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
+      `${Core.REVIEW_STORAGE_NAMESPACE}:line:scope:line:0`,
+    ),
+    true,
+  );
+  assert.equal(
+    Core.isReviewStorageKey(
+      `${Core.REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:scope:file`,
+    ),
+    true,
+  );
+  assert.equal(
+    Core.isReviewStorageKey(
+      `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
     ),
     false,
+  );
+  assert.equal(
+    Core.isObsoleteReviewStorageKey(
+      `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:mark:aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:cccccccccccccccc:0`,
+    ),
+    true,
+  );
+  assert.equal(
+    Core.isObsoleteReviewStorageKey(
+      `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-context:aaaaaaaaaaaaaaaa`,
+    ),
+    true,
   );
 });
 

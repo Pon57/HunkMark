@@ -23,7 +23,7 @@
         "core.js",
         "content/app.js",
         "content/discovery.js",
-        "content/storage.js",
+        "content/review-storage.js",
         "content/official-viewed.js",
         "content/controllers.js",
         "content/drag.js",

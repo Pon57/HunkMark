@@ -3,7 +3,6 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="user-login" content="Pon57">
     <title>HunkMark store screenshot capture</title>
     <link rel="stylesheet" href="../content.css">
     <style>
@@ -185,9 +184,16 @@
         align-items: center;
         background: #151b23;
         border-bottom: 1px solid #3d444d;
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         height: 42px;
         padding: 0 12px;
+      }
+
+      .file-path-section {
+        align-items: center;
+        display: flex;
+        min-width: 0;
       }
 
       .file-icon {
@@ -202,8 +208,8 @@
         font-weight: 600;
       }
 
-      .file-spacer {
-        flex: 1;
+      .file-actions {
+        justify-self: end;
       }
 
       .diff-table {
@@ -365,18 +371,21 @@
 
         <section class="js-file" data-file-path="content/lifecycle.js">
           <div class="file-header">
-            <span class="file-icon">▾</span>
-            <span class="file-info">content/lifecycle.js</span>
-            <div class="file-spacer"></div>
-            <label class="file-button">
-              <input
-                class="js-reviewed-checkbox official-viewed-input"
-                type="checkbox"
-                name="viewed"
-                aria-label="Not Viewed"
-              >
-              <span>Viewed</span>
-            </label>
+            <div class="file-path-section DiffFileHeader-module__file-path-section__capture">
+              <span class="file-icon">▾</span>
+              <span class="file-info">content/lifecycle.js</span>
+            </div>
+            <div class="file-actions">
+              <label class="file-button">
+                <input
+                  class="js-reviewed-checkbox official-viewed-input"
+                  type="checkbox"
+                  name="viewed"
+                  aria-label="Not Viewed"
+                >
+                <span>Viewed</span>
+              </label>
+            </div>
           </div>
 
           <table class="diff-table" aria-label="Diff for content/lifecycle.js">
@@ -406,13 +415,13 @@
                 <td class="blob-num"></td>
                 <td class="diff-empty"></td>
                 <td class="blob-num">83</td>
-                <td class="blob-code-addition" data-diff-side="right">+   const locationScope = parseScope(location);</td>
+                <td class="blob-code-addition" data-diff-side="right">+   const nextScope = parseScope(location);</td>
               </tr>
               <tr class="addition-row">
                 <td class="blob-num"></td>
                 <td class="diff-empty"></td>
                 <td class="blob-num">84</td>
-                <td class="blob-code-addition" data-diff-side="right">+   const scope = viewerScope(locationScope);</td>
+                <td class="blob-code-addition" data-diff-side="right">+   const nextRange = parseRange(location);</td>
               </tr>
               <tr class="hunk-row">
                 <td class="blob-code-hunk" colspan="4"><button class="hunk-expander" type="button" aria-label="Expand hidden lines">↓</button><span>@@ -95,6 +96,8 @@ async refresh() {</span></td>
@@ -557,7 +566,7 @@
     <script src="../core.js"></script>
     <script src="../content/app.js"></script>
     <script src="../content/discovery.js"></script>
-    <script src="../content/storage.js"></script>
+    <script src="../content/review-storage.js"></script>
     <script src="../content/official-viewed.js"></script>
     <script src="../content/controllers.js"></script>
     <script src="../content/drag.js"></script>
