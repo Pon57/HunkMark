@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [v2.0.0](https://github.com/Pon57/HunkMark/compare/v1.0.1...v2.0.0) - 2026-07-24
+
+### Breaking Changes
+- Remove GitHub account scoping from review state by @Pon57 in https://github.com/Pon57/HunkMark/pull/9
+
 ## [v1.0.1](https://github.com/Pon57/HunkMark/compare/v1.0.0...v1.0.1) - 2026-07-23
 
 ### Bug Fixes
