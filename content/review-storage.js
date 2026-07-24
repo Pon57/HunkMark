@@ -90,7 +90,7 @@
     ) {
       const contextScope = this.Core.reviewContextScope(scope);
       const contextId = contextScope
-        ? this.Core.reviewContextId(contextScope)
+        ? await this.Core.reviewContextId(contextScope)
         : null;
       const previousAccess = contextId
         ? this.reviewContextAccessedAtById.get(contextId)
@@ -137,13 +137,15 @@
       if (!scope) {
         return false;
       }
+      const contextPrefixes =
+        await this.Core.reviewStoragePrefixesForContext(scope);
       const hasSavedState = Array.from(this.reviewStorageKeys).some((key) =>
-        this.Core.isReviewStorageKeyForContext(key, scope),
+        contextPrefixes.some((prefix) => key.startsWith(prefix)),
       );
       if (!hasSavedState) {
         return false;
       }
-      const contextId = this.Core.reviewContextId(scope);
+      const contextId = await this.Core.reviewContextId(scope);
       const previousAccess =
         this.reviewContextAccessedAtById.get(contextId);
       if (
@@ -164,10 +166,10 @@
       return true;
     },
 
-    forgetReviewContextAccess(scope = this.currentScope) {
+    async forgetReviewContextAccess(scope = this.currentScope) {
       if (scope) {
         this.reviewContextAccessedAtById.delete(
-          this.Core.reviewContextId(scope),
+          await this.Core.reviewContextId(scope),
         );
       }
     },
@@ -251,7 +253,7 @@
       });
       const groups = this.storedReviewContextGroups(stored);
       const currentContextId = currentContext
-        ? this.Core.reviewContextId(currentContext)
+        ? await this.Core.reviewContextId(currentContext)
         : null;
       const removals = new Set(
         Object.keys(stored).filter((key) =>

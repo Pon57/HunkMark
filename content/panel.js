@@ -261,25 +261,26 @@
 
       resetButton.disabled = true;
       try {
-        const stored = await this.chrome.storage.local.get(null);
+        const [stored, scopePrefixes, contextPrefixes, metadataKey] =
+          await Promise.all([
+            this.chrome.storage.local.get(null),
+            this.Core.reviewStoragePrefixes(this.currentReviewScope),
+            this.Core.reviewStoragePrefixesForContext(this.currentScope),
+            this.Core.reviewContextMetadataKey(this.currentScope),
+          ]);
         const keys = new Set([
           ...Object.keys(stored).filter((key) =>
-            this.Core.isReviewStorageKeyForScope(
-              key,
-              this.currentReviewScope,
-            ),
+            scopePrefixes.some((prefix) => key.startsWith(prefix)),
           ),
           ...suppressionKeys,
         ]);
         const hasOtherRanges = Object.keys(stored).some(
           (key) =>
             !keys.has(key) &&
-            this.Core.isReviewStorageKeyForContext(key, this.currentScope),
+            contextPrefixes.some((prefix) => key.startsWith(prefix)),
         );
         if (!hasOtherRanges) {
-          keys.add(
-            this.Core.reviewContextMetadataKey(this.currentScope),
-          );
+          keys.add(metadataKey);
         }
         if (keys.size > 0) {
           await this.chrome.storage.local.remove(Array.from(keys));
@@ -288,7 +289,7 @@
           this.officialViewedSyncSuppressed.delete(key),
         );
         if (!hasOtherRanges) {
-          this.forgetReviewContextAccess(this.currentScope);
+          await this.forgetReviewContextAccess(this.currentScope);
         }
         controllers.forEach((controller) => {
           controller.marked = false;

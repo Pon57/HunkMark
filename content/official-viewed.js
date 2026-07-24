@@ -20,7 +20,7 @@
       );
     },
 
-    officialViewedSuppressionKey(filePath) {
+    async officialViewedSuppressionKey(filePath) {
       return this.Core.officialSyncSuppressionKey(
         this.officialViewedSuppressionScope(),
         filePath,
@@ -31,8 +31,8 @@
       return [
         ...new Set(
           Array.from(controllers, (controller) =>
-            this.officialViewedSuppressionKey(controller.filePath),
-          ),
+            controller.officialSuppressionKey,
+          ).filter(Boolean),
         ),
       ];
     },
@@ -137,7 +137,7 @@
       const controller = Array.from(this.controllersByRow.values()).find(
         (candidate) =>
           candidate.hunkRow.isConnected &&
-          this.officialViewedSuppressionKey(candidate.filePath) === key,
+          candidate.officialSuppressionKey === key,
       );
       const control = controller?.fileElement.querySelector(
         this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
@@ -225,8 +225,12 @@
 
       let restored = false;
       const restoredFiles = new Set();
-      this.discoverHunks().forEach((hunk) => {
-        const key = this.officialViewedSuppressionKey(hunk.filePath);
+      const discovered = this.discoverCachedHunks();
+      if (!discovered) {
+        return false;
+      }
+      discovered.forEach((hunk) => {
+        const key = hunk.officialSuppressionKey;
         const guard = this.officialViewedRestoreGuards.get(key);
         if (!guard || guard.filePath !== hunk.filePath) {
           return;
@@ -266,7 +270,11 @@
       }
 
       const candidatesByFile = new Map();
-      this.discoverHunks().forEach((hunk) => {
+      const discovered = this.discoverCachedHunks();
+      if (!discovered) {
+        return false;
+      }
+      discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
           return;
         }
@@ -426,7 +434,7 @@
       });
     },
 
-    handleOfficialViewedClick(event) {
+    async handleOfficialViewedClick(event) {
       const control =
         event.target instanceof this.window.Element
           ? event.target.closest(this.constants.OFFICIAL_FILE_VIEWED_SELECTOR)
@@ -456,10 +464,18 @@
       this.officialViewedSyncPending.delete(fileElement);
       const filePath =
         controller?.filePath ?? this.resolveFilePath(fileElement, 0);
-      const key = this.officialViewedSuppressionKey(filePath);
       const viewedBeforeClick = control.matches('input[type="checkbox"]')
         ? !control.checked
         : this.officialControlIsViewed(control);
+      let key =
+        controller?.officialSuppressionKey ??
+        this.Core.cachedOfficialSyncSuppressionKey(
+          this.officialViewedSuppressionScope(),
+          filePath,
+        );
+      if (!key) {
+        key = await this.officialViewedSuppressionKey(filePath);
+      }
       this.officialViewedSyncSuppressed.add(key);
       if (viewedBeforeClick) {
         this.startOfficialViewedRestoreGuard(key, filePath);
@@ -495,9 +511,7 @@
         return;
       }
 
-      const suppressionKey = this.officialViewedSuppressionKey(
-        controllers[0].filePath,
-      );
+      const suppressionKey = controllers[0].officialSuppressionKey;
       const control = this.officialViewedControlForFile(fileElement);
       if (!control) {
         return;

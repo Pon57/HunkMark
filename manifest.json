@@ -4,7 +4,7 @@
   "short_name": "HunkMark",
   "version": "2.0.0",
   "description": "Review GitHub pull request diffs by hunk or line, collapse reviewed changes, and track progress.",
-  "minimum_chrome_version": "111",
+  "minimum_chrome_version": "114",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",

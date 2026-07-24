@@ -7,6 +7,16 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 const Core = require("../core.js");
 const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
+const LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v2";
+
+async function lineReviewContextFingerprint(options) {
+  const blockFingerprint =
+    await Core.lineReviewBlockFingerprint(options);
+  return Core.lineReviewContextFingerprint({
+    blockFingerprint,
+    blockLineIndex: options.blockLineIndex,
+  });
+}
 
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(
@@ -147,6 +157,7 @@ async function startExtension(
   html,
   initialStorage = {},
   {
+    digestInputSizes = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
   } = {},
@@ -157,6 +168,20 @@ async function startExtension(
     runScripts: "outside-only",
     url,
   });
+  Object.defineProperty(dom.window, "crypto", {
+    configurable: true,
+    value: digestInputSizes
+      ? {
+          subtle: {
+            digest(algorithm, input) {
+              digestInputSizes.push(input.byteLength);
+              return globalThis.crypto.subtle.digest(algorithm, input);
+            },
+          },
+        }
+      : globalThis.crypto,
+  });
+  dom.window.TextEncoder = globalThis.TextEncoder;
   dom.window.chrome = chrome.api;
   dom.window.ResizeObserver = class ResizeObserver {
     observe() {}
@@ -169,7 +194,10 @@ async function startExtension(
 
   if (waitForScope) {
     await waitFor(() => {
-      assert.ok(dom.window.HunkMarkContent.activeApp.currentScope);
+      const app = dom.window.HunkMarkContent.activeApp;
+      assert.ok(app.currentScope);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
     });
   }
   return { chrome, dom, app: dom.window.HunkMarkContent.activeApp };
@@ -185,6 +213,24 @@ function duplicateHunkFixture() {
           <tr><td class="blob-num">1</td><td class="blob-code-addition">+return null;</td></tr>
           <tr><td class="blob-code-hunk">@@ -50 +50 @@</td></tr>
           <tr><td class="blob-num">50</td><td class="blob-code-addition">+return null;</td></tr>
+        </tbody></table>
+      </div>
+    </body></html>`;
+}
+
+function largeChangedBlockFixture(lineCount = 200, lineWidth = 96) {
+  const lines = Array.from({ length: lineCount }, (_, index) => {
+    const prefix = `+line-${String(index).padStart(4, "0")}-`;
+    const text = `${prefix}${"x".repeat(lineWidth - prefix.length)}`;
+    return `<tr><td class="blob-code-addition">${text}</td></tr>`;
+  }).join("");
+  return `<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/large.js">
+        <div class="file-header"><span class="file-info">src/large.js</span></div>
+        <table><tbody>
+          <tr><td class="blob-code-hunk">@@ -1,0 +1,${lineCount} @@</td></tr>
+          ${lines}
         </tbody></table>
       </div>
     </body></html>`;
@@ -450,6 +496,12 @@ test("boots on a pull request and isolates duplicate lines in separate hunks", a
       assert.equal(inputs[1].checked, false);
       assert.equal(firstController.marked, true);
       assert.equal(firstController.collapsed, true);
+      assert.equal(
+        Object.keys(chrome.snapshot()).filter((key) =>
+          key.includes(":line:"),
+        ).length,
+        1,
+      );
     });
     assert.equal(
       firstController.lines[0].element.classList.contains(
@@ -474,6 +526,30 @@ test("boots on a pull request and isolates duplicate lines in separate hunks", a
     assert.equal(storedLineKeys.length, 1);
     assert.equal(
       chrome.snapshot()[firstController.collapsedKey].autoCollapsed,
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("hashes a large changed block once before deriving line contexts", async () => {
+  const digestInputSizes = [];
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(),
+    {},
+    { digestInputSizes },
+  );
+  try {
+    const controller = Array.from(app.controllersByRow.values())[0];
+    assert.equal(controller.lines.length, 200);
+    assert.equal(
+      digestInputSizes.filter((size) => size > 10_000).length,
+      2,
+    );
+    assert.equal(
+      digestInputSizes.reduce((total, size) => total + size, 0) < 500_000,
       true,
     );
   } finally {
@@ -549,7 +625,7 @@ test("distinguishes a manual official Viewed removal from a host reset", async (
     });
 
     officialControl.click();
-    const suppressionKey = app.officialViewedSuppressionKey(
+    const suppressionKey = await app.officialViewedSuppressionKey(
       controllers[0].filePath,
     );
     await waitFor(() => {
@@ -895,38 +971,40 @@ test("respects a persisted manual official Viewed removal after reload", async (
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   const filePath = "src/selection.js";
-  const suppressionKey = Core.officialSyncSuppressionKey(
+  const suppressionKey = await Core.officialSyncSuppressionKey(
     reviewScope,
     filePath,
   );
   const now = Date.now();
   const initial = {
-    [Core.lineStorageKey(
+    [await Core.lineStorageKey(
       reviewScope,
       filePath,
       "addition",
       "+first",
     )]: {
-      contextFingerprint: Core.lineReviewContextFingerprint({
+      contextFingerprint: await lineReviewContextFingerprint({
         headerText: "@@ -1 +1 @@",
         blockSignature: "addition:unified:+first",
       }),
       viewedAt: now,
     },
-    [Core.lineStorageKey(
+    [await Core.lineStorageKey(
       reviewScope,
       filePath,
       "addition",
       "+second",
     )]: {
-      contextFingerprint: Core.lineReviewContextFingerprint({
+      contextFingerprint: await lineReviewContextFingerprint({
         headerText: "@@ -10 +10 @@",
         blockSignature: "addition:unified:+second",
       }),
       viewedAt: now,
     },
     [suppressionKey]: { suppressed: true, updatedAt: now },
-    [Core.reviewContextMetadataKey(reviewContext)]: { lastAccessedAt: now },
+    [await Core.reviewContextMetadataKey(reviewContext)]: {
+      lastAccessedAt: now,
+    },
   };
   const { app, chrome, dom } = await startExtension(
     commitSelectionFixture(),
@@ -1330,7 +1408,8 @@ test("resyncs official Viewed after a host reset without losing unchanged line s
       assert.equal(officialClicks, 1);
       assert.equal(officialControl.getAttribute("aria-pressed"), "true");
     });
-    const suppressionKey = app.officialViewedSuppressionKey(after.filePath);
+    const suppressionKey =
+      await app.officialViewedSuppressionKey(after.filePath);
     assert.equal(Boolean(chrome.snapshot()[suppressionKey]), false);
   } finally {
     app.stop();
@@ -1627,9 +1706,13 @@ test("isolates selected-commit state and resets only the selected range", async 
     const selectedLineKeys = selectedControllers.flatMap((controller) =>
       controller.lines.map((line) => line.key),
     );
-    const reviewContextMetadataKey = app.Core.reviewContextMetadataKey(
+    const reviewContextMetadataKey = await app.Core.reviewContextMetadataKey(
       app.currentScope,
     );
+    const selectedScopePrefixes =
+      await app.Core.reviewStoragePrefixes(selectedReviewScope);
+    const contextPrefixes =
+      await app.Core.reviewStoragePrefixesForContext(app.currentScope);
     assert.equal(selectedLineKeys.includes(allCommitsLineKey), false);
     assert.equal(Boolean(chrome.snapshot()[reviewContextMetadataKey]), true);
 
@@ -1638,7 +1721,7 @@ test("isolates selected-commit state and resets only the selected range", async 
       const stored = chrome.snapshot();
       assert.equal(
         Object.keys(stored).some((key) =>
-          app.Core.isReviewStorageKeyForScope(key, selectedReviewScope),
+          selectedScopePrefixes.some((prefix) => key.startsWith(prefix)),
         ),
         false,
       );
@@ -1666,7 +1749,7 @@ test("isolates selected-commit state and resets only the selected range", async 
       const stored = chrome.snapshot();
       assert.equal(
         Object.keys(stored).some((key) =>
-          app.Core.isReviewStorageKeyForContext(key, app.currentScope),
+          contextPrefixes.some((prefix) => key.startsWith(prefix)),
         ),
         false,
       );
@@ -1727,7 +1810,7 @@ test("syncs official Viewed in a selected range when GitHub exposes it", async (
   }
 });
 
-test("removes account-scoped state and prunes inactive pull requests as complete units", async () => {
+test("removes legacy review state and prunes inactive pull requests as complete units", async () => {
   const now = Date.now();
   const currentContext = "github.com:octo/repo:pull:123";
   const expiredContext = "github.com:old/repo:pull:9";
@@ -1748,30 +1831,30 @@ test("removes account-scoped state and prunes inactive pull requests as complete
     recentContext,
     "selected:abc..def",
   );
-  const currentKey = Core.lineStorageKey(
+  const currentKey = await Core.lineStorageKey(
     currentScope,
     "src/current.js",
     "addition",
     "+current",
   );
-  const expiredLineKey = Core.lineStorageKey(
+  const expiredLineKey = await Core.lineStorageKey(
     expiredScope,
     "src/expired.js",
     "addition",
     "+expired",
   );
-  const expiredCollapsedKey = `${Core.hunkStorageKey(
+  const expiredCollapsedKey = `${await Core.hunkStorageKey(
     expiredScope,
     "src/expired.js",
     "@@\n+expired",
   )}:collapsed`;
-  const expiredSelectedKey = Core.lineStorageKey(
+  const expiredSelectedKey = await Core.lineStorageKey(
     expiredSelectedScope,
     "src/expired-selected.js",
     "deletion",
     "-expired-selected",
   );
-  const recentKey = Core.lineStorageKey(
+  const recentKey = await Core.lineStorageKey(
     recentScope,
     "src/recent.js",
     "addition",
@@ -1787,6 +1870,17 @@ test("removes account-scoped state and prunes inactive pull requests as complete
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-context:aaaaaaaaaaaaaaaa`;
   const obsoleteScopeMetadataKey =
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-scope:aaaaaaaaaaaaaaaa`;
+  const legacyContentStateKey =
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:line:aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb:cccccccccccccccc:0`;
+  const [
+    currentMetadataKey,
+    expiredMetadataKey,
+    recentMetadataKey,
+  ] = await Promise.all([
+    Core.reviewContextMetadataKey(currentContext),
+    Core.reviewContextMetadataKey(expiredContext),
+    Core.reviewContextMetadataKey(recentContext),
+  ]);
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
     [currentKey]: { viewedAt: expiredAt },
     [expiredLineKey]: { viewedAt: expiredAt },
@@ -1796,6 +1890,7 @@ test("removes account-scoped state and prunes inactive pull requests as complete
     [legacyAccountStateKey]: { viewedAt: recentAt },
     [legacyAccountMetadataKey]: { lastAccessedAt: recentAt },
     [obsoleteScopeMetadataKey]: { lastAccessedAt: recentAt },
+    [legacyContentStateKey]: { viewedAt: recentAt },
     [preferenceKey]: true,
   });
   try {
@@ -1804,21 +1899,18 @@ test("removes account-scoped state and prunes inactive pull requests as complete
       assert.equal(expiredLineKey in stored, false);
       assert.equal(expiredCollapsedKey in stored, false);
       assert.equal(expiredSelectedKey in stored, false);
-      assert.equal(
-        Core.reviewContextMetadataKey(expiredContext) in stored,
-        false,
-      );
+      assert.equal(expiredMetadataKey in stored, false);
       assert.equal(legacyAccountStateKey in stored, false);
       assert.equal(legacyAccountMetadataKey in stored, false);
       assert.equal(obsoleteScopeMetadataKey in stored, false);
+      assert.equal(legacyContentStateKey in stored, false);
       assert.equal(currentKey in stored, true);
       assert.ok(
-        stored[Core.reviewContextMetadataKey(currentContext)].lastAccessedAt >=
-          now,
+        stored[currentMetadataKey].lastAccessedAt >= now,
       );
       assert.equal(recentKey in stored, true);
       assert.equal(
-        stored[Core.reviewContextMetadataKey(recentContext)].lastAccessedAt,
+        stored[recentMetadataKey].lastAccessedAt,
         recentAt,
       );
       assert.equal(stored[preferenceKey], true);
@@ -1836,13 +1928,13 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
-  const stateKey = Core.lineStorageKey(
+  const stateKey = await Core.lineStorageKey(
     currentScope,
     "src/current.js",
     "addition",
     "+current",
   );
-  const metadataKey = Core.reviewContextMetadataKey(currentContext);
+  const metadataKey = await Core.reviewContextMetadataKey(currentContext);
   const previousAccess = now - 60 * 60 * 1000;
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
     [stateKey]: { viewedAt: previousAccess },
@@ -1881,8 +1973,10 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
       nextAccess,
     );
     assert.equal(emptyAccess, false);
+    const emptyMetadataKey =
+      await Core.reviewContextMetadataKey(emptyContext);
     assert.equal(
-      Core.reviewContextMetadataKey(emptyContext) in chrome.snapshot(),
+      emptyMetadataKey in chrome.snapshot(),
       false,
     );
   } finally {
@@ -1913,24 +2007,26 @@ test("evicts every range of the oldest pull request when over capacity", async (
     "selected:abc..def",
   );
   const stateKeys = (scope, prefix, count) =>
-    Array.from({ length: count }, (_, index) =>
-      Core.lineStorageKey(
-        scope,
-        `src/${prefix}.js`,
-        "addition",
-        `+${prefix}-${index}`,
+    Promise.all(
+      Array.from({ length: count }, (_, index) =>
+        Core.lineStorageKey(
+          scope,
+          `src/${prefix}.js`,
+          "addition",
+          `+${prefix}-${index}`,
+        ),
       ),
     );
-  const currentKeys = stateKeys(currentScope, "current", 2);
-  const middleKeys = stateKeys(middleScope, "middle", 2);
-  const oldestKeys = stateKeys(oldestScope, "oldest", 3);
-  const oldestSelectedKeys = stateKeys(
+  const currentKeys = await stateKeys(currentScope, "current", 2);
+  const middleKeys = await stateKeys(middleScope, "middle", 2);
+  const oldestKeys = await stateKeys(oldestScope, "oldest", 3);
+  const oldestSelectedKeys = await stateKeys(
     oldestSelectedScope,
     "oldest-selected",
     1,
   );
   const initial = {};
-  [
+  for (const [context, keys, lastAccessedAt] of [
     [currentContext, currentKeys, now],
     [middleContext, middleKeys, now - 2 * 24 * 60 * 60 * 1000],
     [
@@ -1938,12 +2034,16 @@ test("evicts every range of the oldest pull request when over capacity", async (
       [...oldestKeys, ...oldestSelectedKeys],
       now - 3 * 24 * 60 * 60 * 1000,
     ],
-  ].forEach(([context, keys, lastAccessedAt]) => {
+  ]) {
     keys.forEach((key) => {
       initial[key] = { viewedAt: lastAccessedAt };
     });
-    initial[Core.reviewContextMetadataKey(context)] = { lastAccessedAt };
-  });
+    initial[await Core.reviewContextMetadataKey(context)] = {
+      lastAccessedAt,
+    };
+  }
+  const oldestMetadataKey =
+    await Core.reviewContextMetadataKey(oldestContext);
 
   const { app, chrome, dom } = await startExtension(
     duplicateHunkFixture(),
@@ -1961,10 +2061,7 @@ test("evicts every range of the oldest pull request when over capacity", async (
       oldestSelectedKeys.every((key) => !(key in stored)),
       true,
     );
-    assert.equal(
-      Core.reviewContextMetadataKey(oldestContext) in stored,
-      false,
-    );
+    assert.equal(oldestMetadataKey in stored, false);
     assert.equal(middleKeys.every((key) => key in stored), true);
     assert.equal(currentKeys.every((key) => key in stored), true);
     assert.equal(
@@ -2003,17 +2100,19 @@ test("enforces the review storage limit after later writes", async () => {
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   const stateKeys = (scope, prefix, count) =>
-    Array.from({ length: count }, (_, index) =>
-      Core.lineStorageKey(
-        scope,
-        `src/${prefix}.js`,
-        "addition",
-        `+${prefix}-${index}`,
+    Promise.all(
+      Array.from({ length: count }, (_, index) =>
+        Core.lineStorageKey(
+          scope,
+          `src/${prefix}.js`,
+          "addition",
+          `+${prefix}-${index}`,
+        ),
       ),
     );
-  const oldestKeys = stateKeys(oldestScope, "oldest", 3);
-  const middleKeys = stateKeys(middleScope, "middle", 2);
-  const currentKey = Core.lineStorageKey(
+  const oldestKeys = await stateKeys(oldestScope, "oldest", 3);
+  const middleKeys = await stateKeys(middleScope, "middle", 2);
+  const currentKey = await Core.lineStorageKey(
     currentScope,
     "src/current.js",
     "addition",
@@ -2023,15 +2122,17 @@ test("enforces the review storage limit after later writes", async () => {
   try {
     app.reviewStorageEntryLimit = () => 8;
     const initial = {};
-    [
+    for (const [context, keys, lastAccessedAt] of [
       [oldestContext, oldestKeys, now - 3 * 24 * 60 * 60 * 1000],
       [middleContext, middleKeys, now - 2 * 24 * 60 * 60 * 1000],
-    ].forEach(([context, keys, lastAccessedAt]) => {
+    ]) {
       keys.forEach((key) => {
         initial[key] = { viewedAt: lastAccessedAt };
       });
-      initial[Core.reviewContextMetadataKey(context)] = { lastAccessedAt };
-    });
+      initial[await Core.reviewContextMetadataKey(context)] = {
+        lastAccessedAt,
+      };
+    }
     await chrome.api.storage.local.set(initial);
     assert.equal(app.reviewStorageKeys.size, 7);
 
@@ -2042,18 +2143,46 @@ test("enforces the review storage limit after later writes", async () => {
     );
 
     const stored = chrome.snapshot();
+    const oldestMetadataKey =
+      await Core.reviewContextMetadataKey(oldestContext);
+    const currentMetadataKey =
+      await Core.reviewContextMetadataKey(currentContext);
     assert.equal(oldestKeys.every((key) => !(key in stored)), true);
-    assert.equal(
-      Core.reviewContextMetadataKey(oldestContext) in stored,
-      false,
-    );
+    assert.equal(oldestMetadataKey in stored, false);
     assert.equal(middleKeys.every((key) => key in stored), true);
     assert.equal(currentKey in stored, true);
+    assert.equal(currentMetadataKey in stored, true);
+    assert.equal(app.reviewStorageKeys.size <= 8, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps the maximum line-state payload below Chrome 114's local quota", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    assert.equal(app.constants.REVIEW_STORAGE_MAX_ENTRIES, 25_000);
+    const identifier = "A".repeat(43);
+    const stored = {};
+    for (
+      let index = 0;
+      index < app.constants.REVIEW_STORAGE_MAX_ENTRIES;
+      index += 1
+    ) {
+      const key =
+        `${Core.REVIEW_STORAGE_NAMESPACE}:line:` +
+        `${identifier}:${identifier}:${identifier}:${index}`;
+      stored[key] = {
+        contextFingerprint: identifier,
+        viewedAt: Number.MAX_SAFE_INTEGER,
+      };
+    }
+
     assert.equal(
-      Core.reviewContextMetadataKey(currentContext) in stored,
+      Buffer.byteLength(JSON.stringify(stored), "utf8") < 10 * 1024 * 1024,
       true,
     );
-    assert.equal(app.reviewStorageKeys.size <= 8, true);
   } finally {
     app.stop();
     dom.window.close();

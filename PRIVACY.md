@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: July 24, 2026
+Last updated: July 25, 2026
 
 HunkMark has one purpose: to add hunk-level and line-level review controls to GitHub pull request diff pages.
 
@@ -12,13 +12,13 @@ The extension reads the pull request URL and visible diff structure, including f
 
 It stores the following information in `chrome.storage.local`:
 
-- 64-bit identifiers derived from the repository, pull request, file, hunk, changed-line content, and surrounding review context
+- Domain-separated SHA-256 identifiers derived from the repository, pull request, displayed commit range, file, hunk, changed-line content, and surrounding review context
 - Local Viewed and collapsed states
 - The last-accessed time for each pull request that has saved review state
 - Local display preferences
 - Whether automatic synchronization with GitHub's file-level Viewed control has been manually suppressed
 
-Raw URLs, file paths, hunk headers, changed-line or context text, account credentials, cookies, authentication tokens, form data, and GitHub messages are not stored.
+Raw URLs, file paths, hunk headers, changed-line or context text, account credentials, cookies, authentication tokens, form data, and GitHub messages are not written to `chrome.storage.local`. While a supported review page is active, the extension temporarily caches identifier inputs and their SHA-256 results in memory so it can restore review styling when GitHub replaces diff elements. The cache is bounded, cleared when the review scope changes or the extension stops, and is not persisted or transmitted.
 
 ## Data sharing and network access
 

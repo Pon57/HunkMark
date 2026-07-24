@@ -1,34 +1,64 @@
 (function initializeCore(root, factory) {
-  const api = factory();
+  const api = factory(root);
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;
   }
 
   root.HunkMarkCore = api;
-})(typeof globalThis === "undefined" ? this : globalThis, function createCore() {
+})(typeof globalThis === "undefined" ? this : globalThis, function createCore(root) {
   "use strict";
 
   const PREFERENCE_STORAGE_NAMESPACE = "hunkmark:v1";
-  const REVIEW_STORAGE_NAMESPACE = "hunkmark:v2";
+  const REVIEW_STORAGE_NAMESPACE = "hunkmark:v3";
   const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
+  const LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v2";
   const ALL_COMMITS_REVIEW_VARIANT = "all";
+  const HUNK_REVIEW_STORAGE_PREFIX =
+    `${REVIEW_STORAGE_NAMESPACE}:mark:`;
+  const LINE_REVIEW_STORAGE_PREFIX =
+    `${REVIEW_STORAGE_NAMESPACE}:line:`;
+  const OFFICIAL_SYNC_SUPPRESSION_PREFIX =
+    `${REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`;
   const REVIEW_STORAGE_PREFIXES = [
-    `${REVIEW_STORAGE_NAMESPACE}:mark:`,
-    `${REVIEW_STORAGE_NAMESPACE}:line:`,
-    `${REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`,
+    HUNK_REVIEW_STORAGE_PREFIX,
+    LINE_REVIEW_STORAGE_PREFIX,
+    OFFICIAL_SYNC_SUPPRESSION_PREFIX,
   ];
   const REVIEW_CONTEXT_METADATA_PREFIX =
     `${REVIEW_STORAGE_NAMESPACE}:review-context:`;
   const OBSOLETE_REVIEW_SCOPE_METADATA_PREFIX =
     `${REVIEW_STORAGE_NAMESPACE}:review-scope:`;
-  const LEGACY_ACCOUNT_SCOPED_REVIEW_PREFIXES = [
+  const LEGACY_REVIEW_PREFIXES = [
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:mark:`,
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:line:`,
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`,
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-context:`,
     `${LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE}:review-scope:`,
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:mark:`,
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:line:`,
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:`,
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:review-context:`,
+    `${LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE}:review-scope:`,
   ];
+  const IDENTIFIER_DOMAINS = Object.freeze({
+    CONTEXT: `${REVIEW_STORAGE_NAMESPACE}:context`,
+    FILE: `${REVIEW_STORAGE_NAMESPACE}:file`,
+    HUNK: `${REVIEW_STORAGE_NAMESPACE}:hunk`,
+    LINE: `${REVIEW_STORAGE_NAMESPACE}:line`,
+    LINE_BLOCK: `${REVIEW_STORAGE_NAMESPACE}:line-block`,
+    LINE_CONTEXT: `${REVIEW_STORAGE_NAMESPACE}:line-context`,
+    RANGE: `${REVIEW_STORAGE_NAMESPACE}:range`,
+  });
+  const IDENTIFIER_DOMAIN_SET = new Set(Object.values(IDENTIFIER_DOMAINS));
+  const identifierEncoder =
+    typeof root.TextEncoder === "function" ? new root.TextEncoder() : null;
+  // Cache values are in-flight digest Promises while hashing and Base64URL
+  // strings after completion. Synchronous recovery uses completed values only.
+  let currentIdentifierCache = new Map();
+  let previousIdentifierCache = new Map();
+  let pendingIdentifierGeneration = null;
+  const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{43}$/;
   const HUNK_HEADER_PATTERN = /@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@[^\r\n]*/;
 
   function decodePathSegment(value) {
@@ -86,22 +116,29 @@
     return markerIndex > 0 ? reviewStateScope.slice(0, markerIndex) : null;
   }
 
-  function reviewContextId(scope) {
-    return hashString(reviewContextScope(scope) ?? scope);
+  async function reviewContextId(scope) {
+    return hashIdentifier(
+      IDENTIFIER_DOMAINS.CONTEXT,
+      reviewContextScope(scope) ?? scope,
+    );
   }
 
-  function reviewRangeId(scope) {
-    return hashString(scope);
+  async function reviewRangeId(scope) {
+    return hashIdentifier(IDENTIFIER_DOMAINS.RANGE, scope);
   }
 
-  function reviewStorageIds(scope) {
+  async function reviewStorageIds(scope) {
     const contextScope = reviewContextScope(scope);
     if (!contextScope) {
       throw new TypeError("Review state scope must include a view variant");
     }
+    const [contextId, rangeId] = await Promise.all([
+      reviewContextId(contextScope),
+      reviewRangeId(scope),
+    ]);
     return {
-      contextId: reviewContextId(contextScope),
-      rangeId: reviewRangeId(scope),
+      contextId,
+      rangeId,
     };
   }
 
@@ -109,8 +146,8 @@
     return `${REVIEW_CONTEXT_METADATA_PREFIX}${contextId}`;
   }
 
-  function reviewContextMetadataKey(scope) {
-    return reviewContextMetadataKeyForId(reviewContextId(scope));
+  async function reviewContextMetadataKey(scope) {
+    return reviewContextMetadataKeyForId(await reviewContextId(scope));
   }
 
   function normalizeHunkHeader(headerText) {
@@ -153,6 +190,80 @@
     return String(value ?? "").replace(/\r\n?/g, "\n");
   }
 
+  function identifierCacheKey(domain, value) {
+    return `${domain}\u0000${String(value)}`;
+  }
+
+  function cachedIdentifier(domain, value) {
+    if (!IDENTIFIER_DOMAIN_SET.has(domain)) {
+      throw new TypeError("A recognized identifier domain is required");
+    }
+    const cacheKey = identifierCacheKey(domain, value);
+    const pending = pendingIdentifierGeneration?.get(cacheKey);
+    if (typeof pending === "string") {
+      return pending;
+    }
+    const current = currentIdentifierCache.get(cacheKey);
+    const cached =
+      typeof current === "string"
+        ? current
+        : previousIdentifierCache.get(cacheKey);
+    if (typeof cached !== "string") {
+      return null;
+    }
+    return cached;
+  }
+
+  function clearIdentifierCache() {
+    currentIdentifierCache.clear();
+    previousIdentifierCache.clear();
+    pendingIdentifierGeneration?.clear();
+    pendingIdentifierGeneration = null;
+  }
+
+  function beginIdentifierCacheGeneration() {
+    if (pendingIdentifierGeneration) {
+      throw new Error("An identifier cache generation is already active");
+    }
+    pendingIdentifierGeneration = new Map();
+    return pendingIdentifierGeneration;
+  }
+
+  function commitIdentifierCacheGeneration(generation) {
+    if (pendingIdentifierGeneration !== generation) {
+      return;
+    }
+    for (const [key, value] of generation) {
+      // Event handlers can add work that discovery does not await. Never expose
+      // an in-flight Promise to synchronous recovery.
+      if (typeof value !== "string") {
+        generation.delete(key);
+      }
+    }
+    let sameIdentitySet = generation.size === currentIdentifierCache.size;
+    if (sameIdentitySet) {
+      for (const key of generation.keys()) {
+        if (!currentIdentifierCache.has(key)) {
+          sameIdentitySet = false;
+          break;
+        }
+      }
+    }
+    if (!sameIdentitySet) {
+      previousIdentifierCache = currentIdentifierCache;
+    }
+    currentIdentifierCache = generation;
+    pendingIdentifierGeneration = null;
+  }
+
+  function abortIdentifierCacheGeneration(generation) {
+    if (pendingIdentifierGeneration !== generation) {
+      return;
+    }
+    generation.clear();
+    pendingIdentifierGeneration = null;
+  }
+
   function buildHunkSignature({ headerText, changedLines }) {
     const header = normalizeHunkHeader(headerText);
     const changes = (changedLines ?? []).map(({ kind, text }) => {
@@ -163,29 +274,126 @@
     return [header, ...changes].join("\n");
   }
 
-  function hashString(value) {
-    let hash = 0xcbf29ce484222325n;
-    const prime = 0x100000001b3n;
-    const input = String(value);
-
-    for (let index = 0; index < input.length; index += 1) {
-      const codeUnit = input.charCodeAt(index);
-      hash ^= BigInt(codeUnit & 0xff);
-      hash = BigInt.asUintN(64, hash * prime);
-      hash ^= BigInt(codeUnit >>> 8);
-      hash = BigInt.asUintN(64, hash * prime);
+  async function hashIdentifier(domain, value) {
+    if (!IDENTIFIER_DOMAIN_SET.has(domain)) {
+      throw new TypeError("A recognized identifier domain is required");
     }
-
-    return hash.toString(16).padStart(16, "0");
+    if (!root.crypto?.subtle || !identifierEncoder) {
+      throw new Error("Web Crypto SHA-256 is unavailable");
+    }
+    const cacheKey = identifierCacheKey(domain, value);
+    const generation = pendingIdentifierGeneration;
+    const cached =
+      generation?.get(cacheKey) ??
+      currentIdentifierCache.get(cacheKey) ??
+      previousIdentifierCache.get(cacheKey);
+    if (cached) {
+      if (generation && !generation.has(cacheKey)) {
+        generation.set(cacheKey, cached);
+      }
+      const identifier = await cached;
+      if (generation?.get(cacheKey) === cached) {
+        generation.set(cacheKey, identifier);
+      }
+      return identifier;
+    }
+    const targetCache = generation ?? currentIdentifierCache;
+    const digestPromise = (async () => {
+      const input = identifierEncoder.encode(cacheKey);
+      const digest = new Uint8Array(
+        await root.crypto.subtle.digest("SHA-256", input),
+      );
+      const binary = String.fromCharCode(...digest);
+      return root
+        .btoa(binary)
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/u, "");
+    })();
+    targetCache.set(cacheKey, digestPromise);
+    try {
+      const identifier = await digestPromise;
+      if (
+        targetCache.get(cacheKey) === digestPromise
+      ) {
+        targetCache.set(cacheKey, identifier);
+      }
+      return identifier;
+    } catch (error) {
+      if (targetCache.get(cacheKey) === digestPromise) {
+        targetCache.delete(cacheKey);
+      }
+      throw error;
+    }
   }
 
-  function hunkStorageKey(scope, filePath, signature, occurrence = 0) {
-    const { contextId, rangeId } = reviewStorageIds(scope);
-    const hunkHash = hashString(`${filePath}\n${signature}`);
-    return `${REVIEW_STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:${hunkHash}:${occurrence}`;
+  function cachedReviewStorageIds(scope) {
+    const contextScope = reviewContextScope(scope);
+    if (!contextScope) {
+      throw new TypeError("Review state scope must include a view variant");
+    }
+    const contextId = cachedIdentifier(
+      IDENTIFIER_DOMAINS.CONTEXT,
+      contextScope,
+    );
+    const rangeId = cachedIdentifier(IDENTIFIER_DOMAINS.RANGE, scope);
+    return contextId && rangeId ? { contextId, rangeId } : null;
   }
 
-  function lineStorageKey(
+  function scopedReviewStoragePrefix(prefix, { contextId, rangeId }) {
+    return `${prefix}${contextId}:${rangeId}:`;
+  }
+
+  function formatHunkStorageKey(ids, hunkId, occurrence) {
+    const prefix = scopedReviewStoragePrefix(
+      HUNK_REVIEW_STORAGE_PREFIX,
+      ids,
+    );
+    return `${prefix}${hunkId}:${occurrence}`;
+  }
+
+  function formatLineStorageKey(ids, lineId, occurrence) {
+    const prefix = scopedReviewStoragePrefix(
+      LINE_REVIEW_STORAGE_PREFIX,
+      ids,
+    );
+    return `${prefix}${lineId}:${occurrence}`;
+  }
+
+  function formatOfficialSyncSuppressionKey(ids, fileId) {
+    const prefix = scopedReviewStoragePrefix(
+      OFFICIAL_SYNC_SUPPRESSION_PREFIX,
+      ids,
+    );
+    return `${prefix}${fileId}`;
+  }
+
+  function cachedHunkStorageKey(
+    scope,
+    filePath,
+    signature,
+    occurrence = 0,
+  ) {
+    const ids = cachedReviewStorageIds(scope);
+    const hunkHash = cachedIdentifier(
+      IDENTIFIER_DOMAINS.HUNK,
+      `${filePath}\n${signature}`,
+    );
+    return ids && hunkHash
+      ? formatHunkStorageKey(ids, hunkHash, occurrence)
+      : null;
+  }
+
+  function lineIdentityValue(filePath, kind, lineText, identicalCount) {
+    return [
+      filePath,
+      kind,
+      normalizeLineBreaks(lineText),
+      `identical-count:${identicalCount}`,
+    ].join("\n");
+  }
+
+  function cachedLineStorageKey(
     scope,
     filePath,
     kind,
@@ -193,72 +401,123 @@
     occurrence = 0,
     identicalCount = 1,
   ) {
-    const { contextId, rangeId } = reviewStorageIds(scope);
-    const lineIdentity = [
-      filePath,
-      kind,
-      normalizeLineBreaks(lineText),
-      `identical-count:${identicalCount}`,
-    ].join("\n");
-    return `${REVIEW_STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:${hashString(lineIdentity)}:${occurrence}`;
+    const ids = cachedReviewStorageIds(scope);
+    const lineHash = cachedIdentifier(
+      IDENTIFIER_DOMAINS.LINE,
+      lineIdentityValue(filePath, kind, lineText, identicalCount),
+    );
+    return ids && lineHash
+      ? formatLineStorageKey(ids, lineHash, occurrence)
+      : null;
   }
 
-  function lineReviewContextFingerprint({
+  async function hunkStorageKey(scope, filePath, signature, occurrence = 0) {
+    const [{ contextId, rangeId }, hunkHash] = await Promise.all([
+      reviewStorageIds(scope),
+      hashIdentifier(
+        IDENTIFIER_DOMAINS.HUNK,
+        `${filePath}\n${signature}`,
+      ),
+    ]);
+    return formatHunkStorageKey({ contextId, rangeId }, hunkHash, occurrence);
+  }
+
+  async function lineStorageKey(
+    scope,
+    filePath,
+    kind,
+    lineText,
+    occurrence = 0,
+    identicalCount = 1,
+  ) {
+    const { contextId, rangeId } = await reviewStorageIds(scope);
+    const lineIdentity = lineIdentityValue(
+      filePath,
+      kind,
+      lineText,
+      identicalCount,
+    );
+    const lineHash = await hashIdentifier(
+      IDENTIFIER_DOMAINS.LINE,
+      lineIdentity,
+    );
+    return formatLineStorageKey({ contextId, rangeId }, lineHash, occurrence);
+  }
+
+  function lineReviewBlockValue({
     headerText,
     beforeAnchor = "",
     afterAnchor = "",
     blockSignature = "",
-    blockLineIndex = 0,
   }) {
     const before = normalizeLineBreaks(beforeAnchor);
     const after = normalizeLineBreaks(afterAnchor);
     const stableHeader = normalizeHunkHeader(headerText);
     const exactHeader =
       findHunkHeader(headerText) || normalizeLineBreaks(headerText).trim();
-    const locationFallback =
-      before && after ? "" : exactHeader;
+    const locationFallback = before && after ? "" : exactHeader;
 
-    return hashString(
-      [
-        `header:${stableHeader}`,
-        `before:${before}`,
-        `after:${after}`,
-        `block:${normalizeLineBreaks(blockSignature)}`,
-        `block-line-index:${blockLineIndex}`,
-        `fallback:${locationFallback}`,
-      ].join("\n"),
+    return [
+      `header:${stableHeader}`,
+      `before:${before}`,
+      `after:${after}`,
+      `block:${normalizeLineBreaks(blockSignature)}`,
+      `fallback:${locationFallback}`,
+    ].join("\n");
+  }
+
+  async function lineReviewBlockFingerprint(options) {
+    return hashIdentifier(
+      IDENTIFIER_DOMAINS.LINE_BLOCK,
+      lineReviewBlockValue(options),
     );
   }
 
-  function reviewStoragePrefixes(scope) {
-    const { contextId, rangeId } = reviewStorageIds(scope);
-    return [
-      `${REVIEW_STORAGE_NAMESPACE}:mark:${contextId}:${rangeId}:`,
-      `${REVIEW_STORAGE_NAMESPACE}:line:${contextId}:${rangeId}:`,
-      `${REVIEW_STORAGE_NAMESPACE}:official-sync-suppressed:${contextId}:${rangeId}:`,
-    ];
+  function cachedLineReviewBlockFingerprint(options) {
+    return cachedIdentifier(
+      IDENTIFIER_DOMAINS.LINE_BLOCK,
+      lineReviewBlockValue(options),
+    );
   }
 
-  function reviewStoragePrefixesForContext(scope) {
-    const contextId = reviewContextId(scope);
+  function lineReviewContextValue(blockFingerprint, blockLineIndex = 0) {
+    if (!IDENTIFIER_PATTERN.test(blockFingerprint)) {
+      throw new TypeError("A line review block fingerprint is required");
+    }
+    return `${blockFingerprint}\u0000${blockLineIndex}`;
+  }
+
+  async function lineReviewContextFingerprint({
+    blockFingerprint,
+    blockLineIndex = 0,
+  }) {
+    return hashIdentifier(
+      IDENTIFIER_DOMAINS.LINE_CONTEXT,
+      lineReviewContextValue(blockFingerprint, blockLineIndex),
+    );
+  }
+
+  function cachedLineReviewContextFingerprint({
+    blockFingerprint,
+    blockLineIndex = 0,
+  }) {
+    return cachedIdentifier(
+      IDENTIFIER_DOMAINS.LINE_CONTEXT,
+      lineReviewContextValue(blockFingerprint, blockLineIndex),
+    );
+  }
+
+  async function reviewStoragePrefixes(scope) {
+    const ids = await reviewStorageIds(scope);
+    return REVIEW_STORAGE_PREFIXES.map((prefix) =>
+      scopedReviewStoragePrefix(prefix, ids),
+    );
+  }
+
+  async function reviewStoragePrefixesForContext(scope) {
+    const contextId = await reviewContextId(scope);
     return REVIEW_STORAGE_PREFIXES.map(
       (prefix) => `${prefix}${contextId}:`,
-    );
-  }
-
-  function isReviewStorageKeyForScope(key, scope) {
-    return (
-      typeof key === "string" &&
-      reviewStoragePrefixes(scope).some((prefix) => key.startsWith(prefix))
-    );
-  }
-
-  function isReviewStorageKeyForContext(key, scope) {
-    return (
-      typeof key === "string" &&
-      reviewStoragePrefixesForContext(scope).some((prefix) =>
-        key.startsWith(prefix),
-      )
     );
   }
 
@@ -273,7 +532,7 @@
     return (
       typeof key === "string" &&
       key.startsWith(REVIEW_CONTEXT_METADATA_PREFIX) &&
-      /^[0-9a-f]{16}$/.test(
+      IDENTIFIER_PATTERN.test(
         key.slice(REVIEW_CONTEXT_METADATA_PREFIX.length),
       )
     );
@@ -292,22 +551,21 @@
     }
 
     const parts = key.slice(prefix.length).split(":");
-    const identifierPattern = /^[0-9a-f]{16}$/;
     const validIdentifiers =
-      identifierPattern.test(parts[0] ?? "") &&
-      identifierPattern.test(parts[1] ?? "") &&
-      identifierPattern.test(parts[2] ?? "");
+      IDENTIFIER_PATTERN.test(parts[0] ?? "") &&
+      IDENTIFIER_PATTERN.test(parts[1] ?? "") &&
+      IDENTIFIER_PATTERN.test(parts[2] ?? "");
     if (!validIdentifiers) {
       return null;
     }
 
     const valid =
-      prefix === REVIEW_STORAGE_PREFIXES[0]
+      prefix === HUNK_REVIEW_STORAGE_PREFIX
         ? (parts.length === 4 && /^\d+$/.test(parts[3])) ||
           (parts.length === 5 &&
             /^\d+$/.test(parts[3]) &&
             parts[4] === "collapsed")
-        : prefix === REVIEW_STORAGE_PREFIXES[1]
+        : prefix === LINE_REVIEW_STORAGE_PREFIX
           ? parts.length === 4 && /^\d+$/.test(parts[3])
           : parts.length === 3;
     return valid
@@ -327,7 +585,7 @@
       (typeof key === "string" &&
         key.startsWith(OBSOLETE_REVIEW_SCOPE_METADATA_PREFIX)) ||
       (typeof key === "string" &&
-        LEGACY_ACCOUNT_SCOPED_REVIEW_PREFIXES.some((prefix) =>
+        LEGACY_REVIEW_PREFIXES.some((prefix) =>
           key.startsWith(prefix),
         )) ||
       (typeof key === "string" &&
@@ -337,9 +595,20 @@
     );
   }
 
-  function officialSyncSuppressionKey(scope, filePath) {
-    const suppressionPrefix = reviewStoragePrefixes(scope)[2];
-    return `${suppressionPrefix}${hashString(filePath)}`;
+  async function officialSyncSuppressionKey(scope, filePath) {
+    const [ids, fileHash] = await Promise.all([
+      reviewStorageIds(scope),
+      hashIdentifier(IDENTIFIER_DOMAINS.FILE, filePath),
+    ]);
+    return formatOfficialSyncSuppressionKey(ids, fileHash);
+  }
+
+  function cachedOfficialSyncSuppressionKey(scope, filePath) {
+    const ids = cachedReviewStorageIds(scope);
+    const fileHash = cachedIdentifier(IDENTIFIER_DOMAINS.FILE, filePath);
+    return ids && fileHash
+      ? formatOfficialSyncSuppressionKey(ids, fileHash)
+      : null;
   }
 
   function aggregateLineState(lineMarks, fallbackMarked = false) {
@@ -358,17 +627,26 @@
     ALL_COMMITS_REVIEW_VARIANT,
     PREFERENCE_STORAGE_NAMESPACE,
     REVIEW_STORAGE_NAMESPACE,
+    abortIdentifierCacheGeneration,
     aggregateLineState,
+    beginIdentifierCacheGeneration,
     buildHunkSignature,
+    cachedHunkStorageKey,
+    cachedLineReviewBlockFingerprint,
+    cachedLineReviewContextFingerprint,
+    cachedLineStorageKey,
+    cachedOfficialSyncSuppressionKey,
+    clearIdentifierCache,
+    commitIdentifierCacheGeneration,
     findHunkHeader,
-    hashString,
+    hashIdentifier,
+    IDENTIFIER_DOMAINS,
     isObsoleteReviewStorageKey,
     isReviewContextMetadataKey,
     isReviewStorageKey,
-    isReviewStorageKeyForContext,
-    isReviewStorageKeyForScope,
     isHunkHeaderText,
     lineStorageKey,
+    lineReviewBlockFingerprint,
     lineReviewContextFingerprint,
     looksLikeFilePath,
     normalizeLineBreaks,
@@ -381,6 +659,8 @@
     reviewContextScope,
     reviewStateScope,
     reviewStorageContextId,
+    reviewStoragePrefixes,
+    reviewStoragePrefixesForContext,
     hunkStorageKey,
   });
 });
