@@ -2391,6 +2391,71 @@ test("stops quietly when collapse storage loses the extension context", async ()
   }
 });
 
+test("stops quietly when official Viewed override loses the storage API", async () => {
+  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const warnings = [];
+    dom.window.console.warn = (...args) => warnings.push(args);
+    const controller = Array.from(app.controllersByRow.values())[0];
+
+    chrome.api.storage = undefined;
+    assert.doesNotThrow(() => {
+      app.persistOfficialViewedSuppression(
+        controller.officialSuppressionKey,
+      );
+    });
+
+    await waitFor(() => {
+      assert.equal(app.stopped, true);
+      assert.equal(app.observer, null);
+      assert.equal(app.navigationPollTimer, null);
+    });
+    assert.equal(warnings.length, 0);
+    const notice = dom.window.document.getElementById(
+      app.constants.RECONNECT_NOTICE_ID,
+    );
+    assert.ok(notice);
+    assert.match(notice.textContent, /Reload this page/);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("stops quietly when clearing a Viewed override loses the storage API", async () => {
+  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const warnings = [];
+    dom.window.console.warn = (...args) => warnings.push(args);
+    const controller = Array.from(app.controllersByRow.values())[0];
+    app.officialViewedSyncSuppressed.add(
+      controller.officialSuppressionKey,
+    );
+
+    chrome.api.storage = undefined;
+    assert.doesNotThrow(() => {
+      app.clearOfficialViewedSuppressionKeys([
+        controller.officialSuppressionKey,
+      ]);
+    });
+
+    await waitFor(() => {
+      assert.equal(app.stopped, true);
+      assert.equal(app.observer, null);
+      assert.equal(app.navigationPollTimer, null);
+    });
+    assert.equal(warnings.length, 0);
+    const notice = dom.window.document.getElementById(
+      app.constants.RECONNECT_NOTICE_ID,
+    );
+    assert.ok(notice);
+    assert.match(notice.textContent, /Reload this page/);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("activates after GitHub client-side navigation into Files changed", async () => {
   const { app, dom } = await startExtension(
     "<!doctype html><html><body><main>Repository home</main></body></html>",

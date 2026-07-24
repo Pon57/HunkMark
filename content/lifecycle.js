@@ -176,7 +176,7 @@
             ]),
           ),
         ];
-        const stored = await this.chrome.storage.local.get(keys);
+        const stored = await this.getLocalStorage(keys);
         const migrations = {};
         const migrationRemovals = new Set();
         const migrationTime = Date.now();
@@ -255,9 +255,7 @@
           await this.setReviewStorage(migrations);
         }
         if (migrationRemovals.size > 0) {
-          await this.chrome.storage.local.remove(
-            Array.from(migrationRemovals),
-          );
+          await this.removeLocalStorage(Array.from(migrationRemovals));
         }
       }
 
@@ -266,8 +264,11 @@
     },
 
     isExtensionContextInvalidated(error) {
-      return /extension context invalidated/i.test(
-        String(error?.message ?? error ?? ""),
+      return (
+        !this.chrome?.storage?.local ||
+        /extension context invalidated/i.test(
+          String(error?.message ?? error ?? ""),
+        )
       );
     },
 

@@ -12,7 +12,7 @@
         return;
       }
 
-      const stored = await this.chrome.storage.local.get([
+      const stored = await this.getLocalStorage([
         this.autoCollapsePreferenceKey,
         this.linkSplitPreferenceKey,
       ]);
@@ -42,7 +42,7 @@
       this.autoCollapseViewed = enabled;
       this.syncAutoCollapseInput();
       try {
-        await this.chrome.storage.local.set({
+        await this.setLocalStorage({
           [this.autoCollapsePreferenceKey]: enabled,
         });
       } catch (error) {
@@ -216,8 +216,9 @@
         const previous = this.linkSplitSides;
         this.linkSplitSides = linkInput.checked;
         linkInput.disabled = true;
-        void this.chrome.storage.local
-          .set({ [this.linkSplitPreferenceKey]: this.linkSplitSides })
+        void this.setLocalStorage({
+          [this.linkSplitPreferenceKey]: this.linkSplitSides,
+        })
           .catch((error) => {
             if (!this.stopForInvalidatedContext(error)) {
               this.linkSplitSides = previous;
@@ -263,7 +264,7 @@
       try {
         const [stored, scopePrefixes, contextPrefixes, metadataKey] =
           await Promise.all([
-            this.chrome.storage.local.get(null),
+            this.getLocalStorage(null),
             this.Core.reviewStoragePrefixes(this.currentReviewScope),
             this.Core.reviewStoragePrefixesForContext(this.currentScope),
             this.Core.reviewContextMetadataKey(this.currentScope),
@@ -283,7 +284,7 @@
           keys.add(metadataKey);
         }
         if (keys.size > 0) {
-          await this.chrome.storage.local.remove(Array.from(keys));
+          await this.removeLocalStorage(Array.from(keys));
         }
         suppressionKeys.forEach((key) =>
           this.officialViewedSyncSuppressed.delete(key),

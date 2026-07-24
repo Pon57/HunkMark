@@ -284,7 +284,7 @@
             },
           });
         } else {
-          await this.chrome.storage.local.remove(controller.collapsedKey);
+          await this.removeLocalStorage(controller.collapsedKey);
         }
       } catch (error) {
         if (!this.stopForInvalidatedContext(error)) {
@@ -340,7 +340,7 @@
           }
           await this.setReviewStorage(values, this.currentReviewScope, viewedAt);
         } else {
-          await this.chrome.storage.local.remove([
+          await this.removeLocalStorage([
             controller.key,
             controller.collapsedKey,
             ...controller.lines.map((line) => line.key),
@@ -445,7 +445,7 @@
           );
         }
         if (removals.size > 0) {
-          await this.chrome.storage.local.remove(Array.from(removals));
+          await this.removeLocalStorage(Array.from(removals));
         }
         this.releaseOfficialViewedSuppression(affectedControllers);
         this.syncOfficialViewedForControllers(affectedControllers);
