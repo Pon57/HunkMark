@@ -512,6 +512,9 @@
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((element) => element.remove());
+      this.fileDiffVisibilityPending.forEach((expectation, fileElement) =>
+        this.cancelExpectedFileDiffVisibility(fileElement, expectation),
+      );
       this.fileExpandRestorePending.clear();
       this.fileProgressStateByKey.clear();
       this.removePanel();

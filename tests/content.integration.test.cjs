@@ -276,6 +276,18 @@ function commitSelectionFixture({ withOfficialControl = true } = {}) {
     </body></html>`;
 }
 
+function initiallyViewedCommitSelectionFixture() {
+  return `<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/selection.js">
+        <div class="file-header">
+          <span class="file-info">src/selection.js</span>
+          <button aria-label="Viewed" aria-pressed="true">Viewed</button>
+        </div>
+      </div>
+    </body></html>`;
+}
+
 function evolvingCommitFixture(updated = false, officialViewed = null) {
   const officialControl =
     officialViewed === null
@@ -592,6 +604,189 @@ test("links split diff sides and syncs GitHub's official Viewed control", async 
   }
 });
 
+test("refreshes immediately when a manual Viewed click hides the diff", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    officialControl.addEventListener("click", () => {
+      officialControl.setAttribute("aria-label", "Viewed");
+      officialControl.setAttribute("aria-pressed", "true");
+      fileElement.querySelector("table")?.remove();
+    });
+
+    officialControl.click();
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(
+        dom.window.document.getElementById(app.constants.PANEL_ID),
+        null,
+      );
+    });
+    assert.equal(scheduled[0]?.immediate, true);
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("refreshes immediately when a cold-cache Viewed removal reveals the diff", async () => {
+  const { app, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const filePath = app.resolveFilePath(fileElement, 0);
+    assert.equal(app.controllersByRow.size, 0);
+    assert.equal(
+      app.Core.cachedOfficialSyncSuppressionKey(
+        app.officialViewedSuppressionScope(),
+        filePath,
+      ),
+      null,
+    );
+
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
+    const cleanFixture = new JSDOM(commitSelectionFixture());
+    const tableHtml =
+      cleanFixture.window.document.querySelector("table").outerHTML;
+    cleanFixture.window.close();
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Viewed"]',
+    );
+    officialControl.addEventListener("click", () => {
+      officialControl.setAttribute("aria-label", "Not Viewed");
+      officialControl.setAttribute("aria-pressed", "false");
+      fileElement.insertAdjacentHTML("beforeend", tableHtml);
+    });
+
+    officialControl.click();
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+      assert.ok(
+        dom.window.document.getElementById(app.constants.PANEL_ID),
+      );
+    });
+    assert.equal(scheduled[0]?.immediate, true);
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("cancels a cold-cache visibility expectation when key generation fails", async () => {
+  const { app, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
+  try {
+    const warnings = [];
+    dom.window.console.warn = (...args) => warnings.push(args);
+    app.officialViewedSuppressionKey = async () => {
+      throw new Error("identifier generation failed");
+    };
+
+    dom.window.document
+      .querySelector('button[aria-label="Viewed"]')
+      .click();
+
+    await waitFor(() => {
+      assert.equal(warnings.length, 1);
+      assert.equal(app.fileDiffVisibilityPending.size, 0);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("refreshes immediately when HunkMark Viewed sync hides the diff", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    officialControl.addEventListener("click", () => {
+      officialControl.setAttribute("aria-label", "Viewed");
+      officialControl.setAttribute("aria-pressed", "true");
+      fileElement.querySelector("table")?.remove();
+    });
+
+    Array.from(app.controllersByRow.values()).forEach((controller) => {
+      controller.input.checked = true;
+      controller.input.dispatchEvent(
+        new dom.window.Event("change", { bubbles: true }),
+      );
+    });
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(
+        dom.window.document.getElementById(app.constants.PANEL_ID),
+        null,
+      );
+    });
+    assert.equal(
+      scheduled.some(({ immediate }) => immediate === true),
+      true,
+    );
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps unrelated host diff mutations debounced", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
+    const hostUpdate = dom.window.document.createElement("span");
+    hostUpdate.textContent = "GitHub host update";
+    dom.window.document.querySelector(".blob-code-hunk").append(hostUpdate);
+
+    await waitFor(() => {
+      assert.equal(scheduled.length > 0, true);
+    });
+    assert.equal(
+      scheduled.some(({ immediate }) => immediate === true),
+      false,
+    );
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("distinguishes a manual official Viewed removal from a host reset", async () => {
   const { app, chrome, dom } = await startExtension(commitSelectionFixture());
   try {
@@ -673,6 +868,12 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
     const officialControl = dom.window.document.querySelector(
       'button[aria-label="Not Viewed"]',
     );
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
     let officialClicks = 0;
     officialControl.addEventListener("click", () => {
       officialClicks += 1;
@@ -709,6 +910,9 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
       assert.equal(fileElement.querySelector("table"), null);
     });
 
+    const immediateRefreshesBeforeRestore = scheduled.filter(
+      ({ immediate }) => immediate === true,
+    ).length;
     officialControl.click();
     await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
 
@@ -727,6 +931,12 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
       );
       assert.equal(app.officialViewedRestoreGuards.size, 0);
     });
+    assert.equal(
+      scheduled.filter(({ immediate }) => immediate === true).length >
+        immediateRefreshesBeforeRestore,
+      true,
+    );
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     app.stop();
     dom.window.close();
@@ -804,6 +1014,12 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     const fileToggleLabel = fileElement.querySelector(
       "#modern-file-toggle-label",
     );
+    const scheduled = [];
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    app.scheduleRefresh = (options) => {
+      scheduled.push(options ?? {});
+      return scheduleRefresh(options);
+    };
     const cleanFixture = new JSDOM(modernGridFixture());
     const rowsHtml = Array.from(
       cleanFixture.window.document.querySelectorAll('[role="row"]'),
@@ -831,8 +1047,20 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     assert.equal(fileElement.querySelector(".hunkmark-file-progress"), null);
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 0);
+      assert.equal(
+        dom.window.document.getElementById(app.constants.PANEL_ID),
+        null,
+      );
     });
+    assert.equal(
+      scheduled.some(({ immediate }) => immediate === true),
+      true,
+    );
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
 
+    const immediateRefreshesAfterCollapse = scheduled.filter(
+      ({ immediate }) => immediate === true,
+    ).length;
     fileToggle.click();
     await Promise.resolve();
 
@@ -855,6 +1083,12 @@ test("synchronizes modern file progress with expand and collapse before paint", 
         .getAttribute("aria-busy"),
       "true",
     );
+    assert.equal(
+      scheduled.filter(({ immediate }) => immediate === true).length >
+        immediateRefreshesAfterCollapse,
+      true,
+    );
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     app.stop();
     dom.window.close();
