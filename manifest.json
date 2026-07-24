@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HunkMark – Diff Review for GitHub",
   "short_name": "HunkMark",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Review GitHub pull request diffs by hunk or line, collapse reviewed changes, and track progress.",
   "minimum_chrome_version": "111",
   "icons": {
