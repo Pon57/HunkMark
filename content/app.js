@@ -67,9 +67,9 @@
       this.constants = namespace.constants;
 
       this.autoCollapsePreferenceKey =
-        `${core.STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
+        `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
       this.linkSplitPreferenceKey =
-        `${core.STORAGE_NAMESPACE}:preference:link-split-sides`;
+        `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:link-split-sides`;
 
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
@@ -99,9 +99,9 @@
       this.refreshAgainImmediate = false;
       this.refreshTimer = null;
       this.stopped = false;
-      this.storagePruned = false;
-      this.storagePrunePromise = null;
-      this.storagePrunedAt = 0;
+      this.reviewStoragePruned = false;
+      this.reviewStoragePrunePromise = null;
+      this.reviewStoragePrunedAt = 0;
       this.lastObservedUrl = windowObject.location.href;
       this.navigationPollTimer = null;
       this.observer = null;

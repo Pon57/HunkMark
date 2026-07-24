@@ -1,4 +1,4 @@
-(function attachHunkMarkStorage(root) {
+(function attachHunkMarkReviewStorage(root) {
   "use strict";
 
   const App = root.HunkMarkContent?.App;
@@ -29,7 +29,7 @@
     rememberLineReviewContext(key, value) {
       if (
         typeof key !== "string" ||
-        !key.startsWith(`${this.Core.STORAGE_NAMESPACE}:line:`)
+        !key.startsWith(`${this.Core.REVIEW_STORAGE_NAMESPACE}:line:`)
       ) {
         return;
       }
@@ -218,8 +218,8 @@
     },
 
     async ensureStoredReviewStatePruned(options = {}) {
-      if (this.storagePrunePromise) {
-        await this.storagePrunePromise;
+      if (this.reviewStoragePrunePromise) {
+        await this.reviewStoragePrunePromise;
         const maxEntries =
           options.maxEntries ?? this.reviewStorageEntryLimit();
         if (this.reviewStorageLimitExceeded(maxEntries)) {
@@ -228,12 +228,11 @@
         return;
       }
 
-      this.storagePrunePromise = this.pruneStoredReviewState(options).finally(
-        () => {
-          this.storagePrunePromise = null;
-        },
-      );
-      return this.storagePrunePromise;
+      this.reviewStoragePrunePromise =
+        this.pruneStoredReviewState(options).finally(() => {
+          this.reviewStoragePrunePromise = null;
+        });
+      return this.reviewStoragePrunePromise;
     },
 
     async pruneStoredReviewState({

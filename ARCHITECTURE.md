@@ -6,10 +6,10 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 
 | File | Responsibility |
 | --- | --- |
-| `core.js` | Pure URL parsing, hashing, storage-key generation, and aggregate review state |
+| `core.js` | Pure URL parsing, hashing, review-state key generation, and aggregate review state |
 | `content/app.js` | Application state, constants, and dependency injection |
 | `content/discovery.js` | GitHub DOM adaptation and hunk/changed-line discovery |
-| `content/storage.js` | Review-state retention and storage bounds |
+| `content/review-storage.js` | Review-state retention and storage bounds |
 | `content/official-viewed.js` | One-way synchronization with GitHub's file-level Viewed control |
 | `content/controllers.js` | Hunk and line controllers, UI state, and persistence |
 | `content/drag.js` | Drag-range selection and persistence |
@@ -19,7 +19,7 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 
 ## Invariants
 
-- Review state is scoped by the signed-in GitHub viewer, pull request, and displayed commit range. `All commits` and each selection made through GitHub's commit picker are independent. Signed-out GitHub uses a separate anonymous scope. If neither a viewer identity nor an explicit signed-out state can be established, HunkMark fails closed and does not initialize review state.
+- Review state is scoped by pull request and displayed commit range. `All commits` and each selection made through GitHub's commit picker are independent. Matching state in `chrome.storage.local` is restored.
 - A hunk key includes the displayed-review scope, file path, normalized hunk signature, and duplicate-hunk occurrence.
 - A line key is independent of hunk boundaries and includes the displayed-review scope, file path, change kind, exact content after line-ending normalization, file-wide occurrence, and total identical-line count. Its stored value also carries a context fingerprint derived from the contiguous changed block, its position in that block, adjacent rendered context, and a positional fallback when both context anchors are unavailable.
 - Changed content produces a new key; line-number-only movement does not.
@@ -29,10 +29,10 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 - Only an explicit user click that removes GitHub's Viewed state suppresses automatic re-selection until the user changes HunkMark state again. A host-side reset after new commits does not discard unchanged local line state or create suppression.
 - `Reset page` removes state only for the displayed commit range. Other commit selections retain their state.
 - Extension-owned and diff-unrelated DOM mutations do not schedule a diff rediscovery. Outside a recognized pull-request diff route, DOM mutations are not inspected for diff changes.
-- Review state is local-only. State keys have an account-and-pull-request parent identity and a displayed-commit-range child identity, so accounts, `All commits`, and selected ranges remain independent while lifecycle management can operate on one account-specific pull request. One last-access metadata entry per account-and-pull-request context with saved state is refreshed at most once per 24 hours. Retention pruning is repeated at most once per 24 hours while review pages remain active. Contexts inactive for more than 180 days are removed as complete units with all of their saved ranges, and writes or cross-tab changes that exceed the 25,000-entry limit trigger eviction of the least recently accessed whole contexts rather than partial line state. Preferences are not pruned.
+- Review state is local-only. State keys have a pull-request parent identity and a displayed-commit-range child identity, so `All commits` and selected ranges remain independent while lifecycle management can operate on one pull request. One last-access metadata entry per pull-request context with saved state is refreshed at most once per 24 hours. Retention pruning is repeated at most once per 24 hours while review pages remain active. Contexts inactive for more than 180 days are removed as complete units with all of their saved ranges, and writes or cross-tab changes that exceed the 25,000-entry limit trigger eviction of the least recently accessed whole contexts rather than partial line state. Review state uses the `hunkmark:v2` namespace; storage cleanup removes legacy `hunkmark:v1` review keys without removing `hunkmark:v1` preferences.
 
 ## Tests
 
-`tests/core.test.cjs` covers URL/view/viewer scoping, parent/child storage identity, account-specific pull-request metadata, invisible-Unicode identity, context fingerprints, and pure state rules. `tests/content.integration.test.cjs` boots the exact manifest script order in jsdom with a Chrome storage fake and exercises legacy-table and modern-grid discovery, commit evolution, semantic relocation and invisible-Unicode fail-closed behavior, viewer isolation, selected-commit isolation, duplicate-line fail-closed behavior, split linking, unresolved-diff gating, official Viewed synchronization and persisted manual suppression, reload restoration, client-side navigation, DOM replacement, drag shrinking, storage failure rollback, account-specific pull-request retention and eviction, range-scoped reset, post-write capacity enforcement, and mutation filtering both inside and outside review routes.
+`tests/core.test.cjs` covers URL and commit-range scoping, parent/child storage identity, pull-request metadata, legacy review-key cleanup, invisible-Unicode identity, context fingerprints, and pure state rules. `tests/content.integration.test.cjs` boots the exact manifest script order in jsdom with a Chrome storage fake and exercises legacy-table and modern-grid discovery, commit evolution, semantic relocation and invisible-Unicode fail-closed behavior, viewer-independent state restoration, selected-commit isolation, duplicate-line fail-closed behavior, split linking, unresolved-diff gating, official Viewed synchronization and persisted manual suppression, reload restoration, client-side navigation, DOM replacement, drag shrinking, storage failure rollback, pull-request retention and eviction, range-scoped reset, post-write capacity enforcement, and mutation filtering both inside and outside review routes.
 
 GitHub Actions runs `npm ci` and `npm run verify` for pushes to `main` and for pull requests.

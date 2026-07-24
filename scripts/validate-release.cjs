@@ -135,5 +135,20 @@ const executableSource = executableFiles
 assert.doesNotMatch(executableSource, /\beval\s*\(/, "eval is not allowed");
 assert.doesNotMatch(executableSource, /\bnew\s+Function\s*\(/, "Dynamic code is not allowed");
 assert.doesNotMatch(executableSource, /https?:\/\//, "Executable code contains a remote URL");
+assert.doesNotMatch(
+  executableSource,
+  /octolytics-dimension-user_(?:id|login)|user-login/,
+  "Executable code must not read the current GitHub account identity",
+);
+
+const storeScreenshotSource = fs.readFileSync(
+  path.join(root, "design/store-screenshot-capture.html"),
+  "utf8",
+);
+assert.doesNotMatch(
+  storeScreenshotSource,
+  /octolytics-dimension-user_(?:id|login)|user-login|viewerScope/,
+  "Store screenshots must not depict GitHub account scoping",
+);
 
 console.log(`Release metadata is valid for ${manifest.name} ${manifest.version}.`);

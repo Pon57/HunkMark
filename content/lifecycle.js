@@ -7,33 +7,6 @@
   }
 
   Object.assign(App.prototype, {
-    githubViewerIdentity() {
-      const candidates = [
-        ["id", 'meta[name="octolytics-dimension-user_id"]'],
-        ["login", 'meta[name="user-login"]'],
-        ["login", 'meta[name="octolytics-dimension-user_login"]'],
-      ];
-      for (const [kind, selector] of candidates) {
-        const value = this.document
-          .querySelector(selector)
-          ?.getAttribute("content");
-        if (typeof value === "string" && value.trim()) {
-          return `${kind}:${value.trim()}`;
-        }
-      }
-
-      const signedOutControl = this.document.querySelector(
-        [
-          'header a[href^="/login"]',
-          'a.HeaderMenu-link[href^="/login"]',
-        ].join(", "),
-      );
-      if (signedOutControl) {
-        return "anonymous";
-      }
-      return null;
-    },
-
     controllerMatchesHunk(controller, hunk) {
       return (
         controller.key === hunk.key &&
@@ -80,11 +53,7 @@
     },
 
     async refresh() {
-      const locationScope = this.Core.parseReviewScope(this.window.location);
-      const nextScope = this.Core.reviewViewerScope(
-        locationScope,
-        this.githubViewerIdentity(),
-      );
+      const nextScope = this.Core.parseReviewScope(this.window.location);
       const nextReviewVariant = this.Core.parseReviewVariant(
         this.window.location,
       );
@@ -105,15 +74,15 @@
       }
 
       const now = Date.now();
-      const storagePruneDue =
-        !this.storagePruned ||
-        now - this.storagePrunedAt >=
+      const reviewStoragePruneDue =
+        !this.reviewStoragePruned ||
+        now - this.reviewStoragePrunedAt >=
           this.constants.REVIEW_STORAGE_PRUNE_INTERVAL_MS;
-      if (storagePruneDue) {
+      if (reviewStoragePruneDue) {
         try {
           await this.ensureStoredReviewStatePruned();
-          this.storagePruned = true;
-          this.storagePrunedAt = now;
+          this.reviewStoragePruned = true;
+          this.reviewStoragePrunedAt = now;
         } catch (error) {
           if (this.isExtensionContextInvalidated(error)) {
             throw error;
