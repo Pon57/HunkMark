@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.0.0](https://github.com/Pon57/HunkMark/compare/v2.0.0...v3.0.0) - 2026-07-24
+
+### Breaking Changes
+- fix!: harden persisted review identifiers by @Pon57 in https://github.com/Pon57/HunkMark/pull/11
+### Bug Fixes
+- fix: refresh immediately on file diff visibility changes by @Pon57 in https://github.com/Pon57/HunkMark/pull/14
+- fix: reconnect when extension storage disappears by @Pon57 in https://github.com/Pon57/HunkMark/pull/13
+
 ## [v2.0.0](https://github.com/Pon57/HunkMark/compare/v1.0.1...v2.0.0) - 2026-07-24
 
 ### Breaking Changes
