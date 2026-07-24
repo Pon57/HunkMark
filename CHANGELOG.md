@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [v1.0.1](https://github.com/Pon57/HunkMark/compare/v1.0.0...v1.0.1) - 2026-07-23
+
+### Bug Fixes
+- fix: stabilize review controls across GitHub diff updates by @Pon57 in https://github.com/Pon57/HunkMark/pull/3
+### General Changes
+- chore: set up tagpr release management by @Pon57 in https://github.com/Pon57/HunkMark/pull/1
+- Configure Renovate by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/4
+- docs: add English README and clarify extension metadata by @Pon57 in https://github.com/Pon57/HunkMark/pull/7
+- chore: track Active LTS Node.js and polish Japanese READM by @Pon57 in https://github.com/Pon57/HunkMark/pull/8
+### Dependency Updates
+- Update dependency node to v24 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/5
+
 ## 1.0.0 - 2026-07-23
 
 Initial public release.
