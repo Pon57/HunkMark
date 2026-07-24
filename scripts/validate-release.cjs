@@ -14,6 +14,11 @@ const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(
+  manifest.minimum_chrome_version,
+  "114",
+  "Chrome 114 or later is required",
+);
+assert.equal(
   manifest.name,
   "HunkMark – Diff Review for GitHub",
   "Unexpected extension name",

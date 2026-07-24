@@ -5,9 +5,228 @@ const assert = require("node:assert/strict");
 const Core = require("../core.js");
 const LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE = "hunkmark:v1";
 
+async function lineReviewContextFingerprint(options) {
+  const blockFingerprint =
+    await Core.lineReviewBlockFingerprint(options);
+  return Core.lineReviewContextFingerprint({
+    blockFingerprint,
+    blockLineIndex: options.blockLineIndex,
+  });
+}
+
 test("uses separate stable namespaces for preferences and review state", () => {
   assert.equal(Core.PREFERENCE_STORAGE_NAMESPACE, "hunkmark:v1");
-  assert.equal(Core.REVIEW_STORAGE_NAMESPACE, "hunkmark:v2");
+  assert.equal(Core.REVIEW_STORAGE_NAMESPACE, "hunkmark:v3");
+});
+
+test("uses domain-separated SHA-256 review identifiers", async () => {
+  const domains = Object.values(Core.IDENTIFIER_DOMAINS);
+  const identifiers = await Promise.all(
+    domains.map((domain) =>
+      Core.hashIdentifier(domain, "abc"),
+    ),
+  );
+  const lineIdentifier =
+    identifiers[domains.indexOf(
+      Core.IDENTIFIER_DOMAINS.LINE,
+    )];
+  const contextIdentifier = await Core.hashIdentifier(
+    Core.IDENTIFIER_DOMAINS.LINE_CONTEXT,
+    "abc",
+  );
+
+  assert.equal(
+    lineIdentifier,
+    "BH8e-hizxDjNRoRcNhR9qMR299BLJSvI4xEgpA9SJSE",
+  );
+  assert.match(lineIdentifier, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(lineIdentifier, contextIdentifier);
+  assert.equal(new Set(identifiers).size, identifiers.length);
+});
+
+test("clears completed identifier inputs from the current-page cache", async () => {
+  const scope = Core.reviewStateScope(
+    "github.com:a/r:pull:1",
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  const key = await Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+new",
+    0,
+  );
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+new", 0),
+    key,
+  );
+
+  Core.clearIdentifierCache();
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+new", 0),
+    null,
+  );
+});
+
+test("formats asynchronous and cached review keys identically", async () => {
+  const scope = Core.reviewStateScope(
+    "github.com:a/r:pull:1",
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  Core.clearIdentifierCache();
+  const [hunkKey, lineKey, suppressionKey] = await Promise.all([
+    Core.hunkStorageKey(scope, "src/a.js", "@@\n+new", 2),
+    Core.lineStorageKey(
+      scope,
+      "src/a.js",
+      "addition",
+      "+new",
+      3,
+      4,
+    ),
+    Core.officialSyncSuppressionKey(scope, "src/a.js"),
+  ]);
+
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+new", 2),
+    hunkKey,
+  );
+  assert.equal(
+    Core.cachedLineStorageKey(
+      scope,
+      "src/a.js",
+      "addition",
+      "+new",
+      3,
+      4,
+    ),
+    lineKey,
+  );
+  assert.equal(
+    Core.cachedOfficialSyncSuppressionKey(scope, "src/a.js"),
+    suppressionKey,
+  );
+});
+
+test("retains only the current and previous identifier generations", async () => {
+  const scope = Core.reviewStateScope(
+    "github.com:a/r:pull:1",
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  Core.clearIdentifierCache();
+  const firstKey = await Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+first",
+  );
+
+  const secondGeneration = Core.beginIdentifierCacheGeneration();
+  const secondKey = await Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+second",
+  );
+  Core.commitIdentifierCacheGeneration(secondGeneration);
+
+  const repeatedGeneration = Core.beginIdentifierCacheGeneration();
+  await Core.hunkStorageKey(scope, "src/a.js", "@@\n+second");
+  Core.commitIdentifierCacheGeneration(repeatedGeneration);
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+first"),
+    firstKey,
+  );
+
+  const thirdGeneration = Core.beginIdentifierCacheGeneration();
+  const thirdKey = await Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+third",
+  );
+  Core.commitIdentifierCacheGeneration(thirdGeneration);
+
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+first"),
+    null,
+  );
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+second"),
+    secondKey,
+  );
+  assert.equal(
+    Core.cachedHunkStorageKey(scope, "src/a.js", "@@\n+third"),
+    thirdKey,
+  );
+});
+
+test("rejects overlapping identifier cache generations", () => {
+  Core.clearIdentifierCache();
+  const generation = Core.beginIdentifierCacheGeneration();
+
+  try {
+    assert.throws(
+      () => Core.beginIdentifierCacheGeneration(),
+      /identifier cache generation is already active/i,
+    );
+  } finally {
+    Core.abortIdentifierCacheGeneration(generation);
+  }
+
+  const nextGeneration = Core.beginIdentifierCacheGeneration();
+  Core.abortIdentifierCacheGeneration(nextGeneration);
+});
+
+test("does not promote synchronous cache reads into a new generation", async () => {
+  const scope = Core.reviewStateScope(
+    "github.com:a/r:pull:1",
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  Core.clearIdentifierCache();
+  const keys = new Map();
+  const keyFor = (name) =>
+    Core.hunkStorageKey(scope, `src/${name}.js`, `@@\n+${name}`);
+  const cachedKeyFor = (name) =>
+    Core.cachedHunkStorageKey(scope, `src/${name}.js`, `@@\n+${name}`);
+
+  for (const name of ["a", "b", "c", "d", "e"]) {
+    const generation = Core.beginIdentifierCacheGeneration();
+    keys.set(name, await keyFor(name));
+    for (const cachedName of keys.keys()) {
+      cachedKeyFor(cachedName);
+    }
+    Core.commitIdentifierCacheGeneration(generation);
+  }
+
+  for (const name of ["a", "b", "c"]) {
+    assert.equal(cachedKeyFor(name), null);
+  }
+  for (const name of ["d", "e"]) {
+    assert.equal(cachedKeyFor(name), keys.get(name));
+  }
+});
+
+test("does not embed raw review inputs in persisted keys", async () => {
+  const scope = Core.reviewStateScope(
+    "github.com:private-owner/private-repository:pull:123",
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  const key = await Core.lineStorageKey(
+    scope,
+    "secret/internal-file.js",
+    "addition",
+    "+privateImplementationDetail();",
+  );
+
+  assert.match(
+    key,
+    /^hunkmark:v3:line:[A-Za-z0-9_-]{43}:[A-Za-z0-9_-]{43}:[A-Za-z0-9_-]{43}:0$/,
+  );
+  for (const rawInput of [
+    "private-owner",
+    "private-repository",
+    "secret/internal-file.js",
+    "privateImplementationDetail",
+  ]) {
+    assert.equal(key.includes(rawInput), false);
+  }
 });
 
 test("recognizes GitHub pull request files pages", () => {
@@ -53,7 +272,7 @@ test("recognizes GitHub pull request files pages", () => {
   );
 });
 
-test("isolates review state by the displayed commit range", () => {
+test("isolates review state by the displayed commit range", async () => {
   const scope = "github.com:octo/repo:pull:123";
   const allCommits = Core.reviewStateScope(
     scope,
@@ -62,14 +281,17 @@ test("isolates review state by the displayed commit range", () => {
   const selectedCommit = Core.reviewStateScope(scope, "selected:abc");
 
   assert.notEqual(allCommits, selectedCommit);
-  assert.notEqual(
+  const [allHunk, selectedHunk, allLine, selectedLine] = await Promise.all([
     Core.hunkStorageKey(allCommits, "src/a.js", "@@\n+new", 0),
     Core.hunkStorageKey(selectedCommit, "src/a.js", "@@\n+new", 0),
-  );
-  assert.notEqual(
     Core.lineStorageKey(allCommits, "src/a.js", "addition", "+new"),
     Core.lineStorageKey(selectedCommit, "src/a.js", "addition", "+new"),
+  ]);
+  assert.notEqual(
+    allHunk,
+    selectedHunk,
   );
+  assert.notEqual(allLine, selectedLine);
 });
 
 test("does not expose GitHub viewer scoping", () => {
@@ -127,7 +349,7 @@ test("hunk signature changes with diff content", () => {
   assert.notEqual(first, second);
 });
 
-test("preserves security-significant invisible Unicode in review identities", () => {
+test("preserves security-significant invisible Unicode in review identities", async () => {
   const scope = Core.reviewStateScope(
     "github.com:a/r:pull:1",
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -136,8 +358,13 @@ test("preserves security-significant invisible Unicode in review identities", ()
   const withBidiOverride = "+if (is\u202eAdmin) allow();";
 
   assert.notEqual(
-    Core.lineStorageKey(scope, "src/auth.js", "addition", plain),
-    Core.lineStorageKey(scope, "src/auth.js", "addition", withBidiOverride),
+    await Core.lineStorageKey(scope, "src/auth.js", "addition", plain),
+    await Core.lineStorageKey(
+      scope,
+      "src/auth.js",
+      "addition",
+      withBidiOverride,
+    ),
   );
   assert.notEqual(
     Core.buildHunkSignature({
@@ -170,7 +397,7 @@ test("recognizes file paths without mistaking UI labels for paths", () => {
   assert.equal(Core.looksLikeFilePath("Diff settings"), false);
 });
 
-test("hunk storage key isolates files, PRs, and duplicate occurrences", () => {
+test("hunk storage key isolates files, PRs, and duplicate occurrences", async () => {
   const signature = "@@ function example()\n-old\n+new";
   const firstPr = Core.reviewStateScope(
     "github.com:a/r:pull:1",
@@ -180,61 +407,70 @@ test("hunk storage key isolates files, PRs, and duplicate occurrences", () => {
     "github.com:a/r:pull:2",
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
-  const base = Core.hunkStorageKey(firstPr, "src/a.js", signature, 0);
+  const base = await Core.hunkStorageKey(
+    firstPr,
+    "src/a.js",
+    signature,
+    0,
+  );
 
   assert.notEqual(
     base,
-    Core.hunkStorageKey(secondPr, "src/a.js", signature, 0),
+    await Core.hunkStorageKey(secondPr, "src/a.js", signature, 0),
   );
   assert.notEqual(
     base,
-    Core.hunkStorageKey(firstPr, "src/b.js", signature, 0),
+    await Core.hunkStorageKey(firstPr, "src/b.js", signature, 0),
   );
   assert.notEqual(
     base,
-    Core.hunkStorageKey(firstPr, "src/a.js", signature, 1),
+    await Core.hunkStorageKey(firstPr, "src/a.js", signature, 1),
   );
 });
 
-test("review storage scope matching includes hunk descendants and line marks", () => {
+test("review storage prefixes include hunk descendants and line marks", async () => {
   const context = "github.com:a/r:pull:1";
   const scope = Core.reviewStateScope(
     context,
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
-  const hunkKey = Core.hunkStorageKey(
+  const hunkKey = await Core.hunkStorageKey(
     scope,
     "src/a.js",
     "@@\n+new",
     0,
   );
-  const lineKey = Core.lineStorageKey(
+  const lineKey = await Core.lineStorageKey(
     scope,
     "src/a.js",
     "addition",
     "+new",
   );
 
-  assert.equal(Core.isReviewStorageKeyForScope(hunkKey, scope), true);
+  const scopePrefixes = await Core.reviewStoragePrefixes(scope);
+  const contextPrefixes =
+    await Core.reviewStoragePrefixesForContext(context);
+  const matchesScope = (key) =>
+    scopePrefixes.some((prefix) => key.startsWith(prefix));
+  const matchesContext = (key) =>
+    contextPrefixes.some((prefix) => key.startsWith(prefix));
+
+  assert.equal(matchesScope(hunkKey), true);
+  assert.equal(matchesScope(`${hunkKey}:collapsed`), true);
+  assert.equal(matchesScope(lineKey), true);
+  const metadataKey = await Core.reviewContextMetadataKey(context);
+  assert.equal(matchesScope(metadataKey), false);
+  assert.equal(matchesContext(hunkKey), true);
+  assert.equal(matchesContext(metadataKey), false);
   assert.equal(
-    Core.isReviewStorageKeyForScope(`${hunkKey}:collapsed`, scope),
-    true,
-  );
-  assert.equal(Core.isReviewStorageKeyForScope(lineKey, scope), true);
-  const metadataKey = Core.reviewContextMetadataKey(context);
-  assert.equal(Core.isReviewStorageKeyForScope(metadataKey, scope), false);
-  assert.equal(Core.isReviewStorageKeyForContext(hunkKey, context), true);
-  assert.equal(Core.isReviewStorageKeyForContext(metadataKey, context), false);
-  assert.equal(
-    Core.isReviewStorageKeyForScope(
-      Core.officialSyncSuppressionKey(scope, "src/a.js"),
-      scope,
+    matchesScope(
+      await Core.officialSyncSuppressionKey(scope, "src/a.js"),
     ),
     true,
   );
   assert.equal(
-    Core.isReviewStorageKeyForScope(
-      Core.hunkStorageKey(
+    matchesScope(
+      await Core.hunkStorageKey(
         Core.reviewStateScope(
           "github.com:a/r:pull:2",
           Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -243,20 +479,18 @@ test("review storage scope matching includes hunk descendants and line marks", (
         "@@\n+new",
         0,
       ),
-      scope,
     ),
     false,
   );
   assert.equal(
-    Core.isReviewStorageKeyForScope(
+    matchesScope(
       `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`,
-      scope,
     ),
     false,
   );
 });
 
-test("maps all ranges in a pull request to one review context", () => {
+test("maps all ranges in a pull request to one review context", async () => {
   const context = "github.com:a/r:pull:1";
   const scope = Core.reviewStateScope(
     context,
@@ -267,21 +501,26 @@ test("maps all ranges in a pull request to one review context", () => {
     context,
     "selected:abc:view:def",
   );
-  const contextId = Core.reviewContextId(context);
-  const hunkKey = Core.hunkStorageKey(scope, "src/a.js", "@@\n+new", 0);
-  const selectedKey = Core.hunkStorageKey(
+  const contextId = await Core.reviewContextId(context);
+  const hunkKey = await Core.hunkStorageKey(
+    scope,
+    "src/a.js",
+    "@@\n+new",
+    0,
+  );
+  const selectedKey = await Core.hunkStorageKey(
     selected,
     "src/b.js",
     "@@\n+other",
     0,
   );
-  const metadataKey = Core.reviewContextMetadataKey(context);
+  const metadataKey = await Core.reviewContextMetadataKey(context);
 
   assert.equal(Core.reviewStorageContextId(hunkKey), contextId);
   assert.equal(Core.reviewStorageContextId(selectedKey), contextId);
   assert.equal(Core.reviewStorageContextId(metadataKey), contextId);
-  assert.equal(Core.reviewContextId(selected), contextId);
-  assert.equal(Core.reviewContextId(selectedWithDelimiter), contextId);
+  assert.equal(await Core.reviewContextId(selected), contextId);
+  assert.equal(await Core.reviewContextId(selectedWithDelimiter), contextId);
   assert.equal(Core.isReviewContextMetadataKey(metadataKey), true);
   assert.equal(Core.isReviewStorageKey(metadataKey), false);
   assert.equal(
@@ -298,9 +537,9 @@ test("maps all ranges in a pull request to one review context", () => {
   );
 });
 
-test("rejects review-state keys without a displayed commit range", () => {
-  assert.throws(
-    () =>
+test("rejects review-state keys without a displayed commit range", async () => {
+  await assert.rejects(
+    async () =>
       Core.hunkStorageKey(
         "github.com:a/r:pull:1",
         "src/a.js",
@@ -349,19 +588,19 @@ test("review storage matching excludes global preferences", () => {
   );
 });
 
-test("line storage key is stable across hunk line-number movement", () => {
+test("line storage key is stable across hunk line-number movement", async () => {
   const scope = Core.reviewStateScope(
     "github.com:a/r:pull:1",
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   const filePath = "src/a.js";
-  const before = Core.lineStorageKey(
+  const before = await Core.lineStorageKey(
     scope,
     filePath,
     "addition",
     "+newValue",
   );
-  const after = Core.lineStorageKey(
+  const after = await Core.lineStorageKey(
     scope,
     filePath,
     "addition",
@@ -371,7 +610,7 @@ test("line storage key is stable across hunk line-number movement", () => {
   assert.equal(before, after);
   assert.notEqual(
     before,
-    Core.lineStorageKey(
+    await Core.lineStorageKey(
       scope,
       filePath,
       "deletion",
@@ -380,13 +619,13 @@ test("line storage key is stable across hunk line-number movement", () => {
   );
 });
 
-test("line storage keys survive hunk merging and fail closed when duplicate counts change", () => {
+test("line storage keys survive hunk merging and fail closed when duplicate counts change", async () => {
   const scope = Core.reviewStateScope(
     "github.com:a/r:pull:1",
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   const filePath = "src/a.js";
-  const firstOfTwo = Core.lineStorageKey(
+  const firstOfTwo = await Core.lineStorageKey(
     scope,
     filePath,
     "addition",
@@ -397,7 +636,7 @@ test("line storage keys survive hunk merging and fail closed when duplicate coun
 
   assert.notEqual(
     firstOfTwo,
-    Core.lineStorageKey(
+    await Core.lineStorageKey(
       scope,
       filePath,
       "addition",
@@ -408,7 +647,7 @@ test("line storage keys survive hunk merging and fail closed when duplicate coun
   );
   assert.notEqual(
     firstOfTwo,
-    Core.lineStorageKey(
+    await Core.lineStorageKey(
       scope,
       filePath,
       "addition",
@@ -419,30 +658,30 @@ test("line storage keys survive hunk merging and fail closed when duplicate coun
   );
 });
 
-test("line review context survives line-number movement and rejects relocation", () => {
-  const stable = Core.lineReviewContextFingerprint({
+test("line review context survives line-number movement and rejects relocation", async () => {
+  const stable = await lineReviewContextFingerprint({
     headerText: "@@ -10,3 +10,4 @@ function checkAccess() {",
     beforeAnchor: "context:unified:if (user) {",
     afterAnchor: "context:unified:}",
     blockSignature: "addition:unified:+return true;",
   });
-  const movedByEarlierLines = Core.lineReviewContextFingerprint({
+  const movedByEarlierLines = await lineReviewContextFingerprint({
     headerText: "@@ -210,3 +210,4 @@ function checkAccess() {",
     beforeAnchor: "context:unified:if (user) {",
     afterAnchor: "context:unified:}",
     blockSignature: "addition:unified:+return true;",
   });
-  const relocated = Core.lineReviewContextFingerprint({
+  const relocated = await lineReviewContextFingerprint({
     headerText: "@@ -210,3 +210,4 @@ function checkAccess() {",
     beforeAnchor: "context:unified:if (isAdmin) {",
     afterAnchor: "context:unified:audit();",
     blockSignature: "addition:unified:+return true;",
   });
-  const unanchoredBefore = Core.lineReviewContextFingerprint({
+  const unanchoredBefore = await lineReviewContextFingerprint({
     headerText: "@@ -10 +10 @@ function checkAccess() {",
     blockSignature: "addition:unified:+return true;",
   });
-  const unanchoredAfter = Core.lineReviewContextFingerprint({
+  const unanchoredAfter = await lineReviewContextFingerprint({
     headerText: "@@ -900 +900 @@ function checkAccess() {",
     blockSignature: "addition:unified:+return true;",
   });

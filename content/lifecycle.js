@@ -62,6 +62,7 @@
         nextReviewVariant,
       );
       if (nextReviewScope !== this.currentReviewScope) {
+        this.Core.clearIdentifierCache();
         this.cleanupExtensionElements();
         this.resetOfficialViewedState();
         this.currentScope = nextScope;
@@ -103,7 +104,29 @@
       await this.loadPreferences();
 
       const previousControllers = Array.from(this.controllersByRow.values());
-      const discovered = this.discoverHunks();
+      const cacheGeneration =
+        this.Core.beginIdentifierCacheGeneration();
+      let discovered;
+      try {
+        discovered = await this.discoverHunks();
+      } catch (error) {
+        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
+        throw error;
+      }
+      if (this.stopped) {
+        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
+        return;
+      }
+      const discoveredScope = this.Core.reviewStateScope(
+        this.Core.parseReviewScope(this.window.location),
+        this.Core.parseReviewVariant(this.window.location),
+      );
+      if (discoveredScope !== this.currentReviewScope) {
+        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
+        this.scheduleRefresh({ immediate: true });
+        return;
+      }
+      this.Core.commitIdentifierCacheGeneration(cacheGeneration);
       const previousByHunk = new Map(
         discovered.map((hunk) => [
           hunk,
@@ -148,7 +171,7 @@
             newControllers.flatMap((controller) => [
               controller.key,
               controller.collapsedKey,
-              this.officialViewedSuppressionKey(controller.filePath),
+              controller.officialSuppressionKey,
               ...controller.lines.map((line) => line.key),
             ]),
           ),
@@ -178,9 +201,7 @@
             previous.length > 1 ||
             (previous.length === 1 &&
               controller.groupRows.length > previous[0].groupRows.length);
-          const suppressionKey = this.officialViewedSuppressionKey(
-            controller.filePath,
-          );
+          const suppressionKey = controller.officialSuppressionKey;
           if (stored[suppressionKey]) {
             this.officialViewedSyncSuppressed.add(suppressionKey);
           }
@@ -477,8 +498,16 @@
         this.handleStorageChanged(changes, areaName);
       this.boundPointerMove = (event) => this.lineDragPointerMove(event);
       this.boundPointerEnd = (event) => this.lineDragPointerEnd(event);
-      this.boundOfficialViewedClick = (event) =>
-        this.handleOfficialViewedClick(event);
+      this.boundOfficialViewedClick = (event) => {
+        void this.handleOfficialViewedClick(event).catch((error) => {
+          if (!this.stopForInvalidatedContext(error)) {
+            console.warn(
+              "HunkMark could not handle GitHub's Viewed control.",
+              error,
+            );
+          }
+        });
+      };
       this.boundFileToggleClick = (event) =>
         this.handleFileToggleClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
@@ -490,9 +519,15 @@
       };
 
       this.chrome.storage.onChanged.addListener(this.boundStorageChanged);
-      this.observer = new this.window.MutationObserver((mutations) =>
-        this.handleMutations(mutations),
-      );
+      this.observer = new this.window.MutationObserver((mutations) => {
+        try {
+          this.handleMutations(mutations);
+        } catch (error) {
+          if (!this.stopForInvalidatedContext(error)) {
+            console.warn("HunkMark could not process a diff update.", error);
+          }
+        }
+      });
       this.observer.observe(this.document.documentElement, {
         childList: true,
         subtree: true,
@@ -604,6 +639,7 @@
         this.navigationPollTimer = null;
       }
       this.cleanupExtensionElements();
+      this.Core.clearIdentifierCache();
     },
   });
 })(globalThis);

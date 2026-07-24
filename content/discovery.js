@@ -445,7 +445,11 @@
         .join("\n");
     },
 
-    lineReviewContextFingerprints(groupRows, lineDescriptors, headerText) {
+    lineReviewContextOptions(
+      groupRows,
+      lineDescriptors,
+      headerText,
+    ) {
       const changedByRow = new Map();
       lineDescriptors.forEach((descriptor) => {
         const descriptors = changedByRow.get(descriptor.row) ?? [];
@@ -465,7 +469,7 @@
         }
         return "";
       };
-      const fingerprints = new Map();
+      const contextOptionsByLine = new Map();
 
       for (let blockStart = 0; blockStart < groupRows.length; blockStart += 1) {
         if (!changedByRow.has(groupRows[blockStart])) {
@@ -488,27 +492,28 @@
               `${descriptor.kind}:${descriptor.side}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
           )
           .join("\n");
-        const beforeAnchor = contextAnchor(blockStart - 1, -1);
-        const afterAnchor = contextAnchor(blockEnd + 1, 1);
+        const block = {
+          headerText,
+          beforeAnchor: contextAnchor(blockStart - 1, -1),
+          afterAnchor: contextAnchor(blockEnd + 1, 1),
+          blockSignature,
+        };
         blockLines.forEach((line, blockLineIndex) => {
-          fingerprints.set(
+          contextOptionsByLine.set(
             line,
-            this.Core.lineReviewContextFingerprint({
-              headerText,
-              beforeAnchor,
-              afterAnchor,
-              blockSignature,
+            {
+              block,
               blockLineIndex,
-            }),
+            },
           );
         });
         blockStart = blockEnd;
       }
 
-      return lineDescriptors.map((line) => fingerprints.get(line));
+      return lineDescriptors.map((line) => contextOptionsByLine.get(line));
     },
 
-    discoverHunks(searchRoot = this.document) {
+    collectDiscoveredHunkInputs(searchRoot = this.document) {
       const groupedByFile = new Map();
       const fileRoots = Array.from(
         searchRoot.querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR),
@@ -542,106 +547,243 @@
         groupedByFile.set(fileElement, entries);
       });
 
-      const hunks = [];
-      let fileIndex = 0;
+      return Array.from(groupedByFile.entries()).map(
+        ([fileElement, entries], fileIndex) => {
+          const filePath = this.resolveFilePath(fileElement, fileIndex);
+          const fileRows = this.collectRows(fileElement);
+          const rowIndexes = new Map(
+            fileRows.map((row, index) => [row, index]),
+          );
+          const hunkOccurrenceCounts = new Map();
+          const lineOccurrenceCounts = new Map();
 
-      groupedByFile.forEach((entries, fileElement) => {
-        const filePath = this.resolveFilePath(fileElement, fileIndex);
-        const fileRows = this.collectRows(fileElement);
-        const rowIndexes = new Map(
-          fileRows.map((row, index) => [row, index]),
-        );
-        const occurrences = new Map();
-        const lineOccurrences = new Map();
-        fileIndex += 1;
-
-        const preparedEntries = entries.map((entry, index) => {
-          const nextEntry = entries[index + 1];
-          const groupRows = this.rowsForHunk(
-            fileRows,
-            entry.hunkRow,
-            nextEntry?.hunkRow,
-            rowIndexes,
-          );
-          const headerText = this.stableHunkHeaderText(entry.marker);
-          const lineDescriptors = this.changedLineDescriptors(groupRows);
-          const lineFingerprints = lineDescriptors.map((line) =>
-            this.Core.hashString(
-              `${line.kind}\n${this.Core.normalizeLineBreaks(line.text)}`,
-            ),
-          );
-          const lineContextFingerprints = this.lineReviewContextFingerprints(
-            groupRows,
-            lineDescriptors,
-            headerText,
-          );
-          return {
-            ...entry,
-            groupRows,
-            headerText,
-            lineDescriptors,
-            lineFingerprints,
-            lineContextFingerprints,
-          };
-        });
-        const lineTotals = new Map();
-        preparedEntries.forEach((entry) => {
-          entry.lineFingerprints.forEach((fingerprint) => {
-            lineTotals.set(fingerprint, (lineTotals.get(fingerprint) ?? 0) + 1);
-          });
-        });
-
-        preparedEntries.forEach((entry) => {
-          const {
-            groupRows,
-            headerText,
-            lineDescriptors,
-            lineFingerprints,
-            lineContextFingerprints,
-          } = entry;
-          const signature = this.Core.buildHunkSignature({
-            headerText,
-            changedLines: lineDescriptors,
-          });
-          const fingerprint = this.Core.hashString(`${filePath}\n${signature}`);
-          const occurrence = occurrences.get(fingerprint) ?? 0;
-          occurrences.set(fingerprint, occurrence + 1);
-          const key = this.Core.hunkStorageKey(
-            this.currentReviewScope,
-            filePath,
-            signature,
-            occurrence,
-          );
-          const lines = lineDescriptors.map((line, index) => {
-            const lineFingerprint = lineFingerprints[index];
-            const lineOccurrence = lineOccurrences.get(lineFingerprint) ?? 0;
-            lineOccurrences.set(lineFingerprint, lineOccurrence + 1);
+          const preparedEntries = entries.map((entry, index) => {
+            const nextEntry = entries[index + 1];
+            const groupRows = this.rowsForHunk(
+              fileRows,
+              entry.hunkRow,
+              nextEntry?.hunkRow,
+              rowIndexes,
+            );
+            const headerText = this.stableHunkHeaderText(entry.marker);
+            const lineDescriptors = this.changedLineDescriptors(groupRows);
+            const lineIdentityTokens = lineDescriptors.map(
+              (line) =>
+                `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
+            );
+            const lineContextOptions = this.lineReviewContextOptions(
+              groupRows,
+              lineDescriptors,
+              headerText,
+            );
             return {
-              ...line,
-              contextFingerprint: lineContextFingerprints[index],
-              key: this.Core.lineStorageKey(
-                this.currentReviewScope,
-                filePath,
-                line.kind,
-                line.text,
-                lineOccurrence,
-                lineTotals.get(lineFingerprint),
-              ),
+              ...entry,
+              groupRows,
+              headerText,
+              lineDescriptors,
+              lineIdentityTokens,
+              lineContextOptions,
             };
           });
+          const identicalLineCounts = new Map();
+          preparedEntries.forEach((entry) => {
+            entry.lineIdentityTokens.forEach((lineIdentityToken) => {
+              identicalLineCounts.set(
+                lineIdentityToken,
+                (identicalLineCounts.get(lineIdentityToken) ?? 0) + 1,
+              );
+            });
+          });
 
-          hunks.push({
-            fileElement,
+          const hunkInputs = [];
+          for (const entry of preparedEntries) {
+            const {
+              groupRows,
+              headerText,
+              lineDescriptors,
+              lineIdentityTokens,
+              lineContextOptions,
+            } = entry;
+            const signature = this.Core.buildHunkSignature({
+              headerText,
+              changedLines: lineDescriptors,
+            });
+            const hunkOccurrenceToken = `${filePath}\u0000${signature}`;
+            const occurrence =
+              hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
+            hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
+            const lineInputs = lineDescriptors.map((line, index) => {
+              const lineIdentityToken = lineIdentityTokens[index];
+              const lineOccurrence =
+                lineOccurrenceCounts.get(lineIdentityToken) ?? 0;
+              lineOccurrenceCounts.set(
+                lineIdentityToken,
+                lineOccurrence + 1,
+              );
+              return {
+                contextOptions: lineContextOptions[index],
+                identicalCount: identicalLineCounts.get(lineIdentityToken),
+                line,
+                lineOccurrence,
+              };
+            });
+
+            hunkInputs.push({
+              fileElement,
+              filePath,
+              groupRows,
+              hunkCell: entry.marker,
+              hunkRow: entry.hunkRow,
+              lineInputs,
+              occurrence,
+              signature,
+            });
+          }
+          return { filePath, hunkInputs };
+        },
+      );
+    },
+
+    async discoverHunks(searchRoot = this.document) {
+      const discoveredFiles = this.collectDiscoveredHunkInputs(searchRoot);
+      const blockFingerprintPromises = new Map();
+      const blockFingerprintFor = (contextOptions) => {
+        const { block } = contextOptions;
+        let fingerprintPromise = blockFingerprintPromises.get(block);
+        if (!fingerprintPromise) {
+          fingerprintPromise = this.Core.lineReviewBlockFingerprint(block);
+          blockFingerprintPromises.set(block, fingerprintPromise);
+        }
+        return fingerprintPromise;
+      };
+      const hydrateLine = async (input, filePath) => {
+        const blockFingerprint = await blockFingerprintFor(
+          input.contextOptions,
+        );
+        const [contextFingerprint, key] = await Promise.all([
+          this.Core.lineReviewContextFingerprint({
+            blockFingerprint,
+            blockLineIndex: input.contextOptions.blockLineIndex,
+          }),
+          this.Core.lineStorageKey(
+            this.currentReviewScope,
             filePath,
-            groupRows,
-            hunkCell: entry.marker,
-            hunkRow: entry.hunkRow,
+            input.line.kind,
+            input.line.text,
+            input.lineOccurrence,
+            input.identicalCount,
+          ),
+        ]);
+        return {
+          ...input.line,
+          contextFingerprint,
+          key,
+        };
+      };
+      const hunksByFile = await Promise.all(
+        discoveredFiles.map(async ({ filePath, hunkInputs }) => {
+          const officialSuppressionKey =
+            await this.officialViewedSuppressionKey(filePath);
+          return Promise.all(
+            hunkInputs.map(async (hunk) => ({
+              fileElement: hunk.fileElement,
+              filePath,
+              groupRows: hunk.groupRows,
+              hunkCell: hunk.hunkCell,
+              hunkRow: hunk.hunkRow,
+              key: await this.Core.hunkStorageKey(
+                this.currentReviewScope,
+                filePath,
+                hunk.signature,
+                hunk.occurrence,
+              ),
+              lines: await Promise.all(
+                hunk.lineInputs.map((input) =>
+                  hydrateLine(input, filePath),
+                ),
+              ),
+              officialSuppressionKey,
+            })),
+          );
+        }),
+      );
+
+      return hunksByFile.flat();
+    },
+
+    discoverCachedHunks(searchRoot = this.document) {
+      const discoveredFiles = this.collectDiscoveredHunkInputs(searchRoot);
+      const blockFingerprints = new Map();
+      const blockFingerprintFor = (contextOptions) => {
+        const { block } = contextOptions;
+        if (!blockFingerprints.has(block)) {
+          blockFingerprints.set(
+            block,
+            this.Core.cachedLineReviewBlockFingerprint(block),
+          );
+        }
+        return blockFingerprints.get(block);
+      };
+      const hunks = [];
+      for (const { filePath, hunkInputs } of discoveredFiles) {
+        const officialSuppressionKey =
+          this.Core.cachedOfficialSyncSuppressionKey(
+            this.officialViewedSuppressionScope(),
+            filePath,
+          );
+        if (!officialSuppressionKey) {
+          return null;
+        }
+        for (const hunk of hunkInputs) {
+          const key = this.Core.cachedHunkStorageKey(
+            this.currentReviewScope,
+            filePath,
+            hunk.signature,
+            hunk.occurrence,
+          );
+          if (!key) {
+            return null;
+          }
+          const lines = [];
+          for (const input of hunk.lineInputs) {
+            const blockFingerprint = blockFingerprintFor(
+              input.contextOptions,
+            );
+            const contextFingerprint =
+              blockFingerprint &&
+              this.Core.cachedLineReviewContextFingerprint({
+                blockFingerprint,
+                blockLineIndex: input.contextOptions.blockLineIndex,
+              });
+            const lineKey = this.Core.cachedLineStorageKey(
+              this.currentReviewScope,
+              filePath,
+              input.line.kind,
+              input.line.text,
+              input.lineOccurrence,
+              input.identicalCount,
+            );
+            if (!contextFingerprint || !lineKey) {
+              return null;
+            }
+            lines.push({
+              ...input.line,
+              contextFingerprint,
+              key: lineKey,
+            });
+          }
+          hunks.push({
+            fileElement: hunk.fileElement,
+            filePath,
+            groupRows: hunk.groupRows,
+            hunkCell: hunk.hunkCell,
+            hunkRow: hunk.hunkRow,
             key,
             lines,
+            officialSuppressionKey,
           });
-        });
-      });
-
+        }
+      }
       return hunks;
     },
   });
