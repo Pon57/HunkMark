@@ -5,6 +5,7 @@
 
   namespace.constants = Object.freeze({
     CONTROL_CLASS: "hunkmark-control",
+    FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
     FILE_CONTAINER_SELECTOR: [
       ".js-file",
       '[data-details-container-group="file"]',
@@ -74,6 +75,7 @@
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
       this.officialViewedProgrammaticClicks = new WeakSet();
+      this.fileDiffVisibilityPending = new Map();
       this.officialViewedRestoreGuards = new Map();
       this.officialViewedStateByKey = new Map();
       this.officialViewedSyncPending = new WeakSet();

@@ -7,6 +7,52 @@
   }
 
   Object.assign(App.prototype, {
+    expectFileDiffVisibility(fileElement, visible) {
+      const previous = this.fileDiffVisibilityPending.get(fileElement);
+      if (previous) {
+        this.cancelExpectedFileDiffVisibility(fileElement, previous);
+      }
+      const expectation = {
+        timeoutId: null,
+        visible,
+      };
+      this.fileDiffVisibilityPending.set(fileElement, expectation);
+      expectation.timeoutId = this.window.setTimeout(
+        () =>
+          this.cancelExpectedFileDiffVisibility(fileElement, expectation),
+        this.constants.FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS,
+      );
+      return expectation;
+    },
+
+    cancelExpectedFileDiffVisibility(fileElement, expectation) {
+      if (this.fileDiffVisibilityPending.get(fileElement) === expectation) {
+        this.fileDiffVisibilityPending.delete(fileElement);
+      }
+      if (expectation.timeoutId !== null) {
+        this.window.clearTimeout(expectation.timeoutId);
+        expectation.timeoutId = null;
+      }
+    },
+
+    consumeExpectedFileDiffVisibility() {
+      let changed = false;
+      this.fileDiffVisibilityPending.forEach((expectation, fileElement) => {
+        if (!fileElement.isConnected) {
+          this.cancelExpectedFileDiffVisibility(fileElement, expectation);
+          changed = true;
+          return;
+        }
+        const visible =
+          this.findHunkMarkers(fileElement).length > 0;
+        if (visible === expectation.visible) {
+          this.cancelExpectedFileDiffVisibility(fileElement, expectation);
+          changed = true;
+        }
+      });
+      return changed;
+    },
+
     controllerMatchesHunk(controller, hunk) {
       return (
         controller.key === hunk.key &&
@@ -480,12 +526,19 @@
           this.mutationAffectsDiff(mutation),
       );
       if (hostDiffChanged) {
+        const expectedFileDiffVisibilityChanged =
+          this.consumeExpectedFileDiffVisibility();
         const progressRemoved =
           this.removeProgressForFilesWithoutRenderedHunks();
         const restored =
           this.preserveOfficialViewedRestoredState() ||
           this.restoreCachedOfficialViewedControllers();
-        this.scheduleRefresh({ immediate: restored || progressRemoved });
+        this.scheduleRefresh({
+          immediate:
+            expectedFileDiffVisibilityChanged ||
+            restored ||
+            progressRemoved,
+        });
       }
     },
 

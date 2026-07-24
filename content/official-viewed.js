@@ -403,6 +403,7 @@
       const progressKey = this.fileProgressStateKey(filePath);
       if (label === "Collapse file") {
         this.fileExpandRestorePending.delete(progressKey);
+        this.expectFileDiffVisibility(fileElement, false);
         this.removeFileProgress(fileElement);
         return;
       }
@@ -411,6 +412,7 @@
       }
 
       this.fileExpandRestorePending.add(progressKey);
+      this.expectFileDiffVisibility(fileElement, true);
       this.window.setTimeout(
         () => this.fileExpandRestorePending.delete(progressKey),
         3000,
@@ -467,20 +469,35 @@
       const viewedBeforeClick = control.matches('input[type="checkbox"]')
         ? !control.checked
         : this.officialControlIsViewed(control);
-      let key =
-        controller?.officialSuppressionKey ??
-        this.Core.cachedOfficialSyncSuppressionKey(
-          this.officialViewedSuppressionScope(),
-          filePath,
+      const visibilityExpectation = this.expectFileDiffVisibility(
+        fileElement,
+        viewedBeforeClick,
+      );
+      if (!viewedBeforeClick) {
+        this.removeFileProgress(fileElement);
+      }
+
+      let key;
+      try {
+        key =
+          controller?.officialSuppressionKey ??
+          this.Core.cachedOfficialSyncSuppressionKey(
+            this.officialViewedSuppressionScope(),
+            filePath,
+          );
+        if (!key) {
+          key = await this.officialViewedSuppressionKey(filePath);
+        }
+      } catch (error) {
+        this.cancelExpectedFileDiffVisibility(
+          fileElement,
+          visibilityExpectation,
         );
-      if (!key) {
-        key = await this.officialViewedSuppressionKey(filePath);
+        throw error;
       }
       this.officialViewedSyncSuppressed.add(key);
       if (viewedBeforeClick) {
         this.startOfficialViewedRestoreGuard(key, filePath);
-      } else {
-        this.removeFileProgress(fileElement);
       }
       this.window.setTimeout(
         () => this.reconcileOfficialViewedAfterClick(key, viewedBeforeClick),
@@ -538,6 +555,7 @@
 
       this.officialViewedSyncPending.add(fileElement);
       this.officialViewedProgrammaticClicks.add(control);
+      this.expectFileDiffVisibility(fileElement, false);
       this.removeFileProgress(fileElement);
       try {
         control.click();
