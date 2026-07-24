@@ -111,7 +111,7 @@
         };
       }
 
-      await this.chrome.storage.local.set(storedValues);
+      await this.setLocalStorage(storedValues);
       Object.entries(storedValues).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
@@ -157,7 +157,7 @@
         return false;
       }
 
-      await this.chrome.storage.local.set({
+      await this.setLocalStorage({
         [this.Core.reviewContextMetadataKeyForId(contextId)]: {
           lastAccessedAt: now,
         },
@@ -242,7 +242,7 @@
       maxEntries = this.constants.REVIEW_STORAGE_MAX_ENTRIES,
       now = Date.now(),
     } = {}) {
-      const stored = await this.chrome.storage.local.get(null);
+      const stored = await this.getLocalStorage(null);
       this.reviewStorageKeys.clear();
       this.lineReviewContextByKey.clear();
       Object.entries(stored).forEach(([key, value]) => {
@@ -330,10 +330,10 @@
         });
 
       if (removals.size > 0) {
-        await this.chrome.storage.local.remove(Array.from(removals));
+        await this.removeLocalStorage(Array.from(removals));
       }
       if (Object.keys(metadataValues).length > 0) {
-        await this.chrome.storage.local.set(metadataValues);
+        await this.setLocalStorage(metadataValues);
       }
 
       removals.forEach((key) => {

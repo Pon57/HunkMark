@@ -166,7 +166,7 @@
         );
       }
       if (removals.size > 0) {
-        await this.chrome.storage.local.remove(Array.from(removals));
+        await this.removeLocalStorage(Array.from(removals));
       }
     },
 

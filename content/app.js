@@ -108,6 +108,28 @@
       this.navigationPollTimer = null;
       this.observer = null;
     }
+
+    localStorageArea() {
+      const area = this.chrome?.storage?.local;
+      if (!area) {
+        throw new Error(
+          "Extension context invalidated: chrome.storage.local is unavailable.",
+        );
+      }
+      return area;
+    }
+
+    async getLocalStorage(keys) {
+      return this.localStorageArea().get(keys);
+    }
+
+    async setLocalStorage(values) {
+      return this.localStorageArea().set(values);
+    }
+
+    async removeLocalStorage(keys) {
+      return this.localStorageArea().remove(keys);
+    }
   };
 
   root.HunkMarkContent = namespace;

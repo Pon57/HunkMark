@@ -45,7 +45,7 @@
         return;
       }
 
-      void this.chrome.storage.local.remove(clearedKeys).catch((error) => {
+      void this.removeLocalStorage(clearedKeys).catch((error) => {
         if (!this.stopForInvalidatedContext(error)) {
           clearedKeys.forEach((key) =>
             this.officialViewedSyncSuppressed.add(key),
