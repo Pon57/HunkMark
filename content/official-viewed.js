@@ -45,7 +45,7 @@
         return;
       }
 
-      void this.removeLocalStorage(clearedKeys).catch((error) => {
+      void this.removeReviewStorage(clearedKeys).catch((error) => {
         if (!this.stopForInvalidatedContext(error)) {
           clearedKeys.forEach((key) =>
             this.officialViewedSyncSuppressed.add(key),

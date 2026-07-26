@@ -139,6 +139,40 @@ function createChromeApi(initial = {}) {
   };
 }
 
+function createExclusiveLockManager() {
+  const queues = new Map();
+  const requests = [];
+
+  return {
+    requests,
+    async request(name, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = {};
+      }
+      const mode = options?.mode ?? "exclusive";
+      requests.push({ mode, name });
+
+      const previous = queues.get(name) ?? Promise.resolve();
+      let release;
+      const current = new Promise((resolve) => {
+        release = resolve;
+      });
+      queues.set(name, current);
+      await previous;
+
+      try {
+        return await callback({ mode, name });
+      } finally {
+        release();
+        if (queues.get(name) === current) {
+          queues.delete(name);
+        }
+      }
+    },
+  };
+}
+
 async function waitFor(assertion, timeoutMs = 2500) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -157,12 +191,14 @@ async function startExtension(
   html,
   initialStorage = {},
   {
+    chromeInstance = null,
     digestInputSizes = null,
+    lockManager = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
   } = {},
 ) {
-  const chrome = createChromeApi(initialStorage);
+  const chrome = chromeInstance ?? createChromeApi(initialStorage);
   const dom = new JSDOM(html, {
     pretendToBeVisual: true,
     runScripts: "outside-only",
@@ -183,6 +219,12 @@ async function startExtension(
   });
   dom.window.TextEncoder = globalThis.TextEncoder;
   dom.window.chrome = chrome.api;
+  if (lockManager) {
+    Object.defineProperty(dom.window.navigator, "locks", {
+      configurable: true,
+      value: lockManager,
+    });
+  }
   dom.window.ResizeObserver = class ResizeObserver {
     observe() {}
     disconnect() {}
@@ -2155,6 +2197,122 @@ test("removes legacy review state and prunes inactive pull requests as complete 
   }
 });
 
+test("serializes pruning with a fresh review write from another tab", async () => {
+  const sharedChrome = createChromeApi();
+  const sharedLocks = createExclusiveLockManager();
+  const tabA = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  const tabB = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  let prunePromise = null;
+  let writePromise = null;
+  let releaseSnapshot = () => {};
+
+  try {
+    const now = Date.now();
+    const staleAt =
+      now - tabA.app.constants.REVIEW_RETENTION_MS - 1;
+    const targetContext = "github.com:old/repo:pull:9";
+    const targetScope = Core.reviewStateScope(
+      targetContext,
+      Core.ALL_COMMITS_REVIEW_VARIANT,
+    );
+    const lineKey = await Core.lineStorageKey(
+      targetScope,
+      "src/old.js",
+      "addition",
+      "+old",
+    );
+    const metadataKey =
+      await Core.reviewContextMetadataKey(targetContext);
+
+    await tabA.app.setReviewStorage(
+      {
+        [lineKey]: {
+          contextFingerprint: "stale-context",
+          viewedAt: staleAt,
+        },
+      },
+      targetScope,
+      staleAt,
+    );
+
+    const originalGetLocalStorage =
+      tabA.app.getLocalStorage.bind(tabA.app);
+    let signalSnapshotRead;
+    const snapshotRead = new Promise((resolve) => {
+      signalSnapshotRead = resolve;
+    });
+    const snapshotPause = new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let pauseNextSnapshot = true;
+    tabA.app.getLocalStorage = async (keys) => {
+      const stored = await originalGetLocalStorage(keys);
+      if (pauseNextSnapshot && keys === null) {
+        pauseNextSnapshot = false;
+        signalSnapshotRead();
+        await snapshotPause;
+      }
+      return stored;
+    };
+
+    prunePromise = tabA.app.pruneStoredReviewState({
+      currentContext: tabA.app.currentScope,
+      now,
+    });
+    await snapshotRead;
+
+    const freshAt = now + 1;
+    const freshValue = {
+      contextFingerprint: "fresh-context",
+      viewedAt: freshAt,
+    };
+    let writeFinished = false;
+    writePromise = tabB.app
+      .setReviewStorage(
+        { [lineKey]: freshValue },
+        targetScope,
+        freshAt,
+      )
+      .finally(() => {
+        writeFinished = true;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(writeFinished, false);
+
+    releaseSnapshot();
+    releaseSnapshot = () => {};
+    await Promise.all([prunePromise, writePromise]);
+
+    const stored = sharedChrome.snapshot();
+    assert.deepEqual(stored[lineKey], freshValue);
+    assert.equal(stored[metadataKey].lastAccessedAt, freshAt);
+    assert.equal(
+      sharedLocks.requests.every(
+        ({ mode, name }) =>
+          mode === "exclusive" &&
+          name === tabA.app.constants.REVIEW_STORAGE_LOCK_NAME,
+      ),
+      true,
+    );
+  } finally {
+    releaseSnapshot();
+    await Promise.allSettled(
+      [prunePromise, writePromise].filter(Boolean),
+    );
+    tabB.app.stop();
+    tabB.dom.window.close();
+    tabA.app.stop();
+    tabA.dom.window.close();
+  }
+});
+
 test("updates pull-request access metadata at most once per 24 hours", async () => {
   const now = Date.now();
   const currentContext = "github.com:octo/repo:pull:123";
@@ -2352,7 +2510,11 @@ test("enforces the review storage limit after later writes", async () => {
     "addition",
     "+current",
   );
-  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  const { app, chrome, dom } = await startExtension(
+    duplicateHunkFixture(),
+    {},
+    { lockManager: createExclusiveLockManager() },
+  );
   try {
     app.reviewStorageEntryLimit = () => 8;
     const initial = {};

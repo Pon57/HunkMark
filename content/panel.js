@@ -284,7 +284,7 @@
           keys.add(metadataKey);
         }
         if (keys.size > 0) {
-          await this.removeLocalStorage(Array.from(keys));
+          await this.removeReviewStorage(Array.from(keys));
         }
         suppressionKeys.forEach((key) =>
           this.officialViewedSyncSuppressed.delete(key),

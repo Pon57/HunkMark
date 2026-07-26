@@ -301,7 +301,7 @@
           await this.setReviewStorage(migrations);
         }
         if (migrationRemovals.size > 0) {
-          await this.removeLocalStorage(Array.from(migrationRemovals));
+          await this.removeReviewStorage(Array.from(migrationRemovals));
         }
       }
 

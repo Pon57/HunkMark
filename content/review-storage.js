@@ -83,7 +83,45 @@
       return groups;
     },
 
+    // Web Locks are not reentrant. Public mutators acquire the lock; code
+    // already inside that callback must use the explicit Unlocked helpers.
+    async withReviewStorageLock(callback) {
+      const lockManager = this.window?.navigator?.locks;
+      if (typeof lockManager?.request !== "function") {
+        return callback();
+      }
+      return lockManager.request(
+        this.constants.REVIEW_STORAGE_LOCK_NAME,
+        { mode: "exclusive" },
+        () => callback(),
+      );
+    },
+
     async setReviewStorage(
+      values,
+      scope = this.currentReviewScope,
+      now = Date.now(),
+    ) {
+      return this.withReviewStorageLock(() =>
+        this.setReviewStorageUnlocked(values, scope, now),
+      );
+    },
+
+    async setReviewStorageValuesUnlocked(values) {
+      return this.setLocalStorage(values);
+    },
+
+    async removeReviewStorage(keys) {
+      return this.withReviewStorageLock(() =>
+        this.removeReviewStorageUnlocked(keys),
+      );
+    },
+
+    async removeReviewStorageUnlocked(keys) {
+      return this.removeLocalStorage(keys);
+    },
+
+    async setReviewStorageUnlocked(
       values,
       scope = this.currentReviewScope,
       now = Date.now(),
@@ -111,7 +149,7 @@
         };
       }
 
-      await this.setLocalStorage(storedValues);
+      await this.setReviewStorageValuesUnlocked(storedValues);
       Object.entries(storedValues).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
@@ -122,7 +160,7 @@
         this.reviewContextAccessedAtById.set(contextId, now);
       }
       if (this.reviewStorageLimitExceeded()) {
-        await this.ensureStoredReviewStatePruned({
+        await this.ensureStoredReviewStatePrunedUnlocked({
           currentContext: contextScope,
           maxEntries: this.reviewStorageEntryLimit(),
           now,
@@ -131,6 +169,15 @@
     },
 
     async touchReviewContextAccess(
+      scope = this.currentScope,
+      now = Date.now(),
+    ) {
+      return this.withReviewStorageLock(() =>
+        this.touchReviewContextAccessUnlocked(scope, now),
+      );
+    },
+
+    async touchReviewContextAccessUnlocked(
       scope = this.currentScope,
       now = Date.now(),
     ) {
@@ -157,7 +204,7 @@
         return false;
       }
 
-      await this.setLocalStorage({
+      await this.setReviewStorageValuesUnlocked({
         [this.Core.reviewContextMetadataKeyForId(contextId)]: {
           lastAccessedAt: now,
         },
@@ -220,28 +267,42 @@
     },
 
     async ensureStoredReviewStatePruned(options = {}) {
+      return this.withReviewStorageLock(() =>
+        this.ensureStoredReviewStatePrunedUnlocked(options),
+      );
+    },
+
+    async ensureStoredReviewStatePrunedUnlocked(options = {}) {
       if (this.reviewStoragePrunePromise) {
         await this.reviewStoragePrunePromise;
         const maxEntries =
           options.maxEntries ?? this.reviewStorageEntryLimit();
         if (this.reviewStorageLimitExceeded(maxEntries)) {
-          return this.ensureStoredReviewStatePruned(options);
+          return this.ensureStoredReviewStatePrunedUnlocked(options);
         }
         return;
       }
 
       this.reviewStoragePrunePromise =
-        this.pruneStoredReviewState(options).finally(() => {
+        this.pruneStoredReviewStateUnlocked(options).finally(() => {
           this.reviewStoragePrunePromise = null;
         });
       return this.reviewStoragePrunePromise;
     },
 
-    async pruneStoredReviewState({
-      currentContext = this.currentScope,
-      maxEntries = this.constants.REVIEW_STORAGE_MAX_ENTRIES,
-      now = Date.now(),
-    } = {}) {
+    async pruneStoredReviewState(options = {}) {
+      return this.withReviewStorageLock(() =>
+        this.pruneStoredReviewStateUnlocked(options),
+      );
+    },
+
+    async pruneStoredReviewStateUnlocked(
+      {
+        currentContext = this.currentScope,
+        maxEntries = this.constants.REVIEW_STORAGE_MAX_ENTRIES,
+        now = Date.now(),
+      } = {},
+    ) {
       const stored = await this.getLocalStorage(null);
       this.reviewStorageKeys.clear();
       this.lineReviewContextByKey.clear();
@@ -330,10 +391,10 @@
         });
 
       if (removals.size > 0) {
-        await this.removeLocalStorage(Array.from(removals));
+        await this.removeReviewStorageUnlocked(Array.from(removals));
       }
       if (Object.keys(metadataValues).length > 0) {
-        await this.setLocalStorage(metadataValues);
+        await this.setReviewStorageValuesUnlocked(metadataValues);
       }
 
       removals.forEach((key) => {
