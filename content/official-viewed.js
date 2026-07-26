@@ -241,14 +241,23 @@
           this.restoreFileProgress(hunk.fileElement, hunk.filePath);
           restoredFiles.add(hunk.fileElement);
         }
+        let invalidatedLineReview = false;
         hunk.lines.forEach((line) => {
+          if (!this.reviewStorageKeys.has(line.key)) {
+            return;
+          }
           if (
             this.lineReviewContextByKey.get(line.key) ===
             line.contextFingerprint
           ) {
             line.element.classList.add("hunkmark-line-viewed");
+          } else {
+            invalidatedLineReview = true;
           }
         });
+        if (invalidatedLineReview) {
+          return;
+        }
         if (
           !guard.collapsedKeys.has(hunk.key) &&
           !this.reviewStorageKeys.has(`${hunk.key}:collapsed`)

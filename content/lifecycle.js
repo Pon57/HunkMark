@@ -256,20 +256,21 @@
           controller.marked = hunkStored;
           let invalidatedLineReview = false;
           controller.lines.forEach((line) => {
+            const storedLineReview = stored[line.key];
             const storedMatches = this.storedLineReviewMatches(
               line,
-              stored[line.key],
+              storedLineReview,
             );
             const previousLine = previousLineMarks.get(line.key);
             const previousMatches =
+              storedLineReview === undefined &&
               previousLine?.marked === true &&
               (previousLine.contextFingerprint === line.contextFingerprint ||
                 (expandedByHost && previousLine.element === line.element));
             line.marked = storedMatches || previousMatches;
             line.input.disabled = false;
-            if (stored[line.key] && !storedMatches) {
+            if (storedLineReview !== undefined && !storedMatches) {
               invalidatedLineReview = true;
-              migrationRemovals.add(line.key);
             }
             if (line.marked && !storedMatches) {
               migrations[line.key] = this.lineReviewStorageValue(
@@ -282,9 +283,8 @@
           this.updateAggregateFromLines(controller);
           if (invalidatedLineReview) {
             controller.collapsed = false;
-            migrationRemovals.add(controller.collapsedKey);
           }
-          if (expandedByHost) {
+          if (expandedByHost && !invalidatedLineReview) {
             migrationRemovals.add(controller.collapsedKey);
             previous.forEach((candidate) =>
               migrationRemovals.add(candidate.collapsedKey),
@@ -461,18 +461,24 @@
         }
 
         let lineChanged = false;
+        let invalidatedLineReview = false;
         controller.lines.forEach((line) => {
           if (changes[line.key]) {
-            line.marked = this.storedLineReviewMatches(
+            const nextValue = changes[line.key].newValue;
+            const storedMatches = this.storedLineReviewMatches(
               line,
-              changes[line.key].newValue,
+              nextValue,
+            );
+            line.marked = storedMatches;
+            invalidatedLineReview ||= (
+              nextValue !== undefined && !storedMatches
             );
             lineChanged = true;
           }
         });
 
         const hunkChange = changes[controller.key];
-        if (hunkChange?.newValue) {
+        if (hunkChange?.newValue && !invalidatedLineReview) {
           controller.marked = true;
           controller.indeterminate = false;
           controller.lines.forEach((line) => {
@@ -486,6 +492,9 @@
         } else if (hunkChange) {
           controller.marked = false;
           controller.indeterminate = false;
+        }
+        if (invalidatedLineReview) {
+          controller.collapsed = false;
         }
 
         if (

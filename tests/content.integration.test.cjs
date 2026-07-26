@@ -1732,12 +1732,140 @@ test("fails closed when a reviewed line moves to a different context", async () 
       );
       assert.equal(after.marked, false);
       assert.equal(after.collapsed, false);
-      assert.equal(after.lines[0].key in chrome.snapshot(), false);
-      assert.equal(after.collapsedKey in chrome.snapshot(), false);
+      assert.equal(
+        chrome.snapshot()[after.lines[0].key].contextFingerprint,
+        before.lines[0].contextFingerprint,
+      );
+      assert.ok(chrome.snapshot()[after.collapsedKey]);
     });
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("preserves a newer tab's review state when a stale tab rerenders", async () => {
+  const sharedChrome = createChromeApi();
+  const staleTab = await startExtension(
+    contextualLineFixture({
+      after: "log();",
+      before: "benign();",
+      officialControl: true,
+    }),
+    {},
+    { chromeInstance: sharedChrome },
+  );
+  let currentTab = null;
+  try {
+    const staleController = Array.from(
+      staleTab.app.controllersByRow.values(),
+    )[0];
+    staleController.input.checked = true;
+    staleController.input.dispatchEvent(
+      new staleTab.dom.window.Event("change", { bubbles: true }),
+    );
+    await waitFor(() => {
+      assert.equal(staleController.input.disabled, false);
+      assert.equal(staleController.marked, true);
+      assert.equal(staleController.collapsed, true);
+    });
+
+    const lineKey = staleController.lines[0].key;
+    const collapsedKey = staleController.collapsedKey;
+    const staleFingerprint =
+      staleController.lines[0].contextFingerprint;
+
+    currentTab = await startExtension(
+      contextualLineFixture({
+        after: "audit();",
+        before: "if (isAdmin) {",
+        officialControl: true,
+      }),
+      {},
+      { chromeInstance: sharedChrome },
+    );
+    const currentController = Array.from(
+      currentTab.app.controllersByRow.values(),
+    )[0];
+    assert.equal(currentController.lines[0].key, lineKey);
+    assert.notEqual(
+      currentController.lines[0].contextFingerprint,
+      staleFingerprint,
+    );
+    assert.equal(currentController.marked, false);
+    assert.equal(currentController.collapsed, false);
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      staleFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+
+    currentController.input.checked = true;
+    currentController.input.dispatchEvent(
+      new currentTab.dom.window.Event("change", { bubbles: true }),
+    );
+    await waitFor(() => {
+      assert.equal(currentController.input.disabled, false);
+      assert.equal(currentController.marked, true);
+      assert.equal(currentController.collapsed, true);
+      assert.equal(staleController.marked, false);
+      assert.equal(staleController.collapsed, false);
+    });
+    const currentFingerprint =
+      currentController.lines[0].contextFingerprint;
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      currentFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+
+    staleTab.app.startOfficialViewedRestoreGuard(
+      staleController.officialSuppressionKey,
+      staleController.filePath,
+    );
+    assert.equal(
+      staleTab.app.preserveOfficialViewedRestoredState(),
+      true,
+    );
+    assert.equal(
+      staleController.groupRows.some(
+        (row) =>
+          row !== staleController.hunkRow &&
+          row.classList.contains("hunkmark-collapsed"),
+      ),
+      false,
+    );
+
+    const staleHeader = staleTab.dom.window.document.querySelector(
+      ".blob-code-hunk",
+    );
+    const replacement = staleHeader.cloneNode(false);
+    replacement.textContent = staleHeader.textContent;
+    staleHeader.replaceWith(replacement);
+
+    let rebuiltStaleController;
+    await waitFor(() => {
+      rebuiltStaleController = Array.from(
+        staleTab.app.controllersByRow.values(),
+      )[0];
+      assert.notEqual(rebuiltStaleController, staleController);
+      assert.equal(rebuiltStaleController.input.disabled, false);
+      assert.equal(rebuiltStaleController.marked, false);
+      assert.equal(rebuiltStaleController.collapsed, false);
+    });
+
+    assert.equal(currentController.marked, true);
+    assert.equal(currentController.collapsed, true);
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      currentFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+  } finally {
+    currentTab?.app.stop();
+    currentTab?.dom.window.close();
+    staleTab.app.stop();
+    staleTab.dom.window.close();
   }
 });
 
@@ -1801,7 +1929,11 @@ test("ignores legacy line marks that lack context evidence", async () => {
       )[0];
       assert.equal(controller.input.disabled, false);
       assert.equal(controller.marked, false);
-      assert.equal(lineKey in restored.chrome.snapshot(), false);
+      assert.ok(restored.chrome.snapshot()[lineKey]);
+      assert.equal(
+        restored.chrome.snapshot()[lineKey].contextFingerprint,
+        undefined,
+      );
     });
   } finally {
     restored.app.stop();
