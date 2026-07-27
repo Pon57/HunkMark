@@ -222,87 +222,102 @@
             ]),
           ),
         ];
-        const stored = await this.getLocalStorage(keys);
-        const migrations = {};
-        const migrationRemovals = new Set();
-        const migrationTime = Date.now();
+        await this.withReviewStorageLock(async () => {
+          const stored = await this.getLocalStorage(keys);
+          const migrations = {};
+          const migrationRemovals = new Set();
+          const migrationTime = Date.now();
 
-        newControllers.forEach((controller) => {
-          const previous = previousByController.get(controller) ?? [];
-          const previousLineMarks = new Map(
-            previous.flatMap((candidate) =>
-              candidate.lines.map((line) => [
-                line.key,
-                {
-                  contextFingerprint: line.contextFingerprint,
-                  element: line.element,
-                  marked: line.marked,
-                },
-              ]),
-            ),
-          );
-          const hunkStored =
-            controller.lines.length === 0 && Boolean(stored[controller.key]);
-          const expandedByHost =
-            previous.length > 1 ||
-            (previous.length === 1 &&
-              controller.groupRows.length > previous[0].groupRows.length);
-          const suppressionKey = controller.officialSuppressionKey;
-          if (stored[suppressionKey]) {
-            this.officialViewedSyncSuppressed.add(suppressionKey);
-          }
-          controller.collapsed =
-            !expandedByHost && Boolean(stored[controller.collapsedKey]);
-          controller.marked = hunkStored;
-          let invalidatedLineReview = false;
-          controller.lines.forEach((line) => {
-            const storedLineReview = stored[line.key];
-            const storedMatches = this.storedLineReviewMatches(
-              line,
-              storedLineReview,
+          newControllers.forEach((controller) => {
+            const previous = previousByController.get(controller) ?? [];
+            const previousLineMarks = new Map(
+              previous.flatMap((candidate) =>
+                candidate.lines.map((line) => [
+                  line.key,
+                  {
+                    contextFingerprint: line.contextFingerprint,
+                    element: line.element,
+                    marked: line.marked,
+                  },
+                ]),
+              ),
             );
-            const previousLine = previousLineMarks.get(line.key);
-            const previousMatches =
-              storedLineReview === undefined &&
-              previousLine?.marked === true &&
-              (previousLine.contextFingerprint === line.contextFingerprint ||
-                (expandedByHost && previousLine.element === line.element));
-            line.marked = storedMatches || previousMatches;
-            line.input.disabled = false;
-            if (storedLineReview !== undefined && !storedMatches) {
-              invalidatedLineReview = true;
+            const hunkStored =
+              controller.lines.length === 0 &&
+              Boolean(stored[controller.key]);
+            const expandedByHost =
+              previous.length > 1 ||
+              (previous.length === 1 &&
+                controller.groupRows.length > previous[0].groupRows.length);
+            const suppressionKey = controller.officialSuppressionKey;
+            if (stored[suppressionKey]) {
+              this.officialViewedSyncSuppressed.add(suppressionKey);
             }
-            if (line.marked && !storedMatches) {
-              migrations[line.key] = this.lineReviewStorageValue(
+            controller.collapsed =
+              !expandedByHost && Boolean(stored[controller.collapsedKey]);
+            controller.marked = hunkStored;
+            let invalidatedLineReview = false;
+            let preservedLineReviewForOtherContext = false;
+            controller.lines.forEach((line) => {
+              const storedLineReview = stored[line.key];
+              const storedMatches = this.storedLineReviewMatches(
                 line,
-                migrationTime,
-                { migratedFromHostExpansion: true },
+                storedLineReview,
+              );
+              const previousLine = previousLineMarks.get(line.key);
+              const previousMatches =
+                storedLineReview === undefined &&
+                previousLine?.marked === true &&
+                (previousLine.contextFingerprint === line.contextFingerprint ||
+                  (expandedByHost && previousLine.element === line.element));
+              line.marked = storedMatches || previousMatches;
+              line.input.disabled = false;
+              if (storedLineReview !== undefined && !storedMatches) {
+                invalidatedLineReview = true;
+                if (this.storedLineReviewHasContext(storedLineReview)) {
+                  preservedLineReviewForOtherContext = true;
+                } else {
+                  migrationRemovals.add(line.key);
+                }
+              }
+              if (line.marked && !storedMatches) {
+                migrations[line.key] = this.lineReviewStorageValue(
+                  line,
+                  migrationTime,
+                  { migratedFromHostExpansion: true },
+                );
+              }
+            });
+            this.updateAggregateFromLines(controller);
+            if (invalidatedLineReview) {
+              controller.collapsed = false;
+              if (!preservedLineReviewForOtherContext) {
+                migrationRemovals.add(controller.collapsedKey);
+              }
+            }
+            if (
+              expandedByHost &&
+              !preservedLineReviewForOtherContext
+            ) {
+              migrationRemovals.add(controller.collapsedKey);
+              previous.forEach((candidate) =>
+                migrationRemovals.add(candidate.collapsedKey),
               );
             }
+            controller.input.disabled = false;
+            this.applyControllerAppearance(controller);
           });
-          this.updateAggregateFromLines(controller);
-          if (invalidatedLineReview) {
-            controller.collapsed = false;
-          }
-          if (expandedByHost && !invalidatedLineReview) {
-            migrationRemovals.add(controller.collapsedKey);
-            previous.forEach((candidate) =>
-              migrationRemovals.add(candidate.collapsedKey),
-            );
-          }
-          controller.input.disabled = false;
-          this.applyControllerAppearance(controller);
-        });
 
-        if (Object.keys(migrations).length > 0) {
           Object.keys(migrations).forEach((key) =>
             migrationRemovals.delete(key),
           );
-          await this.setReviewStorage(migrations);
-        }
-        if (migrationRemovals.size > 0) {
-          await this.removeReviewStorage(Array.from(migrationRemovals));
-        }
+          await this.mutateReviewStorageUnlocked({
+            values: migrations,
+            removals: Array.from(migrationRemovals),
+            scope: this.currentReviewScope,
+            now: migrationTime,
+          });
+        });
       }
 
       this.updateProgress();

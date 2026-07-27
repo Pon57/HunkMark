@@ -437,16 +437,12 @@
           }
         });
         Object.keys(values).forEach((key) => removals.delete(key));
-        if (Object.keys(values).length > 0) {
-          await this.setReviewStorage(
-            values,
-            this.currentReviewScope,
-            viewedAt,
-          );
-        }
-        if (removals.size > 0) {
-          await this.removeReviewStorage(Array.from(removals));
-        }
+        await this.mutateReviewStorage({
+          values,
+          removals: Array.from(removals),
+          scope: this.currentReviewScope,
+          now: viewedAt,
+        });
         this.releaseOfficialViewedSuppression(affectedControllers);
         this.syncOfficialViewedForControllers(affectedControllers);
       } catch (error) {

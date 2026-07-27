@@ -327,6 +327,10 @@
     }
   }
 
+  function isReviewIdentifier(value) {
+    return typeof value === "string" && IDENTIFIER_PATTERN.test(value);
+  }
+
   function cachedReviewStorageIds(scope) {
     const contextScope = reviewContextScope(scope);
     if (!contextScope) {
@@ -528,6 +532,14 @@
     );
   }
 
+  function isLineReviewStorageKey(key) {
+    return (
+      typeof key === "string" &&
+      key.startsWith(LINE_REVIEW_STORAGE_PREFIX) &&
+      reviewStateKeyIdentity(key) !== null
+    );
+  }
+
   function isReviewContextMetadataKey(key) {
     return (
       typeof key === "string" &&
@@ -578,6 +590,10 @@
       return key.slice(REVIEW_CONTEXT_METADATA_PREFIX.length) || null;
     }
     return reviewStateKeyIdentity(key)?.contextId ?? null;
+  }
+
+  function reviewStorageRangeId(key) {
+    return reviewStateKeyIdentity(key)?.rangeId ?? null;
   }
 
   function isObsoleteReviewStorageKey(key) {
@@ -643,6 +659,8 @@
     IDENTIFIER_DOMAINS,
     isObsoleteReviewStorageKey,
     isReviewContextMetadataKey,
+    isReviewIdentifier,
+    isLineReviewStorageKey,
     isReviewStorageKey,
     isHunkHeaderText,
     lineStorageKey,
@@ -659,6 +677,7 @@
     reviewContextScope,
     reviewStateScope,
     reviewStorageContextId,
+    reviewStorageRangeId,
     reviewStoragePrefixes,
     reviewStoragePrefixesForContext,
     hunkStorageKey,

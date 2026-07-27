@@ -8,7 +8,9 @@
 
   Object.assign(App.prototype, {
     lineReviewStorageValue(lineController, viewedAt, extra = {}) {
-      if (typeof lineController?.contextFingerprint !== "string") {
+      if (
+        !this.Core.isReviewIdentifier(lineController?.contextFingerprint)
+      ) {
         throw new TypeError("A line review context fingerprint is required");
       }
       return {
@@ -18,10 +20,14 @@
       };
     },
 
+    storedLineReviewHasContext(value) {
+      return this.Core.isReviewIdentifier(value?.contextFingerprint);
+    },
+
     storedLineReviewMatches(lineController, value) {
       return (
-        typeof lineController?.contextFingerprint === "string" &&
-        typeof value?.contextFingerprint === "string" &&
+        this.Core.isReviewIdentifier(lineController?.contextFingerprint) &&
+        this.storedLineReviewHasContext(value) &&
         value.contextFingerprint === lineController.contextFingerprint
       );
     },
@@ -33,7 +39,7 @@
       ) {
         return;
       }
-      if (typeof value?.contextFingerprint === "string") {
+      if (this.storedLineReviewHasContext(value)) {
         this.lineReviewContextByKey.set(key, value.contextFingerprint);
       } else {
         this.lineReviewContextByKey.delete(key);
@@ -53,12 +59,21 @@
       return Number.isFinite(timestamp) ? timestamp : 0;
     },
 
-    storedReviewContextGroups(stored) {
+    storedReviewContextGroups(stored, excludedKeys = new Set()) {
       const groups = new Map();
 
       Object.entries(stored).forEach(([key, value]) => {
+        if (excludedKeys.has(key)) {
+          return;
+        }
         const contextId = this.Core.reviewStorageContextId(key);
         if (!contextId) {
+          return;
+        }
+        if (
+          this.Core.isLineReviewStorageKey(key) &&
+          !this.storedLineReviewHasContext(value)
+        ) {
           return;
         }
         const group = groups.get(contextId) ?? {
@@ -85,13 +100,20 @@
 
     // Web Locks are not reentrant. Public mutators acquire the lock; code
     // already inside that callback must use the explicit Unlocked helpers.
+    reviewStorageLockName() {
+      const extensionId = this.chrome?.runtime?.id;
+      return typeof extensionId === "string" && extensionId.length > 0
+        ? `${extensionId}:${this.constants.REVIEW_STORAGE_LOCK_NAME}`
+        : this.constants.REVIEW_STORAGE_LOCK_NAME;
+    },
+
     async withReviewStorageLock(callback) {
       const lockManager = this.window?.navigator?.locks;
       if (typeof lockManager?.request !== "function") {
         return callback();
       }
       return lockManager.request(
-        this.constants.REVIEW_STORAGE_LOCK_NAME,
+        this.reviewStorageLockName(),
         { mode: "exclusive" },
         () => callback(),
       );
@@ -102,9 +124,71 @@
       scope = this.currentReviewScope,
       now = Date.now(),
     ) {
+      return this.mutateReviewStorage({ values, scope, now });
+    },
+
+    async mutateReviewStorage({
+      values = {},
+      removals = [],
+      scope = this.currentReviewScope,
+      now = Date.now(),
+    } = {}) {
       return this.withReviewStorageLock(() =>
-        this.setReviewStorageUnlocked(values, scope, now),
+        this.mutateReviewStorageUnlocked({
+          values,
+          removals,
+          scope,
+          now,
+        }),
       );
+    },
+
+    async mutateReviewStorageUnlocked({
+      values = {},
+      removals = [],
+      scope = this.currentReviewScope,
+      now = Date.now(),
+    } = {}) {
+      const storedKeys = Object.keys(values);
+      const invalidLineKey = storedKeys.find(
+        (key) =>
+          this.Core.isLineReviewStorageKey(key) &&
+          !this.storedLineReviewHasContext(values[key]),
+      );
+      if (invalidLineKey) {
+        throw new TypeError(
+          "A persisted line review context fingerprint is required",
+        );
+      }
+      const storedKeySet = new Set(storedKeys);
+      const removalKeys = [
+        ...new Set(Array.isArray(removals) ? removals : [removals]),
+      ].filter(
+        (key) => typeof key === "string" && !storedKeySet.has(key),
+      );
+
+      if (storedKeys.length > 0) {
+        await this.setReviewStorageUnlocked(
+          values,
+          scope,
+          now,
+          { prune: removalKeys.length === 0 },
+        );
+      }
+      if (removalKeys.length > 0) {
+        await this.removeReviewStorageUnlocked(removalKeys);
+      }
+      if (
+        storedKeys.length > 0 &&
+        removalKeys.length > 0 &&
+        this.reviewStorageLimitExceeded()
+      ) {
+        await this.ensureStoredReviewStatePrunedUnlocked({
+          currentContext: this.Core.reviewContextScope(scope),
+          maxEntries: this.reviewStorageEntryLimit(),
+          now,
+        });
+      }
     },
 
     async setReviewStorageValuesUnlocked(values) {
@@ -118,13 +202,28 @@
     },
 
     async removeReviewStorageUnlocked(keys) {
-      return this.removeLocalStorage(keys);
+      const list = Array.isArray(keys) ? keys : [keys];
+      if (list.length === 0) {
+        return;
+      }
+      await this.removeLocalStorage(list);
+      list.forEach((key) => {
+        this.reviewStorageKeys.delete(key);
+        this.rememberLineReviewContext(key, undefined);
+        if (this.Core.isReviewContextMetadataKey(key)) {
+          const contextId = this.Core.reviewStorageContextId(key);
+          if (contextId) {
+            this.reviewContextAccessedAtById.delete(contextId);
+          }
+        }
+      });
     },
 
     async setReviewStorageUnlocked(
       values,
       scope = this.currentReviewScope,
       now = Date.now(),
+      { prune = true } = {},
     ) {
       const contextScope = this.Core.reviewContextScope(scope);
       const contextId = contextScope
@@ -159,7 +258,7 @@
       if (shouldRecordAccess) {
         this.reviewContextAccessedAtById.set(contextId, now);
       }
-      if (this.reviewStorageLimitExceeded()) {
+      if (prune && this.reviewStorageLimitExceeded()) {
         await this.ensureStoredReviewStatePrunedUnlocked({
           currentContext: contextScope,
           maxEntries: this.reviewStorageEntryLimit(),
@@ -312,15 +411,40 @@
         }
         this.rememberLineReviewContext(key, value);
       });
-      const groups = this.storedReviewContextGroups(stored);
       const currentContextId = currentContext
         ? await this.Core.reviewContextId(currentContext)
         : null;
-      const removals = new Set(
-        Object.keys(stored).filter((key) =>
-          this.Core.isObsoleteReviewStorageKey(key),
-        ),
+      // A collapsed state backed by malformed line evidence can hide
+      // unreviewed code, so clear collapsed entries in the affected range.
+      const invalidLineRanges = new Set(
+        Object.entries(stored)
+          .filter(
+            ([key, value]) =>
+              this.Core.isLineReviewStorageKey(key) &&
+              !this.storedLineReviewHasContext(value),
+          )
+          .map(([key]) => {
+            const contextId = this.Core.reviewStorageContextId(key);
+            const rangeId = this.Core.reviewStorageRangeId(key);
+            return `${contextId}\u0000${rangeId}`;
+          }),
       );
+      const removals = new Set(
+        Object.entries(stored)
+          .filter(
+            ([key, value]) =>
+              this.Core.isObsoleteReviewStorageKey(key) ||
+              (this.Core.isLineReviewStorageKey(key) &&
+                !this.storedLineReviewHasContext(value)) ||
+              (key.endsWith(":collapsed") &&
+                invalidLineRanges.has(
+                  `${this.Core.reviewStorageContextId(key)}\u0000` +
+                    this.Core.reviewStorageRangeId(key),
+                )),
+          )
+          .map(([key]) => key),
+      );
+      const groups = this.storedReviewContextGroups(stored, removals);
       const metadataValues = {};
       const retainedGroups = [];
 
@@ -397,10 +521,6 @@
         await this.setReviewStorageValuesUnlocked(metadataValues);
       }
 
-      removals.forEach((key) => {
-        this.reviewStorageKeys.delete(key);
-        this.rememberLineReviewContext(key, undefined);
-      });
       Object.keys(metadataValues).forEach((key) =>
         this.reviewStorageKeys.add(key),
       );
