@@ -252,6 +252,8 @@
     },
 
     async resetCurrentPage(resetButton) {
+      const reviewScope = this.currentReviewScope;
+      const contextScope = this.currentScope;
       const controllers = Array.from(this.controllersByRow.values()).filter(
         (controller) => controller.hunkRow.isConnected,
       );
@@ -262,46 +264,48 @@
 
       resetButton.disabled = true;
       try {
-        const [stored, scopePrefixes, contextPrefixes, metadataKey] =
+        const [scopePrefixes, contextPrefixes, metadataKey] =
           await Promise.all([
-            this.getLocalStorage(null),
-            this.Core.reviewStoragePrefixes(this.currentReviewScope),
-            this.Core.reviewStoragePrefixesForContext(this.currentScope),
-            this.Core.reviewContextMetadataKey(this.currentScope),
+            this.Core.reviewStoragePrefixes(reviewScope),
+            this.Core.reviewStoragePrefixesForContext(contextScope),
+            this.Core.reviewContextMetadataKey(contextScope),
           ]);
-        const keys = new Set([
-          ...Object.keys(stored).filter((key) =>
-            scopePrefixes.some((prefix) => key.startsWith(prefix)),
-          ),
-          ...suppressionKeys,
-        ]);
-        const hasOtherRanges = Object.keys(stored).some(
-          (key) =>
-            !keys.has(key) &&
-            contextPrefixes.some((prefix) => key.startsWith(prefix)),
-        );
-        if (!hasOtherRanges) {
-          keys.add(metadataKey);
-        }
-        if (keys.size > 0) {
-          await this.removeLocalStorage(Array.from(keys));
-        }
-        suppressionKeys.forEach((key) =>
-          this.officialViewedSyncSuppressed.delete(key),
-        );
-        if (!hasOtherRanges) {
-          await this.forgetReviewContextAccess(this.currentScope);
-        }
-        controllers.forEach((controller) => {
-          controller.marked = false;
-          controller.indeterminate = false;
-          controller.collapsed = false;
-          controller.lines.forEach((line) => {
-            line.marked = false;
+        await this.withReviewStorageLock(async () => {
+          const stored = await this.getLocalStorage(null);
+          const keys = new Set([
+            ...Object.keys(stored).filter((key) =>
+              scopePrefixes.some((prefix) => key.startsWith(prefix)),
+            ),
+            ...suppressionKeys,
+          ]);
+          const otherRangesExist = Object.keys(stored).some(
+            (key) =>
+              !keys.has(key) &&
+              contextPrefixes.some((prefix) => key.startsWith(prefix)),
+          );
+          if (!otherRangesExist) {
+            keys.add(metadataKey);
+          }
+          if (keys.size > 0) {
+            await this.removeReviewStorageUnlocked(Array.from(keys));
+          }
+          suppressionKeys.forEach((key) =>
+            this.officialViewedSyncSuppressed.delete(key),
+          );
+          if (!otherRangesExist) {
+            await this.forgetReviewContextAccess(contextScope);
+          }
+          controllers.forEach((controller) => {
+            controller.marked = false;
+            controller.indeterminate = false;
+            controller.collapsed = false;
+            controller.lines.forEach((line) => {
+              line.marked = false;
+            });
+            this.applyControllerAppearance(controller);
           });
-          this.applyControllerAppearance(controller);
+          this.updateProgress();
         });
-        this.updateProgress();
       } catch (error) {
         if (!this.stopForInvalidatedContext(error)) {
           console.warn("HunkMark could not reset this page.", error);

@@ -113,6 +113,9 @@ function createChromeApi(initial = {}) {
 
   return {
     api: {
+      runtime: {
+        id: "test-hunkmark-extension",
+      },
       storage: {
         local,
         onChanged: {
@@ -139,6 +142,40 @@ function createChromeApi(initial = {}) {
   };
 }
 
+function createExclusiveLockManager() {
+  const queues = new Map();
+  const requests = [];
+
+  return {
+    requests,
+    async request(name, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = {};
+      }
+      const mode = options?.mode ?? "exclusive";
+      requests.push({ mode, name });
+
+      const previous = queues.get(name) ?? Promise.resolve();
+      let release;
+      const current = new Promise((resolve) => {
+        release = resolve;
+      });
+      queues.set(name, current);
+      await previous;
+
+      try {
+        return await callback({ mode, name });
+      } finally {
+        release();
+        if (queues.get(name) === current) {
+          queues.delete(name);
+        }
+      }
+    },
+  };
+}
+
 async function waitFor(assertion, timeoutMs = 2500) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -157,12 +194,14 @@ async function startExtension(
   html,
   initialStorage = {},
   {
+    chromeInstance = null,
     digestInputSizes = null,
+    lockManager = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
   } = {},
 ) {
-  const chrome = createChromeApi(initialStorage);
+  const chrome = chromeInstance ?? createChromeApi(initialStorage);
   const dom = new JSDOM(html, {
     pretendToBeVisual: true,
     runScripts: "outside-only",
@@ -183,6 +222,12 @@ async function startExtension(
   });
   dom.window.TextEncoder = globalThis.TextEncoder;
   dom.window.chrome = chrome.api;
+  if (lockManager) {
+    Object.defineProperty(dom.window.navigator, "locks", {
+      configurable: true,
+      value: lockManager,
+    });
+  }
   dom.window.ResizeObserver = class ResizeObserver {
     observe() {}
     disconnect() {}
@@ -1690,12 +1735,155 @@ test("fails closed when a reviewed line moves to a different context", async () 
       );
       assert.equal(after.marked, false);
       assert.equal(after.collapsed, false);
-      assert.equal(after.lines[0].key in chrome.snapshot(), false);
-      assert.equal(after.collapsedKey in chrome.snapshot(), false);
+      assert.equal(
+        chrome.snapshot()[after.lines[0].key].contextFingerprint,
+        before.lines[0].contextFingerprint,
+      );
+      assert.ok(chrome.snapshot()[after.collapsedKey]);
     });
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("preserves a newer tab's review state when a stale tab rerenders", async () => {
+  const sharedChrome = createChromeApi();
+  const sharedLocks = createExclusiveLockManager();
+  const staleTab = await startExtension(
+    contextualLineFixture({
+      after: "log();",
+      before: "benign();",
+      officialControl: true,
+    }),
+    {},
+    {
+      chromeInstance: sharedChrome,
+      lockManager: sharedLocks,
+    },
+  );
+  let currentTab = null;
+  try {
+    const staleController = Array.from(
+      staleTab.app.controllersByRow.values(),
+    )[0];
+    staleController.input.checked = true;
+    staleController.input.dispatchEvent(
+      new staleTab.dom.window.Event("change", { bubbles: true }),
+    );
+    await waitFor(() => {
+      assert.equal(staleController.input.disabled, false);
+      assert.equal(staleController.marked, true);
+      assert.equal(staleController.collapsed, true);
+    });
+
+    const lineKey = staleController.lines[0].key;
+    const collapsedKey = staleController.collapsedKey;
+    const staleFingerprint =
+      staleController.lines[0].contextFingerprint;
+
+    currentTab = await startExtension(
+      contextualLineFixture({
+        after: "audit();",
+        before: "if (isAdmin) {",
+        officialControl: true,
+      }),
+      {},
+      {
+        chromeInstance: sharedChrome,
+        lockManager: sharedLocks,
+      },
+    );
+    const currentController = Array.from(
+      currentTab.app.controllersByRow.values(),
+    )[0];
+    assert.equal(currentController.lines[0].key, lineKey);
+    assert.notEqual(
+      currentController.lines[0].contextFingerprint,
+      staleFingerprint,
+    );
+    assert.equal(currentController.marked, false);
+    assert.equal(currentController.collapsed, false);
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      staleFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+
+    currentController.input.checked = true;
+    currentController.input.dispatchEvent(
+      new currentTab.dom.window.Event("change", { bubbles: true }),
+    );
+    await waitFor(() => {
+      assert.equal(currentController.input.disabled, false);
+      assert.equal(currentController.marked, true);
+      assert.equal(currentController.collapsed, true);
+      assert.equal(staleController.marked, false);
+      assert.equal(staleController.collapsed, false);
+    });
+    const currentFingerprint =
+      currentController.lines[0].contextFingerprint;
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      currentFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+    assert.equal(
+      sharedLocks.requests.every(
+        ({ mode, name }) =>
+          mode === "exclusive" &&
+          name === staleTab.app.reviewStorageLockName(),
+      ),
+      true,
+    );
+
+    staleTab.app.startOfficialViewedRestoreGuard(
+      staleController.officialSuppressionKey,
+      staleController.filePath,
+    );
+    assert.equal(
+      staleTab.app.preserveOfficialViewedRestoredState(),
+      true,
+    );
+    assert.equal(
+      staleController.groupRows.some(
+        (row) =>
+          row !== staleController.hunkRow &&
+          row.classList.contains("hunkmark-collapsed"),
+      ),
+      false,
+    );
+
+    const staleHeader = staleTab.dom.window.document.querySelector(
+      ".blob-code-hunk",
+    );
+    const replacement = staleHeader.cloneNode(false);
+    replacement.textContent = staleHeader.textContent;
+    staleHeader.replaceWith(replacement);
+
+    let rebuiltStaleController;
+    await waitFor(() => {
+      rebuiltStaleController = Array.from(
+        staleTab.app.controllersByRow.values(),
+      )[0];
+      assert.notEqual(rebuiltStaleController, staleController);
+      assert.equal(rebuiltStaleController.input.disabled, false);
+      assert.equal(rebuiltStaleController.marked, false);
+      assert.equal(rebuiltStaleController.collapsed, false);
+    });
+
+    assert.equal(currentController.marked, true);
+    assert.equal(currentController.collapsed, true);
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      currentFingerprint,
+    );
+    assert.ok(sharedChrome.snapshot()[collapsedKey]);
+  } finally {
+    currentTab?.app.stop();
+    currentTab?.dom.window.close();
+    staleTab.app.stop();
+    staleTab.dom.window.close();
   }
 });
 
@@ -1736,6 +1924,7 @@ test("fails closed when invisible Unicode changes a reviewed line", async () => 
 test("ignores legacy line marks that lack context evidence", async () => {
   const discovery = await startExtension(contextualLineFixture());
   let lineKey;
+  let collapsedKey;
   try {
     await waitFor(() => {
       assert.equal(discovery.app.controllersByRow.size, 1);
@@ -1744,6 +1933,13 @@ test("ignores legacy line marks that lack context evidence", async () => {
       discovery.app.controllersByRow.values(),
     )[0];
     lineKey = controller.lines[0].key;
+    collapsedKey = controller.collapsedKey;
+    await assert.rejects(
+      discovery.app.setReviewStorage({
+        [lineKey]: { viewedAt: Date.now() },
+      }),
+      /context fingerprint is required/i,
+    );
   } finally {
     discovery.app.stop();
     discovery.dom.window.close();
@@ -1751,6 +1947,7 @@ test("ignores legacy line marks that lack context evidence", async () => {
 
   const restored = await startExtension(contextualLineFixture(), {
     [lineKey]: { viewedAt: Date.now() },
+    [collapsedKey]: { collapsed: true, updatedAt: Date.now() },
   });
   try {
     await waitFor(() => {
@@ -1759,7 +1956,9 @@ test("ignores legacy line marks that lack context evidence", async () => {
       )[0];
       assert.equal(controller.input.disabled, false);
       assert.equal(controller.marked, false);
+      assert.equal(controller.collapsed, false);
       assert.equal(lineKey in restored.chrome.snapshot(), false);
+      assert.equal(collapsedKey in restored.chrome.snapshot(), false);
     });
   } finally {
     restored.app.stop();
@@ -2046,9 +2245,11 @@ test("syncs official Viewed in a selected range when GitHub exposes it", async (
 
 test("removes legacy review state and prunes inactive pull requests as complete units", async () => {
   const now = Date.now();
+  const validContextFingerprint = "A".repeat(43);
   const currentContext = "github.com:octo/repo:pull:123";
   const expiredContext = "github.com:old/repo:pull:9";
   const recentContext = "github.com:recent/repo:pull:7";
+  const corruptContext = "github.com:corrupt/repo:pull:8";
   const currentScope = Core.reviewStateScope(
     currentContext,
     Core.ALL_COMMITS_REVIEW_VARIANT,
@@ -2064,6 +2265,10 @@ test("removes legacy review state and prunes inactive pull requests as complete 
   const recentScope = Core.reviewStateScope(
     recentContext,
     "selected:abc..def",
+  );
+  const corruptScope = Core.reviewStateScope(
+    corruptContext,
+    Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   const currentKey = await Core.lineStorageKey(
     currentScope,
@@ -2094,6 +2299,12 @@ test("removes legacy review state and prunes inactive pull requests as complete 
     "addition",
     "+recent",
   );
+  const corruptLineKey = await Core.lineStorageKey(
+    corruptScope,
+    "src/corrupt.js",
+    "addition",
+    "+corrupt",
+  );
   const preferenceKey =
     `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
   const expiredAt = now - 181 * 24 * 60 * 60 * 1000;
@@ -2110,17 +2321,36 @@ test("removes legacy review state and prunes inactive pull requests as complete 
     currentMetadataKey,
     expiredMetadataKey,
     recentMetadataKey,
+    corruptMetadataKey,
   ] = await Promise.all([
     Core.reviewContextMetadataKey(currentContext),
     Core.reviewContextMetadataKey(expiredContext),
     Core.reviewContextMetadataKey(recentContext),
+    Core.reviewContextMetadataKey(corruptContext),
   ]);
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
-    [currentKey]: { viewedAt: expiredAt },
-    [expiredLineKey]: { viewedAt: expiredAt },
+    [currentKey]: {
+      contextFingerprint: validContextFingerprint,
+      viewedAt: expiredAt,
+    },
+    [expiredLineKey]: {
+      contextFingerprint: validContextFingerprint,
+      viewedAt: expiredAt,
+    },
     [expiredCollapsedKey]: { collapsed: true, updatedAt: expiredAt },
-    [expiredSelectedKey]: { viewedAt: expiredAt },
-    [recentKey]: { viewedAt: recentAt },
+    [expiredSelectedKey]: {
+      contextFingerprint: validContextFingerprint,
+      viewedAt: expiredAt,
+    },
+    [recentKey]: {
+      contextFingerprint: validContextFingerprint,
+      viewedAt: recentAt,
+    },
+    [corruptLineKey]: {
+      contextFingerprint: "not-a-review-identifier",
+      viewedAt: recentAt,
+    },
+    [corruptMetadataKey]: { lastAccessedAt: recentAt },
     [legacyAccountStateKey]: { viewedAt: recentAt },
     [legacyAccountMetadataKey]: { lastAccessedAt: recentAt },
     [obsoleteScopeMetadataKey]: { lastAccessedAt: recentAt },
@@ -2138,6 +2368,8 @@ test("removes legacy review state and prunes inactive pull requests as complete 
       assert.equal(legacyAccountMetadataKey in stored, false);
       assert.equal(obsoleteScopeMetadataKey in stored, false);
       assert.equal(legacyContentStateKey in stored, false);
+      assert.equal(corruptLineKey in stored, false);
+      assert.equal(corruptMetadataKey in stored, false);
       assert.equal(currentKey in stored, true);
       assert.ok(
         stored[currentMetadataKey].lastAccessedAt >= now,
@@ -2152,6 +2384,230 @@ test("removes legacy review state and prunes inactive pull requests as complete 
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("serializes pruning with a fresh review write from another tab", async () => {
+  const sharedChrome = createChromeApi();
+  const sharedLocks = createExclusiveLockManager();
+  const tabA = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  const tabB = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  let prunePromise = null;
+  let writePromise = null;
+  let releaseSnapshot = () => {};
+
+  try {
+    const now = Date.now();
+    const staleAt =
+      now - tabA.app.constants.REVIEW_RETENTION_MS - 1;
+    const targetContext = "github.com:old/repo:pull:9";
+    const targetScope = Core.reviewStateScope(
+      targetContext,
+      Core.ALL_COMMITS_REVIEW_VARIANT,
+    );
+    const lineKey = await Core.lineStorageKey(
+      targetScope,
+      "src/old.js",
+      "addition",
+      "+old",
+    );
+    const metadataKey =
+      await Core.reviewContextMetadataKey(targetContext);
+
+    await tabA.app.setReviewStorage(
+      {
+        [lineKey]: {
+          contextFingerprint: "S".repeat(43),
+          viewedAt: staleAt,
+        },
+      },
+      targetScope,
+      staleAt,
+    );
+
+    const originalGetLocalStorage =
+      tabA.app.getLocalStorage.bind(tabA.app);
+    let signalSnapshotRead;
+    const snapshotRead = new Promise((resolve) => {
+      signalSnapshotRead = resolve;
+    });
+    const snapshotPause = new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let pauseNextSnapshot = true;
+    tabA.app.getLocalStorage = async (keys) => {
+      const stored = await originalGetLocalStorage(keys);
+      if (pauseNextSnapshot && keys === null) {
+        pauseNextSnapshot = false;
+        signalSnapshotRead();
+        await snapshotPause;
+      }
+      return stored;
+    };
+
+    prunePromise = tabA.app.pruneStoredReviewState({
+      currentContext: tabA.app.currentScope,
+      now,
+    });
+    await snapshotRead;
+
+    const freshAt = now + 1;
+    const freshValue = {
+      contextFingerprint: "F".repeat(43),
+      viewedAt: freshAt,
+    };
+    let writeFinished = false;
+    writePromise = tabB.app
+      .setReviewStorage(
+        { [lineKey]: freshValue },
+        targetScope,
+        freshAt,
+      )
+      .finally(() => {
+        writeFinished = true;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(writeFinished, false);
+
+    releaseSnapshot();
+    releaseSnapshot = () => {};
+    await Promise.all([prunePromise, writePromise]);
+
+    const stored = sharedChrome.snapshot();
+    assert.deepEqual(stored[lineKey], freshValue);
+    assert.equal(stored[metadataKey].lastAccessedAt, freshAt);
+    assert.equal(
+      sharedLocks.requests.every(
+        ({ mode, name }) =>
+          mode === "exclusive" &&
+          name === tabA.app.reviewStorageLockName(),
+      ),
+      true,
+    );
+  } finally {
+    releaseSnapshot();
+    await Promise.allSettled(
+      [prunePromise, writePromise].filter(Boolean),
+    );
+    tabB.app.stop();
+    tabB.dom.window.close();
+    tabA.app.stop();
+    tabA.dom.window.close();
+  }
+});
+
+test("serializes page reset with a fresh review write from another tab", async () => {
+  const sharedChrome = createChromeApi();
+  const sharedLocks = createExclusiveLockManager();
+  const tabA = await startExtension(contextualLineFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  const tabB = await startExtension(contextualLineFixture(), {}, {
+    chromeInstance: sharedChrome,
+    lockManager: sharedLocks,
+  });
+  let writePromise = null;
+  let releaseSnapshot = () => {};
+
+  try {
+    const controllerA = Array.from(tabA.app.controllersByRow.values())[0];
+    const controllerB = Array.from(tabB.app.controllersByRow.values())[0];
+    const lineKey = controllerA.lines[0].key;
+    const oldAt = Date.now();
+    await tabA.app.setReviewStorage(
+      {
+        [lineKey]: tabA.app.lineReviewStorageValue(
+          controllerA.lines[0],
+          oldAt,
+        ),
+      },
+      tabA.app.currentReviewScope,
+      oldAt,
+    );
+
+    const originalGetLocalStorage =
+      tabA.app.getLocalStorage.bind(tabA.app);
+    let signalSnapshotRead;
+    const snapshotRead = new Promise((resolve) => {
+      signalSnapshotRead = resolve;
+    });
+    const snapshotPause = new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let pauseNextSnapshot = true;
+    tabA.app.getLocalStorage = async (keys) => {
+      const stored = await originalGetLocalStorage(keys);
+      if (pauseNextSnapshot && keys === null) {
+        pauseNextSnapshot = false;
+        signalSnapshotRead();
+        await snapshotPause;
+      }
+      return stored;
+    };
+
+    const resetButton =
+      tabA.dom.window.document.querySelector(".hunkmark-reset-button");
+    resetButton.click();
+    await snapshotRead;
+
+    const freshAt = oldAt + 1;
+    const freshValue = tabB.app.lineReviewStorageValue(
+      controllerB.lines[0],
+      freshAt,
+    );
+    let writeFinished = false;
+    writePromise = tabB.app
+      .setReviewStorage(
+        { [lineKey]: freshValue },
+        tabB.app.currentReviewScope,
+        freshAt,
+      )
+      .finally(() => {
+        writeFinished = true;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(writeFinished, false);
+
+    releaseSnapshot();
+    releaseSnapshot = () => {};
+    await writePromise;
+    await waitFor(() => {
+      assert.equal(resetButton.disabled, false);
+      assert.equal(controllerA.marked, true);
+    });
+
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].contextFingerprint,
+      freshValue.contextFingerprint,
+    );
+    assert.equal(
+      sharedChrome.snapshot()[lineKey].viewedAt,
+      freshValue.viewedAt,
+    );
+    assert.equal(
+      sharedLocks.requests.every(
+        ({ mode, name }) =>
+          mode === "exclusive" &&
+          name === tabA.app.reviewStorageLockName(),
+      ),
+      true,
+    );
+  } finally {
+    releaseSnapshot();
+    await Promise.allSettled([writePromise].filter(Boolean));
+    tabB.app.stop();
+    tabB.dom.window.close();
+    tabA.app.stop();
+    tabA.dom.window.close();
   }
 });
 
@@ -2171,7 +2627,10 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
   const metadataKey = await Core.reviewContextMetadataKey(currentContext);
   const previousAccess = now - 60 * 60 * 1000;
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
-    [stateKey]: { viewedAt: previousAccess },
+    [stateKey]: {
+      contextFingerprint: "A".repeat(43),
+      viewedAt: previousAccess,
+    },
     [metadataKey]: { lastAccessedAt: previousAccess },
   });
   try {
@@ -2270,7 +2729,10 @@ test("evicts every range of the oldest pull request when over capacity", async (
     ],
   ]) {
     keys.forEach((key) => {
-      initial[key] = { viewedAt: lastAccessedAt };
+      initial[key] = {
+        contextFingerprint: "A".repeat(43),
+        viewedAt: lastAccessedAt,
+      };
     });
     initial[await Core.reviewContextMetadataKey(context)] = {
       lastAccessedAt,
@@ -2352,7 +2814,11 @@ test("enforces the review storage limit after later writes", async () => {
     "addition",
     "+current",
   );
-  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  const { app, chrome, dom } = await startExtension(
+    duplicateHunkFixture(),
+    {},
+    { lockManager: createExclusiveLockManager() },
+  );
   try {
     app.reviewStorageEntryLimit = () => 8;
     const initial = {};
@@ -2361,7 +2827,10 @@ test("enforces the review storage limit after later writes", async () => {
       [middleContext, middleKeys, now - 2 * 24 * 60 * 60 * 1000],
     ]) {
       keys.forEach((key) => {
-        initial[key] = { viewedAt: lastAccessedAt };
+        initial[key] = {
+          contextFingerprint: "A".repeat(43),
+          viewedAt: lastAccessedAt,
+        };
       });
       initial[await Core.reviewContextMetadataKey(context)] = {
         lastAccessedAt,
@@ -2371,7 +2840,12 @@ test("enforces the review storage limit after later writes", async () => {
     assert.equal(app.reviewStorageKeys.size, 7);
 
     await app.setReviewStorage(
-      { [currentKey]: { viewedAt: now } },
+      {
+        [currentKey]: {
+          contextFingerprint: "A".repeat(43),
+          viewedAt: now,
+        },
+      },
       currentScope,
       now,
     );

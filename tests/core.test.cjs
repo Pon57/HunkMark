@@ -40,6 +40,10 @@ test("uses domain-separated SHA-256 review identifiers", async () => {
     "BH8e-hizxDjNRoRcNhR9qMR299BLJSvI4xEgpA9SJSE",
   );
   assert.match(lineIdentifier, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(Core.isReviewIdentifier(lineIdentifier), true);
+  assert.equal(Core.isReviewIdentifier(`${lineIdentifier}x`), false);
+  assert.equal(Core.isReviewIdentifier("not-a-review-identifier"), false);
+  assert.equal(Core.isReviewIdentifier(null), false);
   assert.notEqual(lineIdentifier, contextIdentifier);
   assert.equal(new Set(identifiers).size, identifiers.length);
 });
