@@ -4392,6 +4392,11 @@ test("rolls back a partially stored line mutation when removal fails", async () 
     const controller = controllerAt(app);
     const line = controller.lines[0];
     const warnings = captureWarnings(dom);
+    const contextId = await app.Core.reviewContextId(
+      app.currentReviewScope,
+    );
+    const metadataKey =
+      app.Core.reviewContextMetadataKeyForId(contextId);
 
     chrome.failNextRemove();
     await app.setLineViewed(line, true);
@@ -4404,19 +4409,28 @@ test("rolls back a partially stored line mutation when removal fails", async () 
     assert.equal(line.key in stored, false);
     assert.equal(controller.key in stored, false);
     assert.equal(controller.collapsedKey in stored, false);
+    assert.equal(metadataKey in stored, false);
+    assert.equal(app.reviewContextAccessedAtById.has(contextId), false);
     assert.equal(line.input.disabled, false);
   } finally {
     stopExtensions({ app, dom });
   }
 });
 
-test("restores prior review values when a mixed mutation fails", async () => {
+test("restores prior review values and access metadata when a mixed mutation fails", async () => {
   const { app, chrome, dom } = await startExtension(dragFixture());
   try {
     const controller = controllerAt(app);
     const previousLine = controller.lines[0];
     const nextLine = controller.lines[1];
-    const previousAt = Date.now();
+    const nextAt = Date.now();
+    const previousAt =
+      nextAt - app.constants.REVIEW_ACCESS_TOUCH_INTERVAL_MS - 1;
+    const contextId = await app.Core.reviewContextId(
+      app.currentReviewScope,
+    );
+    const metadataKey =
+      app.Core.reviewContextMetadataKeyForId(contextId);
     const previousValue = app.lineReviewStorageValue(
       previousLine,
       previousAt,
@@ -4428,7 +4442,6 @@ test("restores prior review values when a mixed mutation fails", async () => {
     );
 
     chrome.failNextRemove();
-    const nextAt = previousAt + 1;
     await assert.rejects(
       app.mutateReviewStorage({
         values: {
@@ -4451,6 +4464,11 @@ test("restores prior review values when a mixed mutation fails", async () => {
       previousValue.viewedAt,
     );
     assert.equal(nextLine.key in stored, false);
+    assert.equal(stored[metadataKey].lastAccessedAt, previousAt);
+    assert.equal(
+      app.reviewContextAccessedAtById.get(contextId),
+      previousAt,
+    );
     assert.equal(previousLine.marked, true);
     assert.equal(nextLine.marked, false);
   } finally {
