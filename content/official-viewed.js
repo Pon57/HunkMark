@@ -373,8 +373,45 @@
         : control.checked;
     },
 
+    fileVisibilityControlLabel(control) {
+      const labelledBy = (
+        control.getAttribute("aria-labelledby") ?? ""
+      )
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => this.document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      return (
+        control.getAttribute("aria-label") ||
+        control.getAttribute("title") ||
+        labelledBy ||
+        control.textContent ||
+        ""
+      ).trim();
+    },
+
+    fileDiffRevealControl(fileElement) {
+      return (
+        Array.from(
+          fileElement.querySelectorAll(
+            "button:not(.hunkmark-line-control), " +
+              "[role=button]:not(.hunkmark-line-control)",
+          ),
+        ).find(
+          (element) =>
+            !element.matches(
+              this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+            ) &&
+            /\b(?:load|show)\b.*\bdiff\b/i.test(
+              this.fileVisibilityControlLabel(element),
+            ),
+        ) ?? null
+      );
+    },
+
     fileDiffHasUnresolvedContent(fileElement) {
       if (
+        fileElement.matches(this.constants.UNRESOLVED_DIFF_SELECTOR) ||
         fileElement.querySelector(this.constants.UNRESOLVED_DIFF_SELECTOR)
       ) {
         return true;
@@ -399,6 +436,43 @@
           .trim()
           .toLowerCase();
         return /\b(?:load|show)\b.*\b(?:diff|more|lines?)\b/.test(label);
+      });
+    },
+
+    fileRevealHasReadyNonHunkContent(fileElement, restore) {
+      const hostHiddenSelector =
+        '[data-hunkmark-ui], [hidden], [aria-hidden="true"], .d-none, ' +
+        "details:not([open])";
+      const mediaSelector = "img, svg, canvas, video, audio";
+      return Array.from(fileElement.children).some((child) => {
+        if (
+          child === restore.headerElement ||
+          restore.controlPathElements.includes(child) ||
+          child.matches(hostHiddenSelector) ||
+          child.closest("details:not([open])") ||
+          child.style.display === "none" ||
+          child.style.visibility === "hidden"
+        ) {
+          return false;
+        }
+
+        const visibleContent = child.cloneNode(true);
+        visibleContent
+          .querySelectorAll(hostHiddenSelector)
+          .forEach((element) => element.remove());
+        visibleContent.querySelectorAll("[style]").forEach((element) => {
+          if (
+            element.style.display === "none" ||
+            element.style.visibility === "hidden"
+          ) {
+            element.remove();
+          }
+        });
+        return (
+          this.cleanElementText(visibleContent).trim().length > 0 ||
+          visibleContent.matches(mediaSelector) ||
+          visibleContent.querySelector(mediaSelector) !== null
+        );
       });
     },
 
@@ -543,14 +617,298 @@
       }, 3000);
     },
 
-    preserveOfficialViewedRestoredState() {
+    clearFileRevealPrepaintClasses(fileElement, restore) {
+      restore.loadingPresentationElement?.remove();
+      restore.loadingPresentationElement = null;
+      fileElement.classList.remove("hunkmark-file-reveal-restoring");
+      restore.headerElement?.classList.remove(
+        "hunkmark-file-reveal-restore-header",
+      );
+      restore.controlPathElements.forEach((element) =>
+        element.classList.remove(
+          "hunkmark-file-reveal-restore-control-path",
+        ),
+      );
+      restore.controlContainer = null;
+      restore.controlPathElements = [];
+    },
+
+    maintainFileRevealPrepaintRestores() {
+      // GitHub replaces the complete file region when Load Diff resolves.
+      // Move the pre-paint guard to that replacement before the browser paints.
+      for (const [fileElement, restore] of Array.from(
+        this.fileRevealPrepaintRestores,
+      )) {
+        if (fileElement.isConnected) {
+          continue;
+        }
+        const replacement = fileElement.id
+          ? this.document.getElementById(fileElement.id)
+          : Array.from(
+              this.document.querySelectorAll(
+                this.constants.FILE_CONTAINER_SELECTOR,
+              ),
+            ).find(
+              (candidate, index) =>
+                candidate !== fileElement &&
+                this.resolveFilePath(candidate, index) === restore.filePath,
+            );
+        if (!replacement || replacement === fileElement) {
+          continue;
+        }
+
+        const loadingPresentation =
+          restore.controlContainer?.querySelector(
+            this.constants.FILE_REVEAL_LOADING_INDICATOR_SELECTOR,
+          )
+            ? restore.controlContainer.cloneNode(true)
+            : null;
+
+        this.fileRevealPrepaintRestores.delete(fileElement);
+        this.clearFileRevealPrepaintClasses(fileElement, restore);
+        if (restore.timeoutId !== null) {
+          this.window.clearTimeout(restore.timeoutId);
+        }
+
+        restore.headerElement = replacement.firstElementChild;
+        restore.loadingPresentationElement = loadingPresentation;
+        if (loadingPresentation) {
+          [
+            loadingPresentation,
+            ...loadingPresentation.querySelectorAll(
+              "[id], [data-diff-anchor]",
+            ),
+          ].forEach((element) => {
+            element.removeAttribute("id");
+            element.removeAttribute("data-diff-anchor");
+          });
+          loadingPresentation.setAttribute(
+            "data-hunkmark-ui",
+            "file-reveal-loading",
+          );
+          loadingPresentation.setAttribute("aria-hidden", "true");
+          restore.controlContainer = loadingPresentation;
+          restore.controlPathElements = [
+            loadingPresentation,
+            ...loadingPresentation.querySelectorAll("*"),
+          ];
+          replacement.insertBefore(
+            loadingPresentation,
+            replacement.children[1] ?? null,
+          );
+        }
+
+        this.fileRevealPrepaintRestores.set(replacement, restore);
+        replacement.classList.add("hunkmark-file-reveal-restoring");
+        restore.headerElement?.classList.add(
+          "hunkmark-file-reveal-restore-header",
+        );
+        restore.controlPathElements.forEach((element) =>
+          element.classList.add(
+            "hunkmark-file-reveal-restore-control-path",
+          ),
+        );
+        restore.timeoutId = this.window.setTimeout(
+          () => this.finishFileRevealPrepaintRestore(replacement, restore),
+          Math.max(0, restore.expiresAt - Date.now()),
+        );
+      }
+    },
+
+    beginFileRevealPrepaintRestore(
+      fileElement,
+      filePath,
+      control,
+      {
+        cachedReveal = false,
+        timeoutMs = 3000,
+        waitForResolvedContent = false,
+      } = {},
+    ) {
+      // Hide a host-revealed diff until cached or authoritative review state
+      // has been applied, so raw rows cannot paint between those operations.
+      const previous = this.fileRevealPrepaintRestores.get(fileElement);
+      if (previous) {
+        this.finishFileRevealPrepaintRestore(fileElement, previous);
+      }
+
+      const controlContainer = Array.from(fileElement.children).find(
+        (child) => child === control || child.contains(control),
+      );
+      if (!controlContainer) {
+        return null;
+      }
+      const headerElement = fileElement.firstElementChild;
+      // Preserve the small host placeholder exactly as it existed at click
+      // time. Newly inserted diff nodes remain hidden, while GitHub may swap
+      // its button contents for a loading indicator.
+      const controlPathElements =
+        controlContainer === headerElement
+          ? []
+          : [
+              controlContainer,
+              ...controlContainer.querySelectorAll("*"),
+            ];
+      const restore = {
+        cachedProgress: cachedReveal
+          ? this.fileProgressStateByKey.get(
+              this.fileProgressStateKey(filePath),
+            ) ?? null
+          : null,
+        controlPathElements,
+        controlContainer,
+        expiresAt: Date.now() + timeoutMs,
+        filePath,
+        headerElement,
+        loadingPresentationElement: null,
+        readinessFrameId: null,
+        timeoutId: null,
+        waitForResolvedContent,
+      };
+      this.fileRevealPrepaintRestores.set(fileElement, restore);
+      fileElement.classList.add("hunkmark-file-reveal-restoring");
+      headerElement?.classList.add("hunkmark-file-reveal-restore-header");
+      controlPathElements.forEach((element) =>
+        element.classList.add(
+          "hunkmark-file-reveal-restore-control-path",
+        ),
+      );
+      restore.timeoutId = this.window.setTimeout(
+        () => this.finishFileRevealPrepaintRestore(fileElement, restore),
+        timeoutMs,
+      );
+      // GitHub's header controls can reveal an already-mounted Load Diff
+      // region by changing attributes only. The main observer watches
+      // child-list changes, so check once after the host click has completed
+      // and before the browser paints instead of broadening that observer.
+      if (controlContainer === headerElement) {
+        restore.readinessFrameId = this.window.requestAnimationFrame(() => {
+          restore.readinessFrameId = null;
+          this.finishReadyFileRevealPrepaintRestores();
+        });
+      }
+      return restore;
+    },
+
+    finishFileRevealPrepaintRestore(fileElement, restore) {
+      if (this.fileRevealPrepaintRestores.get(fileElement) !== restore) {
+        return;
+      }
+      this.fileRevealPrepaintRestores.delete(fileElement);
+      this.fileRevealRestorePending.delete(
+        this.fileProgressStateKey(restore.filePath),
+      );
+      if (restore.timeoutId !== null) {
+        this.window.clearTimeout(restore.timeoutId);
+        restore.timeoutId = null;
+      }
+      if (restore.readinessFrameId !== null) {
+        this.window.cancelAnimationFrame(restore.readinessFrameId);
+        restore.readinessFrameId = null;
+      }
+      this.clearFileRevealPrepaintClasses(fileElement, restore);
+    },
+
+    finishReadyFileRevealPrepaintRestores() {
+      this.fileRevealPrepaintRestores.forEach((restore, fileElement) => {
+        if (!fileElement.isConnected) {
+          return;
+        }
+
+        const renderedHunkRows = new Set(
+          this.findHunkMarkers(fileElement).map((marker) =>
+            this.semanticRow(marker),
+          ),
+        );
+        const controllers = Array.from(
+          renderedHunkRows,
+          (row) => this.controllersByRow.get(row),
+        ).filter(
+          (controller) =>
+            controller?.hunkRow.isConnected &&
+            controller.filePath === restore.filePath,
+        );
+        const cachedFileComplete =
+          restore.cachedProgress?.hunks === controllers.length &&
+          restore.cachedProgress?.lines === controllers.reduce(
+            (total, controller) => total + controller.lines.length,
+            0,
+          );
+        // Expanding a large file may reveal only GitHub's stable Load Diff
+        // placeholder. It has no hunks to restore and is safe to show now;
+        // the subsequent Load Diff click starts its own guarded restore.
+        const unresolvedDiff =
+          this.fileDiffHasUnresolvedContent(fileElement);
+        const unresolvedPlaceholderReady =
+          !restore.waitForResolvedContent &&
+          renderedHunkRows.size === 0 &&
+          this.fileDiffRevealControl(fileElement) !== null;
+        // Binary, image, empty-file, and metadata-only diffs can resolve to
+        // stable host content without ever rendering a hunk or Load Diff
+        // control. Release those once the host content itself is present.
+        const nonHunkContentReady =
+          !restore.waitForResolvedContent &&
+          renderedHunkRows.size === 0 &&
+          !unresolvedDiff &&
+          this.fileRevealHasReadyNonHunkContent(fileElement, restore);
+        const controllersReady =
+          controllers.length > 0 &&
+          controllers.length === renderedHunkRows.size;
+        if (
+          (!unresolvedPlaceholderReady &&
+            !nonHunkContentReady &&
+            !controllersReady) ||
+          (restore.waitForResolvedContent &&
+            !cachedFileComplete &&
+            unresolvedDiff) ||
+          controllers.some(
+            (controller) =>
+              controller.input.disabled ||
+              controller.lines.some((line) => line.control.disabled),
+          )
+        ) {
+          return;
+        }
+        this.finishFileRevealPrepaintRestore(fileElement, restore);
+      });
+    },
+
+    finishAllFileRevealPrepaintRestores() {
+      this.fileRevealPrepaintRestores.forEach((restore, fileElement) =>
+        this.finishFileRevealPrepaintRestore(fileElement, restore),
+      );
+    },
+
+    fileRevealRestoreRootForMutations(mutations) {
+      const roots = Array.from(this.fileRevealPrepaintRestores.keys()).filter(
+        (fileElement) =>
+          fileElement.isConnected &&
+          mutations.some(
+            (mutation) =>
+              mutation.target === fileElement ||
+              fileElement.contains(mutation.target),
+          ),
+      );
+      if (roots.length !== 1) {
+        return this.document;
+      }
+      const [root] = roots;
+      return mutations.every(
+        (mutation) =>
+          mutation.target === root || root.contains(mutation.target),
+      )
+        ? root
+        : this.document;
+    },
+
+    preserveOfficialViewedRestoredState(searchRoot = this.document) {
       if (this.officialViewedRestoreGuards.size === 0) {
         return false;
       }
 
       let restored = false;
       const restoredFiles = new Set();
-      const discovered = this.discoverCachedHunks();
+      const discovered = this.discoverCachedHunks(searchRoot);
       if (!discovered) {
         return false;
       }
@@ -598,13 +956,49 @@
       return restored;
     },
 
-    restoreCachedOfficialViewedControllers() {
-      if (!this.currentReviewScope) {
+    cachedFileControllerRestoreNeeded(searchRoot = this.document) {
+      // A cold Load Diff has no complete file snapshot to restore and would be
+      // parsed again by the authoritative refresh. Keep it hidden and avoid
+      // doing the same large discovery twice.
+      const cachedRevealPending = Array.from(
+        this.fileRevealPrepaintRestores.entries(),
+      ).some(
+        ([fileElement, restore]) =>
+          restore.cachedProgress &&
+          (searchRoot === this.document ||
+            searchRoot === fileElement ||
+            searchRoot.contains(fileElement)),
+      );
+      if (cachedRevealPending) {
+        return true;
+      }
+
+      const controls = Array.from(
+        searchRoot.querySelectorAll(
+          this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+        ),
+      );
+      if (
+        searchRoot instanceof this.window.Element &&
+        searchRoot.matches(this.constants.OFFICIAL_FILE_VIEWED_SELECTOR)
+      ) {
+        controls.unshift(searchRoot);
+      }
+      return controls.some((control) =>
+        this.officialControlIsViewed(control),
+      );
+    },
+
+    restoreCachedFileControllers(searchRoot = this.document) {
+      if (
+        !this.currentReviewScope ||
+        !this.cachedFileControllerRestoreNeeded(searchRoot)
+      ) {
         return false;
       }
 
       const candidatesByFile = new Map();
-      const discovered = this.discoverCachedHunks();
+      const discovered = this.discoverCachedHunks(searchRoot);
       if (!discovered) {
         return false;
       }
@@ -617,9 +1011,9 @@
           hunk.fileElement,
         );
         const progressKey = this.fileProgressStateKey(hunk.filePath);
-        const explicitExpand =
-          this.fileExpandRestorePending.has(progressKey);
-        if (!explicitExpand && (
+        const explicitReveal =
+          this.fileRevealRestorePending.has(progressKey);
+        if (!explicitReveal && (
           !officialControl ||
           !this.officialControlIsViewed(officialControl) ||
           this.fileDiffHasUnresolvedContent(hunk.fileElement)
@@ -650,12 +1044,12 @@
       let restored = false;
       candidatesByFile.forEach((candidates) => {
         const progressKey = candidates[0].progressKey;
-        const explicitExpand =
-          this.fileExpandRestorePending.has(progressKey);
+        const explicitReveal =
+          this.fileRevealRestorePending.has(progressKey);
         const cachedProgress =
           this.fileProgressStateByKey.get(progressKey);
         const matchesCachedFile =
-          explicitExpand &&
+          explicitReveal &&
           cachedProgress?.hunks === candidates.length &&
           cachedProgress?.lines === candidates.reduce(
             (total, { hunk }) => total + hunk.lines.length,
@@ -675,7 +1069,7 @@
           return;
         }
 
-        this.fileExpandRestorePending.delete(progressKey);
+        this.fileRevealRestorePending.delete(progressKey);
         candidates.forEach(({ hunk, lineStates }) => {
           const controller = this.createController(hunk);
           controller.lines.forEach((line, index) => {
@@ -701,28 +1095,22 @@
       return restored;
     },
 
-    handleFileToggleClick(event) {
+    handleFileVisibilityClick(event) {
       const control =
         event.target instanceof this.window.Element
-          ? event.target.closest("button")
+          ? event.target.closest("button, [role=button]")
           : null;
       if (!control) {
         return;
       }
 
-      const labelledBy = (
-        control.getAttribute("aria-labelledby") ?? ""
-      )
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((id) => this.document.getElementById(id)?.textContent ?? "")
-        .join(" ");
-      const label = (
-        control.getAttribute("aria-label") ??
-        control.getAttribute("title") ??
-        labelledBy
-      ).trim();
-      if (label !== "Collapse file" && label !== "Expand file") {
+      const label = this.fileVisibilityControlLabel(control);
+      const loadsDiff = /\b(?:load|show)\b.*\bdiff\b/i.test(label);
+      if (
+        label !== "Collapse file" &&
+        label !== "Expand file" &&
+        !loadsDiff
+      ) {
         return;
       }
 
@@ -732,25 +1120,51 @@
       if (!fileElement) {
         return;
       }
+      if (loadsDiff && this.findHunkMarkers(fileElement).length > 0) {
+        return;
+      }
 
       const filePath = this.resolveFilePath(fileElement, 0);
       const progressKey = this.fileProgressStateKey(filePath);
       if (label === "Collapse file") {
-        this.fileExpandRestorePending.delete(progressKey);
+        const pendingRestore =
+          this.fileRevealPrepaintRestores.get(fileElement);
+        if (pendingRestore) {
+          this.finishFileRevealPrepaintRestore(
+            fileElement,
+            pendingRestore,
+          );
+        }
+        this.fileRevealRestorePending.delete(progressKey);
         this.expectFileDiffVisibility(fileElement, false);
         this.removeFileProgress(fileElement);
         return;
       }
-      if (label !== "Expand file") {
+      if (label !== "Expand file" && !loadsDiff) {
         return;
       }
 
-      this.fileExpandRestorePending.add(progressKey);
-      this.expectFileDiffVisibility(fileElement, true);
-      this.window.setTimeout(
-        () => this.fileExpandRestorePending.delete(progressKey),
-        3000,
+      const timeoutMs = loadsDiff
+        ? this.constants.FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS
+        : 3000;
+      const prepaintRestore = this.beginFileRevealPrepaintRestore(
+        fileElement,
+        filePath,
+        control,
+        {
+          cachedReveal: true,
+          timeoutMs,
+          waitForResolvedContent: loadsDiff,
+        },
       );
+      this.fileRevealRestorePending.add(progressKey);
+      this.expectFileDiffVisibility(fileElement, true);
+      if (!prepaintRestore) {
+        this.window.setTimeout(
+          () => this.fileRevealRestorePending.delete(progressKey),
+          timeoutMs,
+        );
+      }
     },
 
     settleOfficialViewedRestoreGuard(key) {
@@ -803,6 +1217,27 @@
       const viewedBeforeClick = control.matches('input[type="checkbox"]')
         ? !control.checked
         : this.officialControlIsViewed(control);
+      const willRevealDiff =
+        viewedBeforeClick &&
+        !controller &&
+        this.findHunkMarkers(fileElement).length === 0;
+      const prepaintRestore = willRevealDiff
+        ? this.beginFileRevealPrepaintRestore(
+            fileElement,
+            filePath,
+            control,
+          )
+        : null;
+      if (!prepaintRestore) {
+        const pendingRestore =
+          this.fileRevealPrepaintRestores.get(fileElement);
+        if (pendingRestore) {
+          this.finishFileRevealPrepaintRestore(
+            fileElement,
+            pendingRestore,
+          );
+        }
+      }
       const visibilityExpectation = this.expectFileDiffVisibility(
         fileElement,
         viewedBeforeClick,
@@ -830,6 +1265,12 @@
           suppressed: viewedBeforeClick,
         });
       } catch (error) {
+        if (prepaintRestore) {
+          this.finishFileRevealPrepaintRestore(
+            fileElement,
+            prepaintRestore,
+          );
+        }
         this.cancelExpectedFileDiffVisibility(
           fileElement,
           visibilityExpectation,
@@ -930,6 +1371,7 @@
       // Pending storage intents and manual-click reconciliations retain their
       // captured scope so a GitHub SPA route change cannot discard the user's
       // last intent.
+      this.finishAllFileRevealPrepaintRestores();
       this.officialViewedRestoreGuards.clear();
       this.officialViewedSyncSuppressed.clear();
       this.officialViewedIntentGenerationByKey.clear();

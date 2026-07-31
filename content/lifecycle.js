@@ -342,6 +342,7 @@
       }
 
       this.updateProgress();
+      this.finishReadyFileRevealPrepaintRestores();
       this.clearSettledOfficialViewedRestoreGuards();
     },
 
@@ -421,6 +422,7 @@
           await this.refresh();
         } catch (error) {
           if (!this.stopForInvalidatedContext(error)) {
+            this.finishAllFileRevealPrepaintRestores();
             console.warn("HunkMark could not refresh the page.", error);
           }
         } finally {
@@ -595,24 +597,35 @@
         return;
       }
 
-      const hostDiffChanged = mutations.some(
+      if (this.fileRevealPrepaintRestores.size > 0) {
+        this.maintainFileRevealPrepaintRestores();
+      }
+
+      const hostDiffMutations = mutations.filter(
         (mutation) =>
           !this.mutationIsExtensionOnly(mutation) &&
           this.mutationAffectsDiff(mutation),
       );
-      if (hostDiffChanged) {
+      if (hostDiffMutations.length > 0) {
         const expectedFileDiffVisibilityChanged =
           this.consumeExpectedFileDiffVisibility();
         const progressRemoved =
           this.removeProgressForFilesWithoutRenderedHunks();
+        const restoreRoot =
+          this.fileRevealRestoreRootForMutations(hostDiffMutations);
         const restored =
-          this.preserveOfficialViewedRestoredState() ||
-          this.restoreCachedOfficialViewedControllers();
+          this.preserveOfficialViewedRestoredState(restoreRoot) ||
+          this.restoreCachedFileControllers(restoreRoot);
+        this.finishReadyFileRevealPrepaintRestores();
+        const canDeferRefresh =
+          restoreRoot !== this.document &&
+          restored &&
+          !this.fileRevealPrepaintRestores.has(restoreRoot);
         this.scheduleRefresh({
           immediate:
-            expectedFileDiffVisibilityChanged ||
-            restored ||
-            progressRemoved,
+            progressRemoved ||
+            (!canDeferRefresh &&
+              (expectedFileDiffVisibilityChanged || restored)),
         });
       }
     },
@@ -640,8 +653,8 @@
           }
         });
       };
-      this.boundFileToggleClick = (event) =>
-        this.handleFileToggleClick(event);
+      this.boundFileVisibilityClick = (event) =>
+        this.handleFileVisibilityClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
       this.boundNavigationChange = () => this.checkForNavigation();
       this.boundWindowBlur = () => {
@@ -656,6 +669,7 @@
           this.handleMutations(mutations);
         } catch (error) {
           if (!this.stopForInvalidatedContext(error)) {
+            this.finishAllFileRevealPrepaintRestores();
             console.warn("HunkMark could not process a diff update.", error);
           }
         }
@@ -688,7 +702,7 @@
       );
       this.document.addEventListener(
         "click",
-        this.boundFileToggleClick,
+        this.boundFileVisibilityClick,
         true,
       );
       this.document.addEventListener(
@@ -764,7 +778,7 @@
       );
       this.document.removeEventListener(
         "click",
-        this.boundFileToggleClick,
+        this.boundFileVisibilityClick,
         true,
       );
       this.document.removeEventListener(

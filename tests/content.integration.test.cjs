@@ -193,6 +193,13 @@ function createDeferred() {
   return { promise, resolve };
 }
 
+function installContentStyles(dom) {
+  const style = dom.window.document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(root, "content.css"), "utf8");
+  dom.window.document.head.append(style);
+  return style;
+}
+
 function holdReviewStorageLock(app, lockManager) {
   const started = createDeferred();
   const gate = createDeferred();
@@ -236,6 +243,33 @@ function delayReviewStorageSet(
     release: gate.resolve,
     started: started.promise,
   };
+}
+
+function delayReviewStorageRead(app) {
+  const original = app.getLocalStorage.bind(app);
+  const started = createDeferred();
+  const gate = createDeferred();
+  app.getLocalStorage = async (keys) => {
+    if (
+      Array.isArray(keys) &&
+      keys.some((key) => key.endsWith(":collapsed"))
+    ) {
+      started.resolve();
+      await gate.promise;
+    }
+    return original(keys);
+  };
+  return { release: gate.resolve, started: started.promise };
+}
+
+function recordCachedDiscoveryRoots(app) {
+  const roots = [];
+  const discoverCachedHunks = app.discoverCachedHunks.bind(app);
+  app.discoverCachedHunks = (searchRoot) => {
+    roots.push(searchRoot);
+    return discoverCachedHunks(searchRoot);
+  };
+  return roots;
 }
 
 function controllersFor(app) {
@@ -389,6 +423,23 @@ async function waitFor(assertion, timeoutMs = 2500) {
   throw lastError;
 }
 
+function assertFileRevealState(dom, fileElement, contentElement, restoring) {
+  assert.equal(
+    fileElement.classList.contains("hunkmark-file-reveal-restoring"),
+    restoring,
+  );
+  assert.equal(
+    fileElement.firstElementChild.classList.contains(
+      "hunkmark-file-reveal-restore-header",
+    ),
+    restoring,
+  );
+  assert.equal(
+    dom.window.getComputedStyle(contentElement).display === "none",
+    restoring,
+  );
+}
+
 async function startExtension(
   html,
   initialStorage = {},
@@ -527,6 +578,69 @@ function initiallyViewedCommitSelectionFixture() {
         <div class="file-header">
           <span class="file-info">src/selection.js</span>
           <button aria-label="Viewed" aria-pressed="true">Viewed</button>
+        </div>
+      </div>
+    </body></html>`;
+}
+
+function loadDiffPlaceholderHtml() {
+  return `<div class="load-diff-container">
+    <div class="load-diff-placeholder">
+      <div class="loading-skeleton">Loading preview</div>
+      <button>Load Diff</button>
+      <span class="load-diff-message">Large diffs are not rendered by default.</span>
+    </div>
+  </div>`;
+}
+
+function loadDiffFixture({ loaded = false } = {}) {
+  const content = loaded
+    ? `<table><tbody>
+        <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+        <tr><td class="blob-num">1</td><td class="blob-code-addition">+loaded</td></tr>
+      </tbody></table>`
+    : loadDiffPlaceholderHtml();
+  return `<!doctype html>
+    <html><body>
+      <div id="diff-large" class="js-file" data-file-path="src/large-diff.js">
+        <div class="file-header"><span class="file-info">src/large-diff.js</span></div>
+        <div class="diff-body">${content}</div>
+      </div>
+    </body></html>`;
+}
+
+function hiddenLargeDiffFixture(
+  controlHtml,
+  { includeHiddenPlaceholder = false } = {},
+) {
+  const content = includeHiddenPlaceholder
+    ? `<div class="diff-body" hidden>${loadDiffPlaceholderHtml()}</div>`
+    : "";
+  return `<!doctype html>
+    <html><body>
+      <div id="diff-large" class="js-file" data-file-path="src/large-diff.js">
+        <div class="file-header">
+          <span class="file-info">src/large-diff.js</span>
+          ${controlHtml}
+        </div>
+        ${content}
+      </div>
+    </body></html>`;
+}
+
+function nonHunkDiffFixture(
+  controlHtml = "",
+  { hidden = false } = {},
+) {
+  return `<!doctype html>
+    <html><body>
+      <div id="diff-binary" class="js-file" data-file-path="assets/logo.png">
+        <div class="file-header">
+          <span class="file-info">assets/logo.png</span>
+          ${controlHtml}
+        </div>
+        <div class="diff-body"${hidden ? " hidden" : ""}>
+          <div class="binary-diff">Binary file not shown.</div>
         </div>
       </div>
     </body></html>`;
@@ -925,10 +1039,11 @@ test("refreshes immediately when a manual Viewed click hides the diff", async ()
   }
 });
 
-test("refreshes immediately when a cold-cache Viewed removal reveals the diff", async () => {
+test("hides a cold-cache Viewed removal until review state is restored", async () => {
   const { app, dom } = await startExtension(
     initiallyViewedCommitSelectionFixture(),
   );
+  const reviewRead = delayReviewStorageRead(app);
   try {
     const fileElement = dom.window.document.querySelector(".js-file");
     const filePath = app.resolveFilePath(fileElement, 0);
@@ -940,7 +1055,6 @@ test("refreshes immediately when a cold-cache Viewed removal reveals the diff", 
       ),
       null,
     );
-
     const scheduled = [];
     const scheduleRefresh = app.scheduleRefresh.bind(app);
     app.scheduleRefresh = (options) => {
@@ -951,6 +1065,7 @@ test("refreshes immediately when a cold-cache Viewed removal reveals the diff", 
     const tableHtml =
       cleanFixture.window.document.querySelector("table").outerHTML;
     cleanFixture.window.close();
+    installContentStyles(dom);
     const officialControl = fileElement.querySelector(
       'button[aria-label="Viewed"]',
     );
@@ -958,21 +1073,289 @@ test("refreshes immediately when a cold-cache Viewed removal reveals the diff", 
       officialControl.setAttribute("aria-label", "Not Viewed");
       officialControl.setAttribute("aria-pressed", "false");
       fileElement.insertAdjacentHTML("beforeend", tableHtml);
+      fileElement.insertAdjacentHTML(
+        "beforeend",
+        "<button>Load more lines</button>",
+      );
     });
 
     officialControl.click();
+    await Promise.resolve();
+
+    const table = fileElement.querySelector("table");
+    assertFileRevealState(dom, fileElement, table, true);
+    await reviewRead.started;
+    assert.equal(app.controllersByRow.size, 2);
+    assert.equal(dom.window.getComputedStyle(table).display, "none");
+
+    reviewRead.release();
 
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 2);
       assert.ok(
         dom.window.document.getElementById(app.constants.PANEL_ID),
       );
+      assertFileRevealState(dom, fileElement, table, false);
     });
     assert.equal(scheduled[0]?.immediate, true);
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
+    reviewRead.release();
     app.stop();
     dom.window.close();
+  }
+});
+
+test("does not hide an already-rendered diff when Viewed is removed", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    officialControl.setAttribute("aria-label", "Viewed");
+    officialControl.setAttribute("aria-pressed", "true");
+    officialControl.addEventListener("click", () => {
+      officialControl.setAttribute("aria-label", "Not Viewed");
+      officialControl.setAttribute("aria-pressed", "false");
+    });
+
+    officialControl.click();
+
+    assert.equal(app.controllersByRow.size, 2);
+    assert.equal(app.fileRevealPrepaintRestores.size, 0);
+    assert.equal(
+      fileElement.classList.contains("hunkmark-file-reveal-restoring"),
+      false,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("hides Load Diff content until review controls are ready", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  const reviewRead = delayReviewStorageRead(app);
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(loadDiffFixture({ loaded: true }));
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    const cachedDiscoveryRoots = recordCachedDiscoveryRoots(app);
+    const loadButton = fileElement.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      loadButton.insertAdjacentHTML(
+        "beforebegin",
+        '<span data-component="loadingSpinner"><span data-component="Spinner">Loading</span></span>',
+      );
+      loadButton.remove();
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+
+    const officialLoader = fileElement.querySelector(
+      '[data-component="Spinner"]',
+    );
+    const loadingSkeleton = fileElement.querySelector(".loading-skeleton");
+    const loadingMessage = fileElement.querySelector(".load-diff-message");
+    assert.equal(
+      dom.window.getComputedStyle(officialLoader).display === "none",
+      false,
+    );
+    assert.equal(
+      dom.window.getComputedStyle(loadingSkeleton).display === "none",
+      false,
+    );
+    assert.equal(
+      dom.window.getComputedStyle(loadingMessage).display === "none",
+      false,
+    );
+    let replacementFileElement;
+    await waitFor(() => {
+      replacementFileElement = dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      const table = replacementFileElement.querySelector("table");
+      const preservedLoader = replacementFileElement.querySelector(
+        '[data-component="Spinner"]',
+      );
+      assert.ok(preservedLoader);
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        table.parentElement,
+        true,
+      );
+      assert.equal(
+        dom.window.getComputedStyle(preservedLoader).display === "none",
+        false,
+      );
+    });
+    await reviewRead.started;
+    assert.equal(app.controllersByRow.size, 1);
+    assertFileRevealState(
+      dom,
+      replacementFileElement,
+      replacementFileElement.querySelector("table").parentElement,
+      true,
+    );
+    assert.equal(cachedDiscoveryRoots.length, 0);
+
+    reviewRead.release();
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 1);
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector("table").parentElement,
+        false,
+      );
+      assert.equal(
+        replacementFileElement.querySelector(
+          '[data-hunkmark-ui="file-reveal-loading"]',
+        ),
+        null,
+      );
+      assert.equal(app.fileRevealRestorePending.size, 0);
+    });
+  } finally {
+    reviewRead.release();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("shows Load Diff immediately after a hidden large diff is revealed", async (t) => {
+  const cases = [
+    {
+      name: "file expansion",
+      controlHtml: '<button aria-label="Expand file">Expand</button>',
+      includeHiddenPlaceholder: true,
+      reveal: (fileElement, control) => {
+        control.setAttribute("aria-label", "Collapse file");
+        fileElement.querySelector(".diff-body").hidden = false;
+      },
+    },
+    {
+      name: "official Viewed removal",
+      controlHtml:
+        '<button aria-label="Viewed" aria-pressed="true">Viewed</button>',
+      reveal: (fileElement, control) => {
+        setOfficialViewed(control, false);
+        fileElement.insertAdjacentHTML(
+          "beforeend",
+          `<div class="diff-body">${loadDiffPlaceholderHtml()}</div>`,
+        );
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(
+        hiddenLargeDiffFixture(scenario.controlHtml, {
+          includeHiddenPlaceholder: scenario.includeHiddenPlaceholder,
+        }),
+      );
+      try {
+        installContentStyles(dom);
+        const fileElement = dom.window.document.querySelector(".js-file");
+        const control = fileElement.querySelector("button");
+        let readinessFrame = null;
+        if (scenario.includeHiddenPlaceholder) {
+          dom.window.requestAnimationFrame = (callback) => {
+            readinessFrame = callback;
+            return 1;
+          };
+          dom.window.cancelAnimationFrame = () => {
+            readinessFrame = null;
+          };
+        }
+        control.addEventListener("click", () => {
+          scenario.reveal(fileElement, control);
+        });
+
+        control.click();
+        const diffBody = fileElement.querySelector(".diff-body");
+        assertFileRevealState(dom, fileElement, diffBody, true);
+        if (scenario.includeHiddenPlaceholder) {
+          assert.ok(readinessFrame);
+          const callback = readinessFrame;
+          readinessFrame = null;
+          callback(dom.window.performance.now());
+        }
+
+        await waitFor(() => {
+          assertFileRevealState(dom, fileElement, diffBody, false);
+          assert.equal(app.fileRevealPrepaintRestores.size, 0);
+        });
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("shows stable non-hunk content immediately after a file reveal", async (t) => {
+  const cases = [
+    {
+      name: "file expansion",
+      html: nonHunkDiffFixture(
+        '<button aria-label="Expand file">Expand</button>',
+        { hidden: true },
+      ),
+      reveal: (fileElement, control) => {
+        control.setAttribute("aria-label", "Collapse file");
+        fileElement.querySelector(".diff-body").hidden = false;
+      },
+    },
+    {
+      name: "official Viewed removal",
+      html: initiallyViewedCommitSelectionFixture(),
+      reveal: (fileElement, control) => {
+        setOfficialViewed(control, false);
+        fileElement.insertAdjacentHTML(
+          "beforeend",
+          '<div class="diff-body"><div class="binary-diff">Binary file not shown.</div></div>',
+        );
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(scenario.html);
+      try {
+        installContentStyles(dom);
+        const fileElement = dom.window.document.querySelector(".js-file");
+        const control = fileElement.querySelector("button");
+        control.addEventListener("click", () => {
+          scenario.reveal(fileElement, control);
+        });
+
+        control.click();
+
+        const diffBody = fileElement.querySelector(".diff-body");
+        assertFileRevealState(dom, fileElement, diffBody, true);
+        await waitFor(() => {
+          assertFileRevealState(dom, fileElement, diffBody, false);
+          assert.equal(app.fileRevealPrepaintRestores.size, 0);
+        });
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
   }
 });
 
@@ -994,6 +1377,13 @@ test("cancels a cold-cache visibility expectation when key generation fails", as
     await waitFor(() => {
       assert.equal(warnings.length, 1);
       assert.equal(app.fileDiffVisibilityPending.size, 0);
+      assert.equal(app.fileRevealPrepaintRestores.size, 0);
+      assert.equal(
+        dom.window.document
+          .querySelector(".js-file")
+          .classList.contains("hunkmark-file-reveal-restoring"),
+        false,
+      );
     });
     assert.equal(
       app.officialViewedStorageIntentGenerationByKey.size,
@@ -2380,6 +2770,7 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     const fileToggleLabel = fileElement.querySelector(
       "#modern-file-toggle-label",
     );
+    installContentStyles(dom);
     const scheduled = [];
     const scheduleRefresh = app.scheduleRefresh.bind(app);
     app.scheduleRefresh = (options) => {
@@ -2427,7 +2818,11 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     const immediateRefreshesAfterCollapse = scheduled.filter(
       ({ immediate }) => immediate === true,
     ).length;
+    const cachedDiscoveryRoots = recordCachedDiscoveryRoots(app);
     fileToggle.click();
+
+    const expandedRow = fileElement.querySelector('[role="row"]');
+    assertFileRevealState(dom, fileElement, expandedRow, true);
     await Promise.resolve();
 
     assert.equal(app.controllersByRow.size, 1);
@@ -2450,10 +2845,15 @@ test("synchronizes modern file progress with expand and collapse before paint", 
       "true",
     );
     assert.equal(
-      scheduled.filter(({ immediate }) => immediate === true).length >
-        immediateRefreshesAfterCollapse,
+      scheduled.filter(({ immediate }) => immediate === true).length,
+      immediateRefreshesAfterCollapse,
+    );
+    assert.equal(cachedDiscoveryRoots.length > 0, true);
+    assert.equal(
+      cachedDiscoveryRoots.every((searchRoot) => searchRoot === fileElement),
       true,
     );
+    assertFileRevealState(dom, fileElement, expandedRow, false);
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     app.stop();
@@ -3348,6 +3748,8 @@ test("does not sync official Viewed while diff content is unresolved", async () 
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 1);
     });
+    dom.window.document.querySelector(".js-diff-load-container button").click();
+    assert.equal(app.fileRevealPrepaintRestores.size, 0);
     const controller = Array.from(app.controllersByRow.values())[0];
     controller.input.checked = true;
     controller.input.dispatchEvent(
@@ -4818,9 +5220,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
     assert.equal(progress.className, "hunkmark-file-progress");
     assert.match(progress.textContent, /Hunks 0\/1 · Lines 0\/2/);
 
-    const style = dom.window.document.createElement("style");
-    style.textContent = fs.readFileSync(path.join(root, "content.css"), "utf8");
-    dom.window.document.head.append(style);
+    const style = installContentStyles(dom);
     const lineHoverRule = Array.from(style.sheet.cssRules).find(
       (rule) => rule.selectorText === ".hunkmark-line-control:hover",
     );
