@@ -59,6 +59,22 @@
       return Number.isFinite(timestamp) ? timestamp : 0;
     },
 
+    rememberReviewContextAccess(key, value) {
+      if (!this.Core.isReviewContextMetadataKey(key)) {
+        return;
+      }
+      const contextId = this.Core.reviewStorageContextId(key);
+      if (!contextId) {
+        return;
+      }
+      const timestamp = this.reviewContextAccessTimestamp(value);
+      if (timestamp > 0) {
+        this.reviewContextAccessedAtById.set(contextId, timestamp);
+      } else {
+        this.reviewContextAccessedAtById.delete(contextId);
+      }
+    },
+
     storedReviewContextGroups(stored, excludedKeys = new Set()) {
       const groups = new Map();
 
@@ -166,7 +182,16 @@
       ].filter(
         (key) => typeof key === "string" && !storedKeySet.has(key),
       );
-      const mutationKeys = [...new Set([...storedKeys, ...removalKeys])];
+      const mutationKeySet = new Set([...storedKeys, ...removalKeys]);
+      if (storedKeys.length > 0 && removalKeys.length > 0) {
+        const contextScope = this.Core.reviewContextScope(scope);
+        if (contextScope) {
+          mutationKeySet.add(
+            await this.Core.reviewContextMetadataKey(contextScope),
+          );
+        }
+      }
+      const mutationKeys = [...mutationKeySet];
       const previousValues =
         storedKeys.length > 0 && removalKeys.length > 0
           ? await this.getLocalStorage(mutationKeys)
@@ -250,6 +275,7 @@
             this.reviewStorageKeys.add(key);
           }
           this.rememberLineReviewContext(key, value);
+          this.rememberReviewContextAccess(key, value);
         });
       }
       if (removals.length > 0) {
@@ -272,12 +298,7 @@
       list.forEach((key) => {
         this.reviewStorageKeys.delete(key);
         this.rememberLineReviewContext(key, undefined);
-        if (this.Core.isReviewContextMetadataKey(key)) {
-          const contextId = this.Core.reviewStorageContextId(key);
-          if (contextId) {
-            this.reviewContextAccessedAtById.delete(contextId);
-          }
-        }
+        this.rememberReviewContextAccess(key, undefined);
       });
     },
 
@@ -398,16 +419,7 @@
 
     applyReviewContextMetadataChanges(changes) {
       Object.entries(changes).forEach(([key, change]) => {
-        if (!this.Core.isReviewContextMetadataKey(key)) {
-          return;
-        }
-        const contextId = this.Core.reviewStorageContextId(key);
-        const timestamp = this.reviewContextAccessTimestamp(change.newValue);
-        if (contextId && timestamp > 0) {
-          this.reviewContextAccessedAtById.set(contextId, timestamp);
-        } else if (contextId) {
-          this.reviewContextAccessedAtById.delete(contextId);
-        }
+        this.rememberReviewContextAccess(key, change.newValue);
       });
     },
 
