@@ -96,6 +96,7 @@
 }
 
 .hunkmark-line-control {
+  appearance: none;
   align-items: center;
   background: var(--bgColor-default, var(--color-canvas-default, #fff));
   border: 1px solid var(--borderColor-muted, var(--color-border-muted, #d8dee4));
@@ -122,6 +123,10 @@
   z-index: 2;
 }
 
+.hunkmark-line-control[aria-pressed="true"]::before {
+  content: "✓";
+}
+
 .hunkmark-line-cell:hover > .hunkmark-line-control,
 .hunkmark-line-cell:focus-within > .hunkmark-line-control,
 .hunkmark-line-drag-touched > .hunkmark-line-control {
@@ -139,6 +144,11 @@
     var(--bgColor-default, var(--color-canvas-default, #fff));
 }
 
+.hunkmark-line-control:focus-visible {
+  outline: 2px solid var(--focus-outlineColor, var(--color-accent-fg, #0969da));
+  outline-offset: 2px;
+}
+
 .hunkmark-line-control.is-viewed {
   background:
     linear-gradient(
@@ -151,7 +161,6 @@
 }
 
 .hunkmark-control input,
-.hunkmark-line-control input,
 .hunkmark-panel-toggle input {
   accent-color: var(--fgColor-accent, var(--color-accent-fg, #0969da));
   cursor: pointer;
@@ -162,7 +171,7 @@
   cursor: wait;
 }
 
-.hunkmark-line-control input:disabled {
+.hunkmark-line-control:disabled {
   cursor: wait;
 }
 

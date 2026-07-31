@@ -292,7 +292,7 @@
                 (previousLine.contextFingerprint === line.contextFingerprint ||
                   (expandedByHost && previousLine.element === line.element));
               line.marked = storedMatches || previousMatches;
-              line.input.disabled = false;
+              line.control.disabled = false;
               if (storedLineReview !== undefined && !storedMatches) {
                 invalidatedLineReview = true;
                 if (this.storedLineReviewHasContext(storedLineReview)) {
@@ -626,6 +626,10 @@
         this.handleStorageChanged(changes, areaName);
       this.boundPointerMove = (event) => this.lineDragPointerMove(event);
       this.boundPointerEnd = (event) => this.lineDragPointerEnd(event);
+      this.boundLineControlClick = (event) =>
+        this.handleLineControlClick(event);
+      this.boundLineControlPointerDown = (event) =>
+        this.handleLineControlPointerDown(event);
       this.boundOfficialViewedClick = (event) => {
         void this.handleOfficialViewedClick(event).catch((error) => {
           if (!this.stopForInvalidatedContext(error)) {
@@ -667,6 +671,16 @@
       );
       this.document.addEventListener("pointerup", this.boundPointerEnd);
       this.document.addEventListener("pointercancel", this.boundPointerEnd);
+      this.document.addEventListener(
+        "pointerdown",
+        this.boundLineControlPointerDown,
+        { capture: true, passive: false },
+      );
+      this.document.addEventListener(
+        "click",
+        this.boundLineControlClick,
+        true,
+      );
       this.document.addEventListener(
         "click",
         this.boundOfficialViewedClick,
@@ -733,6 +747,16 @@
       this.document.removeEventListener("pointermove", this.boundPointerMove);
       this.document.removeEventListener("pointerup", this.boundPointerEnd);
       this.document.removeEventListener("pointercancel", this.boundPointerEnd);
+      this.document.removeEventListener(
+        "pointerdown",
+        this.boundLineControlPointerDown,
+        true,
+      );
+      this.document.removeEventListener(
+        "click",
+        this.boundLineControlClick,
+        true,
+      );
       this.document.removeEventListener(
         "click",
         this.boundOfficialViewedClick,
