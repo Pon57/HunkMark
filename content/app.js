@@ -76,9 +76,13 @@
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
       this.officialViewedProgrammaticClicks = new WeakSet();
+      this.officialViewedIntentGenerationByKey = new Map();
+      this.officialViewedReconcileGenerationByKey = new Map();
+      this.officialViewedReviewPendingByKey = new Map();
+      this.officialViewedStorageIntentGenerationByKey = new Map();
+      this.nextOfficialViewedIntentGeneration = 0;
       this.fileDiffVisibilityPending = new Map();
       this.officialViewedRestoreGuards = new Map();
-      this.officialViewedStateByKey = new Map();
       this.officialViewedSyncPending = new WeakSet();
       this.officialViewedSyncSuppressed = new Set();
       this.fileExpandRestorePending = new Set();

@@ -261,6 +261,12 @@
         this.currentReviewVariant === this.Core.ALL_COMMITS_REVIEW_VARIANT
           ? this.suppressionKeysForControllers(controllers)
           : [];
+      const suppressionGeneration =
+        this.createOfficialViewedIntentGeneration();
+      this.registerOfficialViewedIntent(
+        suppressionKeys,
+        suppressionGeneration,
+      );
 
       resetButton.disabled = true;
       try {
@@ -289,8 +295,10 @@
           if (keys.size > 0) {
             await this.removeReviewStorageUnlocked(Array.from(keys));
           }
-          suppressionKeys.forEach((key) =>
-            this.officialViewedSyncSuppressed.delete(key),
+          this.applyOfficialViewedIntent(
+            suppressionKeys,
+            false,
+            suppressionGeneration,
           );
           if (!otherRangesExist) {
             await this.forgetReviewContextAccess(contextScope);

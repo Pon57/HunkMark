@@ -166,33 +166,95 @@
       ].filter(
         (key) => typeof key === "string" && !storedKeySet.has(key),
       );
+      const mutationKeys = [...new Set([...storedKeys, ...removalKeys])];
+      const previousValues =
+        storedKeys.length > 0 && removalKeys.length > 0
+          ? await this.getLocalStorage(mutationKeys)
+          : null;
+      let valuesStored = false;
 
-      if (storedKeys.length > 0) {
-        await this.setReviewStorageUnlocked(
-          values,
-          scope,
-          now,
-          { prune: removalKeys.length === 0 },
-        );
-      }
-      if (removalKeys.length > 0) {
-        await this.removeReviewStorageUnlocked(removalKeys);
+      try {
+        if (storedKeys.length > 0) {
+          await this.setReviewStorageUnlocked(
+            values,
+            scope,
+            now,
+            { prune: false },
+          );
+          valuesStored = true;
+        }
+        if (removalKeys.length > 0) {
+          await this.removeReviewStorageUnlocked(removalKeys);
+        }
+      } catch (error) {
+        if (valuesStored && previousValues) {
+          try {
+            await this.restoreReviewStorageSnapshotUnlocked(
+              previousValues,
+              mutationKeys,
+            );
+          } catch (rollbackError) {
+            if (this.stopForInvalidatedContext?.(rollbackError)) {
+              throw rollbackError;
+            }
+            try {
+              error.reviewStorageRollbackError = rollbackError;
+            } catch {
+              // The authoritative re-read in the controller still prevents a
+              // stale UI rollback when an Error object is not extensible.
+            }
+          }
+        }
+        throw error;
       }
       if (
         storedKeys.length > 0 &&
-        removalKeys.length > 0 &&
         this.reviewStorageLimitExceeded()
       ) {
-        await this.ensureStoredReviewStatePrunedUnlocked({
-          currentContext: this.Core.reviewContextScope(scope),
-          maxEntries: this.reviewStorageEntryLimit(),
-          now,
-        });
+        try {
+          await this.ensureStoredReviewStatePrunedUnlocked({
+            currentContext: this.Core.reviewContextScope(scope),
+            maxEntries: this.reviewStorageEntryLimit(),
+            now,
+          });
+        } catch (error) {
+          if (!this.stopForInvalidatedContext?.(error)) {
+            console.warn(
+              "HunkMark could not prune old review state after saving.",
+              error,
+            );
+          }
+        }
       }
     },
 
     async setReviewStorageValuesUnlocked(values) {
       return this.setLocalStorage(values);
+    },
+
+    async restoreReviewStorageSnapshotUnlocked(snapshot, keys) {
+      const values = {};
+      const removals = [];
+      keys.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(snapshot, key)) {
+          values[key] = snapshot[key];
+        } else {
+          removals.push(key);
+        }
+      });
+
+      if (Object.keys(values).length > 0) {
+        await this.setReviewStorageValuesUnlocked(values);
+        Object.entries(values).forEach(([key, value]) => {
+          if (this.isTrackedReviewStorageKey(key)) {
+            this.reviewStorageKeys.add(key);
+          }
+          this.rememberLineReviewContext(key, value);
+        });
+      }
+      if (removals.length > 0) {
+        await this.removeReviewStorageUnlocked(removals);
+      }
     },
 
     async removeReviewStorage(keys) {
@@ -271,17 +333,20 @@
       scope = this.currentScope,
       now = Date.now(),
     ) {
+      if (!(await this.reviewContextAccessIdToTouch(scope, now))) {
+        return false;
+      }
       return this.withReviewStorageLock(() =>
         this.touchReviewContextAccessUnlocked(scope, now),
       );
     },
 
-    async touchReviewContextAccessUnlocked(
+    async reviewContextAccessIdToTouch(
       scope = this.currentScope,
       now = Date.now(),
     ) {
       if (!scope) {
-        return false;
+        return null;
       }
       const contextPrefixes =
         await this.Core.reviewStoragePrefixesForContext(scope);
@@ -289,7 +354,7 @@
         contextPrefixes.some((prefix) => key.startsWith(prefix)),
       );
       if (!hasSavedState) {
-        return false;
+        return null;
       }
       const contextId = await this.Core.reviewContextId(scope);
       const previousAccess =
@@ -300,6 +365,17 @@
           now - previousAccess <
             this.constants.REVIEW_ACCESS_TOUCH_INTERVAL_MS)
       ) {
+        return null;
+      }
+      return contextId;
+    },
+
+    async touchReviewContextAccessUnlocked(
+      scope = this.currentScope,
+      now = Date.now(),
+    ) {
+      const contextId = await this.reviewContextAccessIdToTouch(scope, now);
+      if (!contextId) {
         return false;
       }
 

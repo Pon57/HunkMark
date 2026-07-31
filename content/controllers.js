@@ -8,6 +8,12 @@
 
   Object.assign(App.prototype, {
     createController(hunk) {
+      // Read all host metrics before adding any HunkMark DOM. Interleaving a
+      // computed-style read with each line-control insertion forces repeated
+      // style and layout work on large hunks.
+      const lineLayouts = hunk.lines.map((line) =>
+        this.measureLineHostLayout(line),
+      );
       const actions = this.document.createElement("span");
       actions.className = "hunkmark-hunk-actions";
       actions.setAttribute("data-hunkmark-ui", "true");
@@ -60,8 +66,8 @@
         void this.setCollapsed(controller, !controller.collapsed);
       });
 
-      controller.lines = hunk.lines.map((line) =>
-        this.createLineController(controller, line),
+      controller.lines = hunk.lines.map((line, index) =>
+        this.createLineController(controller, line, lineLayouts[index]),
       );
       this.connectSplitLinePeers(controller);
 
@@ -102,21 +108,7 @@
       return [lineController, ...lineController.peers];
     },
 
-    createLineController(controller, line) {
-      const label = this.document.createElement("label");
-      label.className = "hunkmark-line-control";
-      label.title = "Mark this code line as viewed";
-      label.setAttribute("data-hunkmark-ui", "true");
-
-      const input = this.document.createElement("input");
-      input.type = "checkbox";
-      input.disabled = true;
-      input.setAttribute("aria-label", "Mark this code line as viewed");
-
-      const text = this.document.createElement("span");
-      text.textContent = "Viewed";
-      label.append(input, text);
-
+    measureLineHostLayout(line) {
       const hostStyle = this.window.getComputedStyle(line.element);
 
       // GitHub reserves the modern cell's right padding for its native line menu.
@@ -135,6 +127,26 @@
         (Number.isFinite(hostLineHeight) && hostLineHeight > 0
           ? hostLineHeight / 2
           : 12);
+      return { firstLineCenter, safeHostRightInset };
+    },
+
+    createLineController(controller, line, layout) {
+      const label = this.document.createElement("label");
+      label.className = "hunkmark-line-control";
+      label.title = "Mark this code line as viewed";
+      label.setAttribute("data-hunkmark-ui", "true");
+
+      const input = this.document.createElement("input");
+      input.type = "checkbox";
+      input.disabled = true;
+      input.setAttribute("aria-label", "Mark this code line as viewed");
+
+      const text = this.document.createElement("span");
+      text.textContent = "Viewed";
+      label.append(input, text);
+
+      const { firstLineCenter, safeHostRightInset } =
+        layout ?? this.measureLineHostLayout(line);
       line.element.style.setProperty(
         "--hunkmark-host-line-action-inset",
         `${safeHostRightInset}px`,
@@ -257,6 +269,116 @@
       controller.indeterminate = state.indeterminate;
     },
 
+    reviewControllerIsCurrent(controller) {
+      return (
+        !this.stopped &&
+        controller?.hunkRow?.isConnected &&
+        this.controllersByRow.get(controller.hunkRow) === controller
+      );
+    },
+
+    applyStoredReviewState(controller, stored) {
+      controller.collapsed = Boolean(stored[controller.collapsedKey]);
+      controller.marked =
+        controller.lines.length === 0 && Boolean(stored[controller.key]);
+      controller.indeterminate = false;
+      let invalidatedLineReview = false;
+      controller.lines.forEach((line) => {
+        const storedLineReview = stored[line.key];
+        line.marked = this.storedLineReviewMatches(
+          line,
+          storedLineReview,
+        );
+        invalidatedLineReview ||= (
+          storedLineReview !== undefined && !line.marked
+        );
+      });
+      this.updateAggregateFromLines(controller);
+      if (invalidatedLineReview) {
+        controller.collapsed = false;
+      }
+      this.applyControllerAppearance(controller);
+    },
+
+    async reconcileReviewControllersFromStorage(controllers) {
+      const requestedControllers = [...new Set(controllers)];
+      return this.withReviewStorageLock(async () => {
+        const currentControllers = requestedControllers.filter((controller) =>
+          this.reviewControllerIsCurrent(controller),
+        );
+        if (currentControllers.length === 0) {
+          return false;
+        }
+
+        const keys = [
+          ...new Set(
+            currentControllers.flatMap((controller) => [
+              controller.key,
+              controller.collapsedKey,
+              ...controller.lines.map((line) => line.key),
+            ]),
+          ),
+        ];
+        const stored = await this.getLocalStorage(keys);
+        this.applyReviewStorageKeyChanges(
+          Object.fromEntries(
+            keys.map((key) => [
+              key,
+              { newValue: stored[key] },
+            ]),
+          ),
+        );
+
+        const reconciledControllers = currentControllers.filter((controller) =>
+          this.reviewControllerIsCurrent(controller),
+        );
+        reconciledControllers.forEach((controller) =>
+          this.applyStoredReviewState(controller, stored),
+        );
+        if (reconciledControllers.length > 0) {
+          this.updateProgress();
+          return true;
+        }
+        return false;
+      });
+    },
+
+    async reconcileReviewControllersAfterFailure(
+      controllers,
+      error,
+      warning,
+    ) {
+      if (this.stopForInvalidatedContext(error)) {
+        return false;
+      }
+
+      let reconciliationError = null;
+      let reconciled = false;
+      try {
+        reconciled =
+          await this.reconcileReviewControllersFromStorage(controllers);
+      } catch (nextError) {
+        if (this.stopForInvalidatedContext(nextError)) {
+          return false;
+        }
+        reconciliationError = nextError;
+      }
+
+      const details = {};
+      if (error?.reviewStorageRollbackError) {
+        details.rollbackError = error.reviewStorageRollbackError;
+      }
+      if (reconciliationError) {
+        details.reconciliationError = reconciliationError;
+      }
+      if (Object.keys(details).length > 0) {
+        console.warn(warning, error, details);
+      } else {
+        console.warn(warning, error);
+      }
+      return reconciled;
+    },
+
     applyViewedCollapseTransition(controller, wasViewed) {
       if (!wasViewed && controller.marked && this.autoCollapseViewed) {
         controller.collapsed = true;
@@ -270,7 +392,6 @@
     },
 
     async setCollapsed(controller, collapsed) {
-      const previous = controller.collapsed;
       controller.collapsed = collapsed;
       controller.collapsePending = true;
       this.applyControllerAppearance(controller);
@@ -287,11 +408,11 @@
           await this.removeReviewStorage(controller.collapsedKey);
         }
       } catch (error) {
-        if (!this.stopForInvalidatedContext(error)) {
-          controller.collapsed = previous;
-          this.applyControllerAppearance(controller);
-          console.warn("HunkMark could not save collapsed state.", error);
-        }
+        await this.reconcileReviewControllersAfterFailure(
+          [controller],
+          error,
+          "HunkMark could not save collapsed state.",
+        );
       } finally {
         if (!this.stopped) {
           controller.collapsePending = false;
@@ -301,12 +422,7 @@
     },
 
     async setHunkViewed(controller, viewed) {
-      const previous = {
-        collapsed: controller.collapsed,
-        indeterminate: controller.indeterminate,
-        lineMarks: controller.lines.map((line) => line.marked),
-        marked: controller.marked,
-      };
+      const wasViewed = controller.marked;
       controller.marked = viewed;
       controller.indeterminate = false;
       controller.lines.forEach((line) => {
@@ -314,14 +430,18 @@
       });
       const collapseTransition = this.applyViewedCollapseTransition(
         controller,
-        previous.marked,
+        wasViewed,
       );
       controller.collapsePending = Boolean(collapseTransition);
       this.applyControllerAppearance(controller);
       this.updateProgress();
 
       controller.input.disabled = true;
+      const officialViewedPendingKeys =
+        this.beginOfficialViewedReviewPersistence([controller]);
+      let reviewStateKnown = true;
       try {
+        let reviewMutation;
         if (viewed) {
           const viewedAt = Date.now();
           const values = {};
@@ -338,33 +458,42 @@
               updatedAt: viewedAt,
             };
           }
-          await this.setReviewStorage(values, this.currentReviewScope, viewedAt);
+          reviewMutation = {
+            values,
+            scope: this.currentReviewScope,
+            now: viewedAt,
+          };
         } else {
-          await this.removeReviewStorage([
-            controller.key,
-            controller.collapsedKey,
-            ...controller.lines.map((line) => line.key),
-          ]);
+          reviewMutation = {
+            removals: [
+              controller.key,
+              controller.collapsedKey,
+              ...controller.lines.map((line) => line.key),
+            ],
+          };
         }
-        this.releaseOfficialViewedSuppression([controller]);
-        this.syncOfficialViewedForControllers([controller]);
+        await this.mutateReviewStorageAndReleaseOfficialViewed(
+          [controller],
+          reviewMutation,
+        );
       } catch (error) {
-        if (!this.stopForInvalidatedContext(error)) {
-          controller.collapsed = previous.collapsed;
-          controller.marked = previous.marked;
-          controller.indeterminate = previous.indeterminate;
-          controller.lines.forEach((line, index) => {
-            line.marked = previous.lineMarks[index];
-          });
-          this.applyControllerAppearance(controller);
-          this.updateProgress();
-          console.warn("HunkMark could not save a mark.", error);
-        }
+        reviewStateKnown =
+          await this.reconcileReviewControllersAfterFailure(
+            [controller],
+            error,
+            "HunkMark could not save a mark.",
+          );
       } finally {
+        this.endOfficialViewedReviewPersistence(
+          officialViewedPendingKeys,
+        );
         if (!this.stopped) {
           controller.input.disabled = false;
           controller.collapsePending = false;
           this.applyControllerAppearance(controller);
+          if (reviewStateKnown) {
+            this.syncOfficialViewedForControllers([controller]);
+          }
         }
       }
     },
@@ -374,15 +503,10 @@
       const affectedControllers = new Set(
         affectedLines.map((line) => line.controller),
       );
-      const previousLines = new Map(
-        affectedLines.map((line) => [line, line.marked]),
-      );
       const previousControllers = new Map(
         Array.from(affectedControllers, (affectedController) => [
           affectedController,
           {
-            collapsed: affectedController.collapsed,
-            indeterminate: affectedController.indeterminate,
             marked: affectedController.marked,
           },
         ]),
@@ -407,6 +531,9 @@
       affectedLines.forEach((line) => {
         line.input.disabled = true;
       });
+      const officialViewedPendingKeys =
+        this.beginOfficialViewedReviewPersistence(affectedControllers);
+      let reviewStateKnown = true;
       try {
         const viewedAt = Date.now();
         const values = {};
@@ -418,7 +545,8 @@
           });
         } else {
           affectedLines.forEach((line) => {
-            values[line.key] = this.lineReviewStorageValue(line, viewedAt);
+            values[line.key] =
+              this.lineReviewStorageValue(line, viewedAt);
           });
           affectedControllers.forEach((affectedController) => {
             removals.add(affectedController.key);
@@ -436,30 +564,26 @@
             removals.add(affectedController.collapsedKey);
           }
         });
-        Object.keys(values).forEach((key) => removals.delete(key));
-        await this.mutateReviewStorage({
-          values,
-          removals: Array.from(removals),
-          scope: this.currentReviewScope,
-          now: viewedAt,
-        });
-        this.releaseOfficialViewedSuppression(affectedControllers);
-        this.syncOfficialViewedForControllers(affectedControllers);
+        await this.mutateReviewStorageAndReleaseOfficialViewed(
+          affectedControllers,
+          {
+            values,
+            removals: Array.from(removals),
+            scope: this.currentReviewScope,
+            now: viewedAt,
+          },
+        );
       } catch (error) {
-        if (!this.stopForInvalidatedContext(error)) {
-          previousLines.forEach((marked, line) => {
-            line.marked = marked;
-          });
-          previousControllers.forEach((state, affectedController) => {
-            affectedController.collapsed = state.collapsed;
-            affectedController.marked = state.marked;
-            affectedController.indeterminate = state.indeterminate;
-            this.applyControllerAppearance(affectedController);
-          });
-          this.updateProgress();
-          console.warn("HunkMark could not save a line mark.", error);
-        }
+        reviewStateKnown =
+          await this.reconcileReviewControllersAfterFailure(
+            affectedControllers,
+            error,
+            "HunkMark could not save a line mark.",
+          );
       } finally {
+        this.endOfficialViewedReviewPersistence(
+          officialViewedPendingKeys,
+        );
         if (!this.stopped) {
           affectedControllers.forEach((affectedController) => {
             affectedController.collapsePending = false;
@@ -468,6 +592,9 @@
           affectedLines.forEach((line) => {
             line.input.disabled = false;
           });
+          if (reviewStateKnown) {
+            this.syncOfficialViewedForControllers(affectedControllers);
+          }
         }
       }
     },
