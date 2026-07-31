@@ -7,13 +7,13 @@
   }
 
   Object.assign(App.prototype, {
-    createController(hunk) {
-      // Read all host metrics before adding any HunkMark DOM. Interleaving a
-      // computed-style read with each line-control insertion forces repeated
-      // style and layout work on large hunks.
-      const lineLayouts = hunk.lines.map((line) =>
-        this.measureLineHostLayout(line),
-      );
+    createController(
+      hunk,
+      {
+        deferLineControls = false,
+        lazyLineControls = false,
+      } = {},
+    ) {
       const actions = this.document.createElement("span");
       actions.className = "hunkmark-hunk-actions";
       actions.setAttribute("data-hunkmark-ui", "true");
@@ -38,8 +38,6 @@
 
       label.append(input, text);
       actions.append(collapseButton, label);
-      hunk.hunkCell.classList.add("hunkmark-hunk-cell");
-      hunk.hunkCell.append(actions);
 
       const controller = {
         ...hunk,
@@ -51,8 +49,12 @@
         indeterminate: false,
         input,
         label,
+        lazyLineControls,
         lines: [],
         marked: false,
+        materializedLazyLines: lazyLineControls ? new Set() : null,
+        observedLazyLines: new Set(),
+        destroyed: false,
       };
 
       actions.addEventListener("click", (event) => event.stopPropagation());
@@ -66,10 +68,31 @@
         void this.setCollapsed(controller, !controller.collapsed);
       });
 
-      controller.lines = hunk.lines.map((line, index) =>
-        this.createLineController(controller, line, lineLayouts[index]),
+      controller.lines = hunk.lines.map((line) =>
+        this.createLineController(controller, line),
       );
+      controller.reviewKeys = Object.freeze([
+        controller.key,
+        controller.collapsedKey,
+        ...controller.lines.map((line) => line.key),
+      ]);
       this.connectSplitLinePeers(controller);
+
+      // Read all host metrics before adding any HunkMark DOM. Interleaving a
+      // computed-style read with each line-control insertion forces repeated
+      // style and layout work on large hunks. Persisted collapsed hunks can
+      // defer this entire pass until the user expands them.
+      const lineLayouts = deferLineControls
+        ? null
+        : controller.lines.map((line) => this.measureLineHostLayout(line));
+
+      hunk.hunkCell.classList.add("hunkmark-hunk-cell");
+      hunk.hunkCell.append(actions);
+      if (lineLayouts) {
+        this.materializeControllerLineControls(controller, lineLayouts, {
+          disabled: true,
+        });
+      }
 
       this.controllersByRow.set(hunk.hunkRow, controller);
       return controller;
@@ -130,40 +153,184 @@
       return { firstLineCenter, safeHostRightInset };
     },
 
-    createLineController(controller, line, layout) {
-      const control = this.document.createElement("button");
-      control.type = "button";
-      control.className = "hunkmark-line-control";
-      control.disabled = true;
-      control.textContent = "Viewed";
-      control.title = "Mark this code line as viewed";
-      control.setAttribute("aria-label", "Mark this code line as viewed");
-      control.setAttribute("aria-pressed", "false");
-      control.setAttribute("data-hunkmark-ui", "true");
-
-      const { firstLineCenter, safeHostRightInset } =
-        layout ?? this.measureLineHostLayout(line);
-      line.element.style.setProperty(
-        "--hunkmark-host-line-action-inset",
-        `${safeHostRightInset}px`,
-      );
-      line.element.style.setProperty(
-        "--hunkmark-first-line-center",
-        `${firstLineCenter}px`,
-      );
-      line.element.classList.add("hunkmark-line-cell");
-      line.element.append(control);
-
+    createLineController(controller, line) {
       const lineController = {
         ...line,
-        control,
+        control: null,
         controller,
+        lineControlObserved: false,
+        lazyControlChunk: null,
         marked: false,
         peers: [],
         suppressPointerClick: false,
       };
       this.lineControllersByElement.set(line.element, lineController);
       return lineController;
+    },
+
+    materializeLineControl(lineController, layout, { disabled = false } = {}) {
+      if (lineController.control?.isConnected) {
+        return lineController.control;
+      }
+      lineController.control?.remove();
+      lineController.control = null;
+
+      const control = this.document.createElement("button");
+      control.type = "button";
+      control.className = "hunkmark-line-control";
+      control.disabled = disabled;
+      control.textContent = "Viewed";
+      control.title = "Mark this code line as viewed";
+      control.setAttribute("aria-label", "Mark this code line as viewed");
+      control.setAttribute("aria-pressed", "false");
+      control.setAttribute("data-hunkmark-ui", "true");
+
+      const { firstLineCenter, safeHostRightInset } = layout;
+      lineController.element.style.setProperty(
+        "--hunkmark-host-line-action-inset",
+        `${safeHostRightInset}px`,
+      );
+      lineController.element.style.setProperty(
+        "--hunkmark-first-line-center",
+        `${firstLineCenter}px`,
+      );
+      lineController.element.classList.add("hunkmark-line-cell");
+      lineController.element.append(control);
+      lineController.control = control;
+      lineController.controller.materializedLazyLines?.add(lineController);
+      this.applyLineAppearance(lineController);
+      return control;
+    },
+
+    materializeControllerLineControls(
+      controller,
+      lineLayouts = null,
+      options = {},
+    ) {
+      const missingLines = controller.lines.filter(
+        (line) => !line.control?.isConnected,
+      );
+      if (missingLines.length === 0) {
+        return;
+      }
+      const disabledStates = missingLines.map(
+        (line) => line.control?.disabled ?? options.disabled ?? false,
+      );
+      missingLines.forEach((line) => {
+        line.control?.remove();
+        line.control = null;
+      });
+
+      // Batch every style read ahead of the DOM writes below.
+      const layouts =
+        lineLayouts ??
+        missingLines.map((line) => this.measureLineHostLayout(line));
+      missingLines.forEach((line, index) =>
+        this.materializeLineControl(line, layouts[index], {
+          disabled: disabledStates[index],
+        }),
+      );
+    },
+
+    lineControlVisibilityObserverInstance() {
+      if (this.lineControlVisibilityObserver) {
+        return this.lineControlVisibilityObserver;
+      }
+      if (typeof this.window.IntersectionObserver !== "function") {
+        return null;
+      }
+
+      this.lineControlVisibilityObserver =
+        new this.window.IntersectionObserver(
+          (entries) => {
+            const visibleLines = new Set();
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) {
+                return;
+              }
+              const line = this.lineControllersByElement.get(entry.target);
+              if (!line || line.controller.destroyed) {
+                this.lineControlVisibilityObserver?.unobserve(entry.target);
+                if (line) {
+                  line.lineControlObserved = false;
+                  line.controller.observedLazyLines.delete(line);
+                }
+                return;
+              }
+              this.lineControlVisibilityObserver?.unobserve(line.element);
+              line.lineControlObserved = false;
+              line.controller.observedLazyLines.delete(line);
+              if (
+                line.controller.collapsed ||
+                !line.controller.lazyLineControls
+              ) {
+                return;
+              }
+              (line.lazyControlChunk ?? [line]).forEach((chunkLine) => {
+                if (
+                  chunkLine.element.isConnected &&
+                  !chunkLine.control?.isConnected
+                ) {
+                  visibleLines.add(chunkLine);
+                }
+              });
+            });
+
+            // Preserve the read-before-write batching used for eager controls,
+            // but only for lines that are close enough to be interacted with.
+            const lines = Array.from(visibleLines);
+            const layouts = lines.map((line) =>
+              this.measureLineHostLayout(line),
+            );
+            lines.forEach((line, index) =>
+              this.materializeLineControl(line, layouts[index], {
+                disabled: line.controller.input.disabled,
+              }),
+            );
+          },
+          { rootMargin: "800px 0px" },
+        );
+      return this.lineControlVisibilityObserver;
+    },
+
+    observeLazyControllerLineControls(controller) {
+      const observer = this.lineControlVisibilityObserverInstance();
+      if (!observer) {
+        controller.lazyLineControls = false;
+        controller.materializedLazyLines = null;
+        this.materializeControllerLineControls(controller);
+        return;
+      }
+      const chunkSize = this.constants.LAZY_LINE_CONTROL_CHUNK_SIZE;
+      // Observe one midpoint per small line chunk instead of every changed
+      // line. Entering that region materializes the whole chunk, preserving
+      // nearby controls while keeping file reveal/hide work sublinear.
+      for (
+        let start = 0;
+        start < controller.lines.length;
+        start += chunkSize
+      ) {
+        const chunk = controller.lines.slice(start, start + chunkSize);
+        if (chunk.every((line) => line.control?.isConnected)) {
+          continue;
+        }
+        const line = chunk[Math.floor(chunk.length / 2)];
+        line.lazyControlChunk = chunk;
+        if (line.lineControlObserved) {
+          continue;
+        }
+        line.lineControlObserved = true;
+        controller.observedLazyLines.add(line);
+        observer.observe(line.element);
+      }
+    },
+
+    unobserveLazyControllerLineControls(controller) {
+      controller.observedLazyLines.forEach((line) => {
+        this.lineControlVisibilityObserver?.unobserve(line.element);
+        line.lineControlObserved = false;
+      });
+      controller.observedLazyLines.clear();
     },
 
     lineControllerForControlEvent(event) {
@@ -215,7 +382,46 @@
       );
     },
 
+    controllerAppearanceMatchesRows(controller) {
+      if (!controller.collapsed) {
+        const controlledLines = controller.lazyLineControls
+          ? controller.materializedLazyLines
+          : controller.lines;
+        for (const line of controlledLines) {
+          if (!line.control?.isConnected) {
+            return false;
+          }
+        }
+      }
+      if (
+        controller.groupRows.some((row) => {
+          const shouldCollapse =
+            controller.collapsed && row !== controller.hunkRow;
+          return (
+            row.classList.contains("hunkmark-collapsed") !== shouldCollapse
+          );
+        })
+      ) {
+        return false;
+      }
+      return controller.lines.every((line) => {
+        const dragPreviewActive = Boolean(this.dragState?.touched.has(line));
+        return (
+          line.element.classList.contains("hunkmark-line-viewed") ===
+          (line.marked && !dragPreviewActive)
+        );
+      });
+    },
+
     updateControllerRows(controller, nextRows) {
+      if (
+        controller.groupRows.length === nextRows.length &&
+        controller.groupRows.every((row, index) => row === nextRows[index]) &&
+        this.controllerAppearanceMatchesRows(controller)
+      ) {
+        return;
+      }
+
       const previousRows = new Set(controller.groupRows);
       const nextRowSet = new Set(nextRows);
       const hostRevealedRows =
@@ -237,6 +443,16 @@
     },
 
     applyControllerAppearance(controller) {
+      if (controller.destroyed) {
+        return;
+      }
+      if (!controller.collapsed && controller.lazyLineControls) {
+        this.observeLazyControllerLineControls(controller);
+      } else if (!controller.collapsed) {
+        this.materializeControllerLineControls(controller);
+      } else if (controller.lazyLineControls) {
+        this.unobserveLazyControllerLineControls(controller);
+      }
       controller.input.checked = controller.marked;
       controller.input.indeterminate = controller.indeterminate;
       controller.label.classList.toggle("is-viewed", controller.marked);
@@ -267,6 +483,13 @@
       const dragPreviewActive = Boolean(
         this.dragState?.touched.has(lineController),
       );
+      lineController.element.classList.toggle(
+        "hunkmark-line-viewed",
+        lineController.marked && !dragPreviewActive,
+      );
+      if (!lineController.control) {
+        return;
+      }
       lineController.control.setAttribute(
         "aria-pressed",
         String(lineController.marked),
@@ -274,10 +497,6 @@
       lineController.control.classList.toggle(
         "is-viewed",
         lineController.marked,
-      );
-      lineController.element.classList.toggle(
-        "hunkmark-line-viewed",
-        lineController.marked && !dragPreviewActive,
       );
     },
 
@@ -333,11 +552,9 @@
 
         const keys = [
           ...new Set(
-            currentControllers.flatMap((controller) => [
-              controller.key,
-              controller.collapsedKey,
-              ...controller.lines.map((line) => line.key),
-            ]),
+            currentControllers.flatMap(
+              (controller) => controller.reviewKeys,
+            ),
           ),
         ];
         const stored = await this.getLocalStorage(keys);
@@ -486,11 +703,7 @@
           };
         } else {
           reviewMutation = {
-            removals: [
-              controller.key,
-              controller.collapsedKey,
-              ...controller.lines.map((line) => line.key),
-            ],
+            removals: controller.reviewKeys,
           };
         }
         await this.mutateReviewStorageAndReleaseOfficialViewed(
@@ -550,7 +763,9 @@
       this.updateProgress();
 
       affectedLines.forEach((line) => {
-        line.control.disabled = true;
+        if (line.control) {
+          line.control.disabled = true;
+        }
       });
       const officialViewedPendingKeys =
         this.beginOfficialViewedReviewPersistence(affectedControllers);
@@ -611,7 +826,9 @@
             this.applyControllerAppearance(affectedController);
           });
           affectedLines.forEach((line) => {
-            line.control.disabled = false;
+            if (line.control) {
+              line.control.disabled = false;
+            }
           });
           if (reviewStateKnown) {
             this.syncOfficialViewedForControllers(affectedControllers);
@@ -621,6 +838,13 @@
     },
 
     destroyLineController(lineController) {
+      if (lineController.lineControlObserved) {
+        this.lineControlVisibilityObserver?.unobserve(
+          lineController.element,
+        );
+        lineController.lineControlObserved = false;
+        lineController.controller.observedLazyLines.delete(lineController);
+      }
       this.lineControllersByElement.delete(lineController.element);
       lineController.element?.classList.remove(
         "hunkmark-line-cell",
@@ -634,9 +858,18 @@
       );
       lineController.element?.classList.remove("hunkmark-line-drag-touched");
       lineController.control?.remove();
+      lineController.controller.materializedLazyLines?.delete(
+        lineController,
+      );
     },
 
     destroyController(controller) {
+      controller.destroyed = true;
+      if (controller.groupRows.every((row) => !row.isConnected)) {
+        this.unobserveLazyControllerLineControls(controller);
+        this.controllersByRow.delete(controller.hunkRow);
+        return;
+      }
       controller.groupRows.forEach((row) => {
         row.classList.remove("hunkmark-collapsed");
       });
@@ -662,6 +895,9 @@
       );
       this.fileRevealRestorePending.clear();
       this.fileProgressStateByKey.clear();
+      this.filePathByElement = new WeakMap();
+      this.lineControlVisibilityObserver?.disconnect();
+      this.lineControlVisibilityObserver = null;
       this.removePanel();
       this.document
         .getElementById(this.constants.RECONNECT_NOTICE_ID)

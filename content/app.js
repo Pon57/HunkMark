@@ -32,6 +32,8 @@
       '[class*="diff-hunk"]',
       "[data-hunk]",
     ].join(", "),
+    LAZY_LINE_CONTROL_CHUNK_SIZE: 16,
+    LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD: 500,
     OFFICIAL_FILE_VIEWED_SELECTOR: [
       'button[aria-pressed][aria-label="Not Viewed"]',
       'button[aria-pressed][aria-label="Viewed"]',
@@ -83,6 +85,7 @@
 
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
+      this.lineControlVisibilityObserver = null;
       this.officialViewedProgrammaticClicks = new WeakSet();
       this.officialViewedIntentGenerationByKey = new Map();
       this.officialViewedReconcileGenerationByKey = new Map();
@@ -90,6 +93,7 @@
       this.officialViewedStorageIntentGenerationByKey = new Map();
       this.nextOfficialViewedIntentGeneration = 0;
       this.fileDiffVisibilityPending = new Map();
+      this.filePathByElement = new WeakMap();
       this.officialViewedRestoreGuards = new Map();
       this.fileRevealPrepaintRestores = new Map();
       this.officialViewedSyncPending = new WeakSet();
@@ -108,6 +112,7 @@
       this.linkSplitSides = true;
       this.preferencesLoaded = false;
       this.panelClearanceObserver = null;
+      this.panelClearanceFileTarget = null;
       this.panelClearanceTarget = null;
       this.refreshQueued = false;
       this.refreshRunning = false;

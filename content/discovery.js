@@ -12,9 +12,15 @@
         return "";
       }
 
+      const extensionUiSelector =
+        '[data-hunkmark-ui], .hunkmark-file-progress';
+      if (!element.querySelector(extensionUiSelector)) {
+        return element.textContent ?? "";
+      }
+
       const clone = element.cloneNode(true);
       clone
-        .querySelectorAll('[data-hunkmark-ui], .hunkmark-file-progress')
+        .querySelectorAll(extensionUiSelector)
         .forEach((control) => control.remove());
       return clone.textContent ?? "";
     },
@@ -198,6 +204,10 @@
     },
 
     resolveFilePath(fileElement, fallbackIndex) {
+      const cachedPath = this.filePathByElement.get(fileElement);
+      if (cachedPath) {
+        return cachedPath;
+      }
       const directAttributes = [
         "data-tagsearch-path",
         "data-file-path",
@@ -206,7 +216,9 @@
       for (const attribute of directAttributes) {
         const value = fileElement.getAttribute(attribute);
         if (this.Core.looksLikeFilePath(value)) {
-          return value.trim();
+          const path = value.trim();
+          this.filePathByElement.set(fileElement, path);
+          return path;
         }
       }
 
@@ -231,7 +243,9 @@
         ];
         const path = values.find((value) => this.Core.looksLikeFilePath(value));
         if (path) {
-          return path.trim();
+          const resolvedPath = path.trim();
+          this.filePathByElement.set(fileElement, resolvedPath);
+          return resolvedPath;
         }
       }
 
