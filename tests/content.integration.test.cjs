@@ -583,24 +583,47 @@ function initiallyViewedCommitSelectionFixture() {
     </body></html>`;
 }
 
+function loadDiffPlaceholderHtml() {
+  return `<div class="load-diff-container">
+    <div class="load-diff-placeholder">
+      <div class="loading-skeleton">Loading preview</div>
+      <button>Load Diff</button>
+      <span class="load-diff-message">Large diffs are not rendered by default.</span>
+    </div>
+  </div>`;
+}
+
 function loadDiffFixture({ loaded = false } = {}) {
   const content = loaded
     ? `<table><tbody>
         <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
         <tr><td class="blob-num">1</td><td class="blob-code-addition">+loaded</td></tr>
       </tbody></table>`
-    : `<div class="load-diff-container">
-        <div class="load-diff-placeholder">
-          <div class="loading-skeleton">Loading preview</div>
-          <button>Load Diff</button>
-          <span class="load-diff-message">Large diffs are not rendered by default.</span>
-        </div>
-      </div>`;
+    : loadDiffPlaceholderHtml();
   return `<!doctype html>
     <html><body>
       <div id="diff-large" class="js-file" data-file-path="src/large-diff.js">
         <div class="file-header"><span class="file-info">src/large-diff.js</span></div>
         <div class="diff-body">${content}</div>
+      </div>
+    </body></html>`;
+}
+
+function hiddenLargeDiffFixture(
+  controlHtml,
+  { includeHiddenPlaceholder = false } = {},
+) {
+  const content = includeHiddenPlaceholder
+    ? `<div class="diff-body" hidden>${loadDiffPlaceholderHtml()}</div>`
+    : "";
+  return `<!doctype html>
+    <html><body>
+      <div id="diff-large" class="js-file" data-file-path="src/large-diff.js">
+        <div class="file-header">
+          <span class="file-info">src/large-diff.js</span>
+          ${controlHtml}
+        </div>
+        ${content}
       </div>
     </body></html>`;
 }
@@ -1190,6 +1213,78 @@ test("hides Load Diff content until review controls are ready", async () => {
     reviewRead.release();
     app.stop();
     dom.window.close();
+  }
+});
+
+test("shows Load Diff immediately after a hidden large diff is revealed", async (t) => {
+  const cases = [
+    {
+      name: "file expansion",
+      controlHtml: '<button aria-label="Expand file">Expand</button>',
+      includeHiddenPlaceholder: true,
+      reveal: (fileElement, control) => {
+        control.setAttribute("aria-label", "Collapse file");
+        fileElement.querySelector(".diff-body").hidden = false;
+      },
+    },
+    {
+      name: "official Viewed removal",
+      controlHtml:
+        '<button aria-label="Viewed" aria-pressed="true">Viewed</button>',
+      reveal: (fileElement, control) => {
+        setOfficialViewed(control, false);
+        fileElement.insertAdjacentHTML(
+          "beforeend",
+          `<div class="diff-body">${loadDiffPlaceholderHtml()}</div>`,
+        );
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(
+        hiddenLargeDiffFixture(scenario.controlHtml, {
+          includeHiddenPlaceholder: scenario.includeHiddenPlaceholder,
+        }),
+      );
+      try {
+        installContentStyles(dom);
+        const fileElement = dom.window.document.querySelector(".js-file");
+        const control = fileElement.querySelector("button");
+        let readinessFrame = null;
+        if (scenario.includeHiddenPlaceholder) {
+          dom.window.requestAnimationFrame = (callback) => {
+            readinessFrame = callback;
+            return 1;
+          };
+          dom.window.cancelAnimationFrame = () => {
+            readinessFrame = null;
+          };
+        }
+        control.addEventListener("click", () => {
+          scenario.reveal(fileElement, control);
+        });
+
+        control.click();
+        const diffBody = fileElement.querySelector(".diff-body");
+        assertFileRevealState(dom, fileElement, diffBody, true);
+        if (scenario.includeHiddenPlaceholder) {
+          assert.ok(readinessFrame);
+          const callback = readinessFrame;
+          readinessFrame = null;
+          callback(dom.window.performance.now());
+        }
+
+        await waitFor(() => {
+          assertFileRevealState(dom, fileElement, diffBody, false);
+          assert.equal(app.fileRevealPrepaintRestores.size, 0);
+        });
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
   }
 });
 

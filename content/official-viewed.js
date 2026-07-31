@@ -373,6 +373,42 @@
         : control.checked;
     },
 
+    fileVisibilityControlLabel(control) {
+      const labelledBy = (
+        control.getAttribute("aria-labelledby") ?? ""
+      )
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => this.document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      return (
+        control.getAttribute("aria-label") ||
+        control.getAttribute("title") ||
+        labelledBy ||
+        control.textContent ||
+        ""
+      ).trim();
+    },
+
+    fileDiffRevealControl(fileElement) {
+      return (
+        Array.from(
+          fileElement.querySelectorAll(
+            "button:not(.hunkmark-line-control), " +
+              "[role=button]:not(.hunkmark-line-control)",
+          ),
+        ).find(
+          (element) =>
+            !element.matches(
+              this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+            ) &&
+            /\b(?:load|show)\b.*\bdiff\b/i.test(
+              this.fileVisibilityControlLabel(element),
+            ),
+        ) ?? null
+      );
+    },
+
     fileDiffHasUnresolvedContent(fileElement) {
       if (
         fileElement.matches(this.constants.UNRESOLVED_DIFF_SELECTOR) ||
@@ -688,6 +724,7 @@
         filePath,
         headerElement,
         loadingPresentationElement: null,
+        readinessFrameId: null,
         timeoutId: null,
         waitForResolvedContent,
       };
@@ -703,6 +740,16 @@
         () => this.finishFileRevealPrepaintRestore(fileElement, restore),
         timeoutMs,
       );
+      // GitHub's header controls can reveal an already-mounted Load Diff
+      // region by changing attributes only. The main observer watches
+      // child-list changes, so check once after the host click has completed
+      // and before the browser paints instead of broadening that observer.
+      if (controlContainer === headerElement) {
+        restore.readinessFrameId = this.window.requestAnimationFrame(() => {
+          restore.readinessFrameId = null;
+          this.finishReadyFileRevealPrepaintRestores();
+        });
+      }
       return restore;
     },
 
@@ -717,6 +764,10 @@
       if (restore.timeoutId !== null) {
         this.window.clearTimeout(restore.timeoutId);
         restore.timeoutId = null;
+      }
+      if (restore.readinessFrameId !== null) {
+        this.window.cancelAnimationFrame(restore.readinessFrameId);
+        restore.readinessFrameId = null;
       }
       this.clearFileRevealPrepaintClasses(fileElement, restore);
     },
@@ -746,9 +797,18 @@
             (total, controller) => total + controller.lines.length,
             0,
           );
+        // Expanding a large file may reveal only GitHub's stable Load Diff
+        // placeholder. It has no hunks to restore and is safe to show now;
+        // the subsequent Load Diff click starts its own guarded restore.
+        const unresolvedPlaceholderReady =
+          !restore.waitForResolvedContent &&
+          renderedHunkRows.size === 0 &&
+          this.fileDiffRevealControl(fileElement) !== null;
+        const controllersReady =
+          controllers.length > 0 &&
+          controllers.length === renderedHunkRows.size;
         if (
-          controllers.length === 0 ||
-          controllers.length !== renderedHunkRows.size ||
+          (!unresolvedPlaceholderReady && !controllersReady) ||
           (restore.waitForResolvedContent &&
             !cachedFileComplete &&
             this.fileDiffHasUnresolvedContent(fileElement)) ||
@@ -995,20 +1055,7 @@
         return;
       }
 
-      const labelledBy = (
-        control.getAttribute("aria-labelledby") ?? ""
-      )
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((id) => this.document.getElementById(id)?.textContent ?? "")
-        .join(" ");
-      const label = (
-        control.getAttribute("aria-label") ||
-        control.getAttribute("title") ||
-        labelledBy ||
-        control.textContent ||
-        ""
-      ).trim();
+      const label = this.fileVisibilityControlLabel(control);
       const loadsDiff = /\b(?:load|show)\b.*\bdiff\b/i.test(label);
       if (
         label !== "Collapse file" &&
