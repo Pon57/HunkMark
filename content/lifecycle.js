@@ -212,6 +212,14 @@
       });
 
       if (newControllers.length > 0) {
+        const suppressionIntentGenerationByKey = new Map(
+          newControllers.map((controller) => [
+            controller.officialSuppressionKey,
+            this.officialViewedIntentGenerationByKey.get(
+              controller.officialSuppressionKey,
+            ),
+          ]),
+        );
         const keys = [
           ...new Set(
             newControllers.flatMap((controller) => [
@@ -250,8 +258,21 @@
               (previous.length === 1 &&
                 controller.groupRows.length > previous[0].groupRows.length);
             const suppressionKey = controller.officialSuppressionKey;
-            if (stored[suppressionKey]) {
-              this.officialViewedSyncSuppressed.add(suppressionKey);
+            if (
+              this.officialViewedIntentGenerationByKey.get(suppressionKey) ===
+              suppressionIntentGenerationByKey.get(suppressionKey)
+            ) {
+              const generation =
+                this.createOfficialViewedIntentGeneration();
+              this.registerOfficialViewedIntent(
+                [suppressionKey],
+                generation,
+              );
+              this.applyOfficialViewedIntent(
+                [suppressionKey],
+                Boolean(stored[suppressionKey]),
+                generation,
+              );
             }
             controller.collapsed =
               !expandedByHost && Boolean(stored[controller.collapsedKey]);
@@ -468,14 +489,31 @@
 
       this.applyOfficialSuppressionChanges(changes);
 
+      const reviewStateChanged = Object.keys(changes).some(
+        (key) =>
+          key.startsWith(
+            `${this.Core.REVIEW_STORAGE_NAMESPACE}:mark:`,
+          ) ||
+          key.startsWith(
+            `${this.Core.REVIEW_STORAGE_NAMESPACE}:line:`,
+          ),
+      );
+      if (!reviewStateChanged) {
+        return;
+      }
+
+      let pageAppearanceChanged = false;
       this.controllersByRow.forEach((controller) => {
+        let controllerAppearanceChanged = false;
         if (changes[controller.collapsedKey]) {
-          controller.collapsed = Boolean(
+          const collapsed = Boolean(
             changes[controller.collapsedKey].newValue,
           );
+          controllerAppearanceChanged ||= controller.collapsed !== collapsed;
+          controller.collapsed = collapsed;
         }
 
-        let lineChanged = false;
+        let lineStorageChanged = false;
         let invalidatedLineReview = false;
         controller.lines.forEach((line) => {
           if (changes[line.key]) {
@@ -484,16 +522,21 @@
               line,
               nextValue,
             );
+            controllerAppearanceChanged ||= line.marked !== storedMatches;
             line.marked = storedMatches;
             invalidatedLineReview ||= (
               nextValue !== undefined && !storedMatches
             );
-            lineChanged = true;
+            lineStorageChanged = true;
           }
         });
 
         const hunkChange = changes[controller.key];
         if (hunkChange?.newValue && !invalidatedLineReview) {
+          controllerAppearanceChanged ||=
+            !controller.marked ||
+            controller.indeterminate ||
+            controller.lines.some((line) => !line.marked);
           controller.marked = true;
           controller.indeterminate = false;
           controller.lines.forEach((line) => {
@@ -501,26 +544,33 @@
           });
         } else if (
           controller.lines.length > 0 &&
-          (lineChanged || hunkChange)
+          (lineStorageChanged || hunkChange)
         ) {
+          const marked = controller.marked;
+          const indeterminate = controller.indeterminate;
           this.updateAggregateFromLines(controller);
+          controllerAppearanceChanged ||=
+            controller.marked !== marked ||
+            controller.indeterminate !== indeterminate;
         } else if (hunkChange) {
+          controllerAppearanceChanged ||=
+            controller.marked || controller.indeterminate;
           controller.marked = false;
           controller.indeterminate = false;
         }
         if (invalidatedLineReview) {
+          controllerAppearanceChanged ||= controller.collapsed;
           controller.collapsed = false;
         }
 
-        if (
-          lineChanged ||
-          hunkChange ||
-          changes[controller.collapsedKey]
-        ) {
+        if (controllerAppearanceChanged) {
           this.applyControllerAppearance(controller);
+          pageAppearanceChanged = true;
         }
       });
-      this.updateProgress();
+      if (pageAppearanceChanged) {
+        this.updateProgress();
+      }
     },
 
     checkForNavigation() {

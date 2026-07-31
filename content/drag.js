@@ -121,7 +121,7 @@
       this.updateProgress();
     },
 
-    async persistLineDrag(state) {
+    buildLineDragReviewMutation(state) {
       const viewedAt = Date.now();
       const values = {};
       const removals = new Set();
@@ -156,14 +156,13 @@
           removals.add(controller.collapsedKey);
         }
       });
-      Object.keys(values).forEach((key) => removals.delete(key));
 
-      await this.mutateReviewStorage({
+      return {
         values,
         removals: Array.from(removals),
         scope: this.currentReviewScope,
         now: viewedAt,
-      });
+      };
     },
 
     async finishLineDrag(persist) {
@@ -176,30 +175,50 @@
       state.touched.forEach((lineController) => {
         lineController.element.classList.remove("hunkmark-line-drag-touched");
       });
+      const officialViewedPendingKeys = persist
+        ? this.beginOfficialViewedReviewPersistence(state.controllers)
+        : [];
+      let reviewStateKnown = true;
 
       try {
         if (persist) {
-          await this.persistLineDrag(state);
-          this.releaseOfficialViewedSuppression(state.controllers);
+          const reviewMutation =
+            this.buildLineDragReviewMutation(state);
+          await this.mutateReviewStorageAndReleaseOfficialViewed(
+            state.controllers,
+            reviewMutation,
+          );
           state.controllers.forEach((controller) =>
             this.applyControllerAppearance(controller),
           );
           this.updateProgress();
-          this.syncOfficialViewedForControllers(state.controllers);
         } else {
           this.restoreDraggedLines(state);
         }
       } catch (error) {
-        if (!this.stopForInvalidatedContext(error)) {
+        if (persist) {
+          reviewStateKnown =
+            await this.reconcileReviewControllersAfterFailure(
+              state.controllers,
+              error,
+              "HunkMark could not save dragged line marks.",
+            );
+        } else if (!this.stopForInvalidatedContext(error)) {
           this.restoreDraggedLines(state);
           console.warn("HunkMark could not save dragged line marks.", error);
         }
       } finally {
+        this.endOfficialViewedReviewPersistence(
+          officialViewedPendingKeys,
+        );
         if (!this.stopped) {
           state.controllers.forEach((controller) => {
             controller.collapsePending = false;
             this.applyControllerAppearance(controller);
           });
+          if (persist && reviewStateKnown) {
+            this.syncOfficialViewedForControllers(state.controllers);
+          }
           this.window.setTimeout(() => {
             state.touched.forEach((lineController) => {
               lineController.suppressPointerClick = false;

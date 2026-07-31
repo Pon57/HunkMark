@@ -35,6 +35,7 @@ function createChromeApi(initial = {}) {
   const data = { ...structuredClone(initial) };
   const listeners = new Set();
   let contextInvalidated = false;
+  let nextRemoveError = null;
   let nextSetError = null;
 
   function requireValidContext() {
@@ -95,6 +96,11 @@ function createChromeApi(initial = {}) {
 
     async remove(keys) {
       requireValidContext();
+      if (nextRemoveError) {
+        const error = nextRemoveError;
+        nextRemoveError = null;
+        throw error;
+      }
       const changes = {};
       const list = Array.isArray(keys) ? keys : [keys];
       list.forEach((key) => {
@@ -136,6 +142,9 @@ function createChromeApi(initial = {}) {
     failNextSet(message = "storage write failed") {
       nextSetError = new Error(message);
     },
+    failNextRemove(message = "storage removal failed") {
+      nextRemoveError = new Error(message);
+    },
     invalidateContext() {
       contextInvalidated = true;
     },
@@ -174,6 +183,192 @@ function createExclusiveLockManager() {
       }
     },
   };
+}
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function holdReviewStorageLock(app, lockManager) {
+  const started = createDeferred();
+  const gate = createDeferred();
+  const promise = lockManager.request(
+    app.reviewStorageLockName(),
+    { mode: "exclusive" },
+    async () => {
+      started.resolve();
+      await gate.promise;
+    },
+  );
+  return {
+    promise,
+    release: gate.resolve,
+    started: started.promise,
+  };
+}
+
+function delayReviewStorageSet(
+  app,
+  targetWrite,
+  { failureMessage = null } = {},
+) {
+  const original =
+    app.setReviewStorageValuesUnlocked.bind(app);
+  const started = createDeferred();
+  const gate = createDeferred();
+  let writeCount = 0;
+  app.setReviewStorageValuesUnlocked = async (values) => {
+    writeCount += 1;
+    if (writeCount === targetWrite) {
+      started.resolve();
+      await gate.promise;
+      if (failureMessage) {
+        throw new Error(failureMessage);
+      }
+    }
+    return original(values);
+  };
+  return {
+    release: gate.resolve,
+    started: started.promise,
+  };
+}
+
+function controllersFor(app) {
+  return Array.from(app.controllersByRow.values());
+}
+
+function controllerAt(app, index = 0) {
+  const controller = controllersFor(app)[index];
+  assert.ok(controller, `Expected controller at index ${index}`);
+  return controller;
+}
+
+function stopExtensions(...extensions) {
+  extensions.forEach(({ app, dom }) => {
+    app.stop();
+    dom.window.close();
+  });
+}
+
+async function startSharedExtensions(html) {
+  const chrome = createChromeApi();
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const first = await startExtension(html, {}, options);
+  const second = await startExtension(html, {}, options);
+  return { chrome, first, locks, second };
+}
+
+async function startLockedExtension(
+  html = commitSelectionFixture(),
+  initialStorage = {},
+  options = {},
+) {
+  const chrome = createChromeApi(initialStorage);
+  const locks = createExclusiveLockManager();
+  const extension = await startExtension(html, {}, {
+    ...options,
+    chromeInstance: chrome,
+    lockManager: locks,
+  });
+  return { ...extension, locks };
+}
+
+async function seedOfficialSuppression(app, key) {
+  const scope = app.officialViewedSuppressionScope();
+  const updatedAt = Date.now();
+  await app.setReviewStorage(
+    { [key]: { suppressed: true, updatedAt } },
+    scope,
+    updatedAt,
+  );
+  await waitFor(() => {
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+  });
+  return scope;
+}
+
+async function seedSharedOfficialSuppression(tabA, tabB, key) {
+  const scope = await seedOfficialSuppression(tabA.app, key);
+  await waitFor(() => {
+    assert.equal(tabB.app.officialViewedSyncSuppressed.has(key), true);
+  });
+  return scope;
+}
+
+function officialViewedContext(app, index = 0) {
+  const controllers = controllersFor(app);
+  const controller = controllers[index];
+  assert.ok(controller, `Expected controller at index ${index}`);
+  return {
+    control: app.officialViewedControlForFile(controller.fileElement),
+    controller,
+    controllers,
+    fileElement: controller.fileElement,
+    filePath: controller.filePath,
+    key: controller.officialSuppressionKey,
+    scope: app.officialViewedSuppressionScope(),
+  };
+}
+
+async function officialFileContext(app, dom) {
+  const fileElement = dom.window.document.querySelector(".js-file");
+  assert.ok(fileElement, "Expected a GitHub file container");
+  const filePath = app.resolveFilePath(fileElement, 0);
+  const scope = app.officialViewedSuppressionScope();
+  return {
+    control: app.officialViewedControlForFile(fileElement),
+    fileElement,
+    filePath,
+    key: await app.officialViewedSuppressionKey(filePath, scope),
+    scope,
+  };
+}
+
+function captureWarnings(dom) {
+  const warnings = [];
+  dom.window.console.warn = (...args) => warnings.push(args);
+  return warnings;
+}
+
+function changeCheckbox(dom, input, checked = true) {
+  input.checked = checked;
+  input.dispatchEvent(
+    new dom.window.Event("change", { bubbles: true }),
+  );
+}
+
+function setOfficialViewed(control, viewed) {
+  control.setAttribute("aria-label", viewed ? "Viewed" : "Not Viewed");
+  control.setAttribute("aria-pressed", String(viewed));
+}
+
+function respondToOfficialClicks(control, viewedAfterClick) {
+  let clicks = 0;
+  control.addEventListener("click", () => {
+    clicks += 1;
+    const viewed = viewedAfterClick === "toggle"
+      ? control.getAttribute("aria-pressed") !== "true"
+      : viewedAfterClick;
+    setOfficialViewed(control, viewed);
+  });
+  return () => clicks;
+}
+
+function assertOfficialIntentSettled(app, key) {
+  assert.equal(
+    app.officialViewedReconcileGenerationByKey.has(key),
+    false,
+  );
+  assert.equal(
+    app.officialViewedStorageIntentGenerationByKey.has(key),
+    false,
+  );
 }
 
 async function waitFor(assertion, timeoutMs = 2500) {
@@ -649,8 +844,43 @@ test("links split diff sides and syncs GitHub's official Viewed control", async 
   }
 });
 
+test("does not redraw review controls for storage changes that preserve visible state", async () => {
+  const { app, chrome, dom } = await startExtension(
+    commitSelectionFixture(),
+  );
+  try {
+    const { controller, key } = officialViewedContext(app);
+    let appearanceUpdates = 0;
+    let progressUpdates = 0;
+    app.applyControllerAppearance = () => {
+      appearanceUpdates += 1;
+    };
+    app.updateProgress = () => {
+      progressUpdates += 1;
+    };
+
+    const updatedAt = Date.now();
+    await chrome.api.storage.local.set({
+      [key]: { suppressed: true, updatedAt },
+    });
+    const line = controller.lines[0];
+    line.marked = true;
+    app.updateAggregateFromLines(controller);
+    await chrome.api.storage.local.set({
+      [line.key]: app.lineReviewStorageValue(line, updatedAt),
+    });
+
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(line.marked, true);
+    assert.equal(appearanceUpdates, 0);
+    assert.equal(progressUpdates, 0);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
 test("refreshes immediately when a manual Viewed click hides the diff", async () => {
-  const { app, dom } = await startExtension(commitSelectionFixture());
+  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
   try {
     const scheduled = [];
     const scheduleRefresh = app.scheduleRefresh.bind(app);
@@ -662,6 +892,9 @@ test("refreshes immediately when a manual Viewed click hides the diff", async ()
     const officialControl = fileElement.querySelector(
       'button[aria-label="Not Viewed"]',
     );
+    const filePath = app.resolveFilePath(fileElement, 0);
+    const suppressionKey =
+      await app.officialViewedSuppressionKey(filePath);
     officialControl.addEventListener("click", () => {
       officialControl.setAttribute("aria-label", "Viewed");
       officialControl.setAttribute("aria-pressed", "true");
@@ -676,6 +909,11 @@ test("refreshes immediately when a manual Viewed click hides the diff", async ()
         dom.window.document.getElementById(app.constants.PANEL_ID),
         null,
       );
+      assert.equal(
+        app.officialViewedSyncSuppressed.has(suppressionKey),
+        false,
+      );
+      assert.equal(suppressionKey in chrome.snapshot(), false);
     });
     assert.equal(scheduled[0]?.immediate, true);
     assert.equal(app.fileDiffVisibilityPending.size, 0);
@@ -755,9 +993,750 @@ test("cancels a cold-cache visibility expectation when key generation fails", as
       assert.equal(warnings.length, 1);
       assert.equal(app.fileDiffVisibilityPending.size, 0);
     });
+    assert.equal(
+      app.officialViewedStorageIntentGenerationByKey.size,
+      0,
+    );
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("rolls back a manual Not Viewed intent when storage fails", async () => {
+  const { app, chrome, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
+  try {
+    const {
+      control: officialControl,
+      key,
+    } = await officialFileContext(app, dom);
+    const warnings = captureWarnings(dom);
+    respondToOfficialClicks(officialControl, false);
+
+    chrome.failNextSet();
+    officialControl.click();
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(app.officialViewedRestoreGuards.has(key), true);
+
+    await waitFor(() => {
+      assert.equal(warnings.length, 1);
+      assert.equal(app.fileDiffVisibilityPending.size, 0);
+      assert.equal(app.officialViewedRestoreGuards.size, 0);
+    });
+    assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+    assertOfficialIntentSettled(app, key);
+    assert.equal(key in chrome.snapshot(), false);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("restores persisted suppression when manual Viewed removal fails", async () => {
+  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const { control, key } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+    const warnings = captureWarnings(dom);
+    respondToOfficialClicks(control, true);
+
+    chrome.failNextRemove();
+    control.click();
+
+    await waitFor(() => {
+      assert.equal(warnings.length, 1);
+      assert.equal(app.fileDiffVisibilityPending.size, 0);
+    });
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(chrome.snapshot()[key]?.suppressed, true);
+    assertOfficialIntentSettled(app, key);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("restores a preceding tab's committed intent after a queued write fails", async () => {
+  const extension = await startLockedExtension();
+  const {
+    app,
+    chrome: sharedChrome,
+    dom,
+    locks: sharedLocks,
+  } = extension;
+  let holder;
+  try {
+    const {
+      controller,
+      key,
+      scope: suppressionScope,
+    } = officialViewedContext(app);
+    const initialRequestCount = sharedLocks.requests.length;
+    holder = holdReviewStorageLock(app, sharedLocks);
+    await holder.started;
+
+    const intentPromise = app.recordManualOfficialViewedIntent({
+      filePath: controller.filePath,
+      knownKey: key,
+      suppressionScope,
+      suppressed: true,
+    });
+    const rejectedIntent = assert.rejects(
+      intentPromise,
+      /storage write failed/,
+    );
+    await waitFor(() => {
+      assert.equal(
+        sharedLocks.requests.length,
+        initialRequestCount + 2,
+      );
+    });
+
+    const updatedAt = Date.now();
+    await sharedChrome.api.storage.local.set({
+      [key]: { suppressed: true, updatedAt },
+    });
+    sharedChrome.failNextSet();
+    holder.release();
+    await holder.promise;
+    await rejectedIntent;
+
+    assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assertOfficialIntentSettled(app, key);
+  } finally {
+    holder?.release();
+    stopExtensions(extension);
+  }
+});
+
+test("keeps a queued Not Viewed intent ahead of an older storage removal", async () => {
+  const extension = await startLockedExtension();
+  const {
+    app,
+    chrome: sharedChrome,
+    locks: sharedLocks,
+  } = extension;
+  const allowOlderRemoval = createDeferred();
+  const olderRemovalFinished = createDeferred();
+  const releaseOlderLock = createDeferred();
+  try {
+    const { control, controllers, key } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+    controllers.forEach((controller) => {
+      controller.marked = true;
+    });
+
+    const olderLockHeld = createDeferred();
+    const olderTransaction = sharedLocks.request(
+      app.reviewStorageLockName(),
+      { mode: "exclusive" },
+      async () => {
+        olderLockHeld.resolve();
+        await allowOlderRemoval.promise;
+        await app.removeReviewStorageUnlocked([key]);
+        olderRemovalFinished.resolve();
+        await releaseOlderLock.promise;
+      },
+    );
+    await olderLockHeld.promise;
+
+    setOfficialViewed(control, true);
+    const getOfficialClicks = respondToOfficialClicks(control, "toggle");
+    control.click();
+    assert.equal(getOfficialClicks(), 1);
+    assert.equal(control.getAttribute("aria-pressed"), "false");
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(
+      Number.isInteger(
+        app.officialViewedStorageIntentGenerationByKey.get(key),
+      ),
+      true,
+    );
+
+    allowOlderRemoval.resolve();
+    await olderRemovalFinished.promise;
+    assert.equal(key in sharedChrome.snapshot(), false);
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+
+    app.syncOfficialViewedForControllers(controllers);
+    assert.equal(getOfficialClicks(), 1);
+    assert.equal(control.getAttribute("aria-pressed"), "false");
+
+    releaseOlderLock.resolve();
+    await olderTransaction;
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assertOfficialIntentSettled(app, key);
+    });
+  } finally {
+    allowOlderRemoval.resolve();
+    releaseOlderLock.resolve();
+    stopExtensions(extension);
+  }
+});
+
+test("accepts the next tab's storage intent after the local lock callback", async () => {
+  const shared = await startSharedExtensions(commitSelectionFixture());
+  const {
+    chrome: sharedChrome,
+    first: tabA,
+    locks: sharedLocks,
+    second: tabB,
+  } = shared;
+  const tabAWriteGate = createDeferred();
+  try {
+    const {
+      controller: controllerA,
+      key,
+      scope: suppressionScope,
+    } = officialViewedContext(tabA.app);
+    const { controller: controllerB } =
+      officialViewedContext(tabB.app);
+    assert.equal(controllerB.officialSuppressionKey, key);
+
+    const tabAWriteFinished = createDeferred();
+    const setReviewStorageUnlocked =
+      tabA.app.setReviewStorageUnlocked.bind(tabA.app);
+    tabA.app.setReviewStorageUnlocked = async (...args) => {
+      await setReviewStorageUnlocked(...args);
+      tabAWriteFinished.resolve();
+      await tabAWriteGate.promise;
+    };
+
+    const tabAIntent = tabA.app.recordManualOfficialViewedIntent({
+      filePath: controllerA.filePath,
+      knownKey: key,
+      suppressionScope,
+      suppressed: true,
+    });
+    await tabAWriteFinished.promise;
+    assert.equal(tabA.app.officialViewedSyncSuppressed.has(key), true);
+
+    const tabBIntent = tabB.app.recordManualOfficialViewedIntent({
+      filePath: controllerB.filePath,
+      knownKey: key,
+      suppressionScope,
+      suppressed: false,
+    });
+    assert.equal(tabB.app.officialViewedSyncSuppressed.has(key), false);
+
+    tabAWriteGate.resolve();
+    const [{ generation: generationA }, { generation: generationB }] =
+      await Promise.all([tabAIntent, tabBIntent]);
+
+    assert.equal(key in sharedChrome.snapshot(), false);
+    assert.equal(tabA.app.officialViewedSyncSuppressed.has(key), false);
+    assert.equal(tabB.app.officialViewedSyncSuppressed.has(key), false);
+    assert.equal(
+      tabA.app.officialViewedStorageIntentGenerationByKey.has(key),
+      false,
+    );
+    assert.equal(
+      tabB.app.officialViewedStorageIntentGenerationByKey.has(key),
+      false,
+    );
+    tabA.app.settleOfficialViewedIntent(
+      key,
+      generationA,
+      suppressionScope,
+    );
+    tabB.app.settleOfficialViewedIntent(
+      key,
+      generationB,
+      suppressionScope,
+    );
+  } finally {
+    tabAWriteGate.resolve();
+    stopExtensions(tabB, tabA);
+  }
+});
+
+test("orders a hunk review clear before a newer tab's Not Viewed intent", async () => {
+  const shared = await startSharedExtensions(commitSelectionFixture());
+  const {
+    chrome: sharedChrome,
+    first: tabA,
+    locks: sharedLocks,
+    second: tabB,
+  } = shared;
+  let holder;
+  try {
+    const {
+      controller: controllerA,
+      key,
+    } = officialViewedContext(tabA.app);
+    const {
+      control: controlB,
+      controller: controllerB,
+    } = officialViewedContext(tabB.app);
+    assert.equal(controllerB.officialSuppressionKey, key);
+    await seedSharedOfficialSuppression(tabA, tabB, key);
+
+    const initialRequestCount = sharedLocks.requests.length;
+    holder = holdReviewStorageLock(tabA.app, sharedLocks);
+    await holder.started;
+
+    changeCheckbox(tabA.dom, controllerA.input);
+    await waitFor(() => {
+      assert.equal(
+        sharedLocks.requests.length,
+        initialRequestCount + 2,
+      );
+    });
+
+    setOfficialViewed(controlB, true);
+    respondToOfficialClicks(controlB, false);
+    controlB.click();
+    await waitFor(() => {
+      assert.equal(
+        sharedLocks.requests.length,
+        initialRequestCount + 3,
+      );
+    });
+
+    holder.release();
+    await holder.promise;
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assert.equal(
+        tabA.app.officialViewedSyncSuppressed.has(key),
+        true,
+      );
+      assert.equal(
+        tabB.app.officialViewedSyncSuppressed.has(key),
+        true,
+      );
+      assert.equal(controllerA.input.disabled, false);
+    });
+  } finally {
+    holder?.release();
+    stopExtensions(tabB, tabA);
+  }
+});
+
+test("keeps suppression when the preceding hunk review write fails", async () => {
+  const extension = await startExtension(commitSelectionFixture());
+  const { app, chrome, dom } = extension;
+  try {
+    const { controller, key } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+    const warnings = captureWarnings(dom);
+
+    chrome.failNextSet();
+    changeCheckbox(dom, controller.input);
+
+    await waitFor(() => {
+      assert.equal(warnings.length, 1);
+      assert.equal(controller.input.disabled, false);
+      assert.equal(controller.marked, false);
+      assert.equal(chrome.snapshot()[key]?.suppressed, true);
+      assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    });
+  } finally {
+    stopExtensions(extension);
+  }
+});
+
+test("syncs official Viewed before failed release-marker cleanup settles", async () => {
+  const extension = await startExtension(commitSelectionFixture());
+  const { app, chrome, dom } = extension;
+  const cleanupGate = createDeferred();
+  try {
+    const {
+      control,
+      controllers,
+      key,
+    } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+    await app.setHunkViewed(controllers[0], true);
+    await waitFor(() => {
+      assert.equal(key in chrome.snapshot(), false);
+    });
+
+    const removeReviewStorageUnlocked =
+      app.removeReviewStorageUnlocked.bind(app);
+    let cleanupStarted = false;
+    let failCleanup = true;
+    app.removeReviewStorageUnlocked = async (keys) => {
+      const list = Array.isArray(keys) ? keys : [keys];
+      if (
+        failCleanup &&
+        list.includes(key) &&
+        chrome.snapshot()[key] === null
+      ) {
+        failCleanup = false;
+        cleanupStarted = true;
+        await cleanupGate.promise;
+        throw new Error("release marker cleanup failed");
+      }
+      return removeReviewStorageUnlocked(keys);
+    };
+    const warnings = captureWarnings(dom);
+    const getOfficialClicks = respondToOfficialClicks(control, true);
+
+    await app.setHunkViewed(controllers[1], true);
+    await waitFor(() => {
+      assert.equal(cleanupStarted, true);
+    });
+
+    assert.equal(getOfficialClicks(), 1);
+    assert.equal(control.getAttribute("aria-pressed"), "true");
+    assert.equal(chrome.snapshot()[key], null);
+    const stored = chrome.snapshot();
+    assert.equal(controllers.every((controller) => controller.marked), true);
+    assert.equal(
+      controllers.every((controller) =>
+        controller.lines.every((line) => Boolean(stored[line.key])),
+      ),
+      true,
+    );
+    assert.equal(stored[key], null);
+    assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+
+    cleanupGate.resolve();
+    await waitFor(() => {
+      assert.equal(
+        warnings[0]?.[0],
+        "HunkMark could not discard an official Viewed release marker.",
+      );
+    });
+    assert.equal(chrome.snapshot()[key], null);
+  } finally {
+    cleanupGate.resolve();
+    stopExtensions(extension);
+  }
+});
+
+test("keeps a newer tab's review after an older hunk write fails", async () => {
+  const shared = await startSharedExtensions(duplicateHunkFixture());
+  const {
+    chrome: sharedChrome,
+    first: tabA,
+    locks: sharedLocks,
+    second: tabB,
+  } = shared;
+  let holder;
+  let writeA = null;
+  let writeB = null;
+  try {
+    const controllerA = controllerAt(tabA.app);
+    const controllerB = controllerAt(tabB.app);
+    assert.equal(controllerA.lines[0].key, controllerB.lines[0].key);
+
+    holder = holdReviewStorageLock(tabA.app, sharedLocks);
+    await holder.started;
+    const warnings = captureWarnings(tabA.dom);
+
+    writeA = tabA.app.setHunkViewed(controllerA, true);
+    writeB = tabB.app.setHunkViewed(controllerB, true);
+    sharedChrome.failNextSet("older tab write failed");
+
+    holder.release();
+    await holder.promise;
+    await Promise.all([writeA, writeB]);
+
+    assert.equal(warnings.length, 1);
+    assert.equal(controllerA.marked, true);
+    assert.equal(controllerB.marked, true);
+    assert.equal(controllerA.lines.every((line) => line.marked), true);
+    assert.equal(controllerB.lines.every((line) => line.marked), true);
+    assert.ok(sharedChrome.snapshot()[controllerA.lines[0].key]);
+    assert.equal(controllerA.input.disabled, false);
+  } finally {
+    holder?.release();
+    await Promise.allSettled([writeA, writeB].filter(Boolean));
+    stopExtensions(tabB, tabA);
+  }
+});
+
+[
+  {
+    name: "does not sync official Viewed before a concurrent hunk write rolls back",
+    failureMessage: "second concurrent hunk write failed",
+    startSecondWrite({ controllers, dom }) {
+      changeCheckbox(dom, controllers[1].input);
+    },
+    assertFinal({ controllers, getOfficialClicks, officialControl, warnings }) {
+      assert.equal(warnings.length, 1);
+      assert.equal(controllers[0].marked, true);
+      assert.equal(controllers[1].marked, false);
+      assert.equal(getOfficialClicks(), 0);
+      assert.equal(officialControl.getAttribute("aria-pressed"), "false");
+    },
+  },
+  {
+    name: "waits for a concurrent line write before syncing official Viewed",
+    startSecondWrite({ controllers, dom }) {
+      changeCheckbox(dom, controllers[1].lines[0].input);
+    },
+    assertFinal({ controllers, getOfficialClicks, officialControl }) {
+      assert.equal(controllers.every((controller) => controller.marked), true);
+      assert.equal(getOfficialClicks(), 1);
+      assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+    },
+  },
+  {
+    name: "waits for a concurrent drag write before syncing official Viewed",
+    startSecondWrite({ app, controllers }) {
+      app.startLineDrag(controllers[1].lines[0], true, 91);
+      return app.finishLineDrag(true);
+    },
+    assertFinal({ controllers, getOfficialClicks, officialControl }) {
+      assert.equal(controllers.every((controller) => controller.marked), true);
+      assert.equal(getOfficialClicks(), 1);
+      assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+    },
+  },
+].forEach(({ assertFinal, failureMessage, name, startSecondWrite }) => {
+  test(name, async () => {
+    const extension = await startLockedExtension();
+    const { app, dom, locks } = extension;
+    let delayedWrite;
+    let holder;
+    let secondWrite;
+    try {
+      const {
+        control: officialControl,
+        controllers,
+        key,
+      } = officialViewedContext(app);
+      await seedOfficialSuppression(app, key);
+
+      holder = holdReviewStorageLock(app, locks);
+      await holder.started;
+      delayedWrite = delayReviewStorageSet(app, 2, { failureMessage });
+      const warnings = captureWarnings(dom);
+      const getOfficialClicks =
+        respondToOfficialClicks(officialControl, true);
+
+      changeCheckbox(dom, controllers[0].input);
+      secondWrite = startSecondWrite({ app, controllers, dom });
+      assert.equal(app.officialViewedReviewPendingByKey.get(key), 2);
+
+      holder.release();
+      await holder.promise;
+      await delayedWrite.started;
+      await waitFor(() => {
+        assert.equal(app.officialViewedReviewPendingByKey.get(key), 1);
+        assert.equal(getOfficialClicks(), 0);
+      });
+
+      delayedWrite.release();
+      await secondWrite;
+      await waitFor(() => {
+        assertFinal({
+          controllers,
+          getOfficialClicks,
+          officialControl,
+          warnings,
+        });
+        assert.equal(
+          app.officialViewedReviewPendingByKey.has(key),
+          false,
+        );
+      });
+    } finally {
+      holder?.release();
+      delayedWrite?.release();
+      await secondWrite?.catch(() => undefined);
+      stopExtensions(extension);
+    }
+  });
+});
+
+test("keeps review persistence gates across route-state resets", async () => {
+  const extension = await startExtension(commitSelectionFixture());
+  const { app } = extension;
+  try {
+    const { controllers, key } = officialViewedContext(app);
+    const firstKeys =
+      app.beginOfficialViewedReviewPersistence([controllers[0]]);
+    assert.equal(
+      app.officialViewedReviewPendingByKey.get(key),
+      1,
+    );
+
+    app.resetOfficialViewedState();
+    assert.equal(
+      app.officialViewedReviewPendingByKey.get(key),
+      1,
+    );
+
+    const secondKeys =
+      app.beginOfficialViewedReviewPersistence([controllers[1]]);
+    assert.equal(
+      app.officialViewedReviewPendingByKey.get(key),
+      2,
+    );
+    app.endOfficialViewedReviewPersistence(firstKeys);
+    assert.equal(
+      app.officialViewedReviewPendingByKey.get(key),
+      1,
+    );
+    app.endOfficialViewedReviewPersistence(secondKeys);
+    assert.equal(
+      app.officialViewedReviewPendingByKey.has(key),
+      false,
+    );
+  } finally {
+    stopExtensions(extension);
+  }
+});
+
+test("does not let page reset erase a newer manual Not Viewed intent", async () => {
+  const extension = await startLockedExtension();
+  const { app, chrome: sharedChrome, dom } = extension;
+  const resetReadStarted = createDeferred();
+  const resetReadGate = createDeferred();
+  try {
+    const {
+      control: officialControl,
+      key,
+    } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+
+    const getLocalStorage = app.getLocalStorage.bind(app);
+    let gateNextResetRead = true;
+    app.getLocalStorage = async (keys) => {
+      if (gateNextResetRead && keys === null) {
+        gateNextResetRead = false;
+        resetReadStarted.resolve();
+        await resetReadGate.promise;
+      }
+      return getLocalStorage(keys);
+    };
+
+    const resetButton = { disabled: false };
+    const resetPromise = app.resetCurrentPage(resetButton);
+    await resetReadStarted.promise;
+
+    setOfficialViewed(officialControl, true);
+    respondToOfficialClicks(officialControl, false);
+    officialControl.click();
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+
+    resetReadGate.resolve();
+    await resetPromise;
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+      assert.equal(
+        app.officialViewedStorageIntentGenerationByKey.has(key),
+        false,
+      );
+    });
+  } finally {
+    resetReadGate.resolve();
+    stopExtensions(extension);
+  }
+});
+
+test("does not apply a stale refresh over a newer manual Viewed intent", async () => {
+  const url = "https://github.com/octo/repo/pull/123/files";
+  const scope = Core.parseReviewScope(new URL(url));
+  const suppressionScope = Core.reviewStateScope(
+    scope,
+    Core.ALL_COMMITS_REVIEW_VARIANT,
+  );
+  const key = await Core.officialSyncSuppressionKey(
+    suppressionScope,
+    "src/selection.js",
+  );
+  const extension = await startLockedExtension(
+    commitSelectionFixture(),
+    {
+      [key]: { suppressed: true, updatedAt: Date.now() },
+    },
+    {
+      url,
+      waitForScope: false,
+    },
+  );
+  const { app, chrome: sharedChrome, dom } = extension;
+  const refreshReadStarted = createDeferred();
+  const refreshReadGate = createDeferred();
+  try {
+    const getLocalStorage = app.getLocalStorage.bind(app);
+    let gateControllerRead = true;
+    app.getLocalStorage = async (keys) => {
+      const stored = await getLocalStorage(keys);
+      if (
+        gateControllerRead &&
+        Array.isArray(keys) &&
+        keys.includes(key)
+      ) {
+        gateControllerRead = false;
+        refreshReadStarted.resolve();
+        await refreshReadGate.promise;
+      }
+      return stored;
+    };
+
+    await refreshReadStarted.promise;
+    const { control: officialControl } = officialViewedContext(app);
+    respondToOfficialClicks(officialControl, true);
+    officialControl.click();
+    assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+
+    refreshReadGate.resolve();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(key in sharedChrome.snapshot(), false);
+      assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+      assert.equal(
+        app.officialViewedStorageIntentGenerationByKey.has(key),
+        false,
+      );
+    });
+  } finally {
+    refreshReadGate.resolve();
+    stopExtensions(extension);
+  }
+});
+
+test("does not couple manual intent persistence to retention pruning", async () => {
+  const { app, chrome, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
+  try {
+    const {
+      filePath,
+      key,
+      scope: suppressionScope,
+    } = await officialFileContext(app, dom);
+    const setReviewStorageUnlocked =
+      app.setReviewStorageUnlocked.bind(app);
+    let intentPruneOption = null;
+    app.setReviewStorageUnlocked = async (...args) => {
+      intentPruneOption = args[3];
+      await setReviewStorageUnlocked(...args);
+      if (intentPruneOption?.prune !== false) {
+        throw new Error("retention prune failed after intent persistence");
+      }
+    };
+
+    const { generation } = await app.recordManualOfficialViewedIntent({
+      filePath,
+      knownKey: key,
+      suppressionScope,
+      suppressed: true,
+    });
+
+    assert.equal(intentPruneOption?.prune, false);
+    assert.equal(chrome.snapshot()[key]?.suppressed, true);
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(
+      app.officialViewedStorageIntentGenerationByKey.has(key),
+      false,
+    );
+    app.settleOfficialViewedIntent(
+      key,
+      generation,
+      suppressionScope,
+    );
+  } finally {
+    stopExtensions({ app, dom });
   }
 });
 
@@ -899,6 +1878,337 @@ test("distinguishes a manual official Viewed removal from a host reset", async (
   }
 });
 
+test("keeps only the latest rapid manual Viewed intent", async () => {
+  const { app, chrome, dom } = await startExtension(
+    commitSelectionFixture(),
+  );
+  const originalWindowSetTimeout = dom.window.setTimeout.bind(dom.window);
+  try {
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+    });
+    const {
+      control: officialControl,
+      key: suppressionKey,
+    } = officialViewedContext(app);
+    respondToOfficialClicks(officialControl, "toggle");
+    dom.window.setTimeout = (callback, delay, ...args) =>
+      originalWindowSetTimeout(
+        callback,
+        delay === 100 ? 0 : delay,
+        ...args,
+      );
+
+    officialControl.click();
+    officialControl.click();
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(officialControl.getAttribute("aria-pressed"), "false");
+    assert.equal(
+      app.officialViewedSyncSuppressed.has(suppressionKey),
+      true,
+    );
+    const persistedSuppression = chrome.snapshot()[suppressionKey];
+    assert.equal(persistedSuppression.suppressed, true);
+    assert.equal(Number.isFinite(persistedSuppression.updatedAt), true);
+    assert.equal(
+      app.officialViewedReconcileGenerationByKey.has(suppressionKey),
+      false,
+    );
+  } finally {
+    dom.window.setTimeout = originalWindowSetTimeout;
+    stopExtensions({ app, dom });
+  }
+});
+
+test("keeps a newer restore guard when an older manual intent fails", async () => {
+  const extension = await startLockedExtension();
+  const {
+    app,
+    chrome: sharedChrome,
+    dom,
+    locks: sharedLocks,
+  } = extension;
+  let holder;
+  try {
+    const {
+      control: officialControl,
+      key,
+    } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+
+    const initialRequestCount = sharedLocks.requests.length;
+    holder = holdReviewStorageLock(app, sharedLocks);
+    await holder.started;
+
+    const warnings = captureWarnings(dom);
+    respondToOfficialClicks(officialControl, "toggle");
+
+    officialControl.click();
+    officialControl.click();
+    assert.equal(app.officialViewedRestoreGuards.has(key), true);
+    await waitFor(() => {
+      assert.equal(
+        sharedLocks.requests.length,
+        initialRequestCount + 3,
+      );
+    });
+
+    sharedChrome.failNextRemove();
+    holder.release();
+    await holder.promise;
+    await waitFor(() => {
+      assert.equal(warnings.length, 1);
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+    });
+
+    assert.equal(app.officialViewedSyncSuppressed.has(key), true);
+    assert.equal(app.officialViewedRestoreGuards.has(key), true);
+  } finally {
+    holder?.release();
+    stopExtensions(extension);
+  }
+});
+
+test("preserves a newer tab's Not Viewed intent after an older reconciliation", async () => {
+  const shared = await startSharedExtensions(commitSelectionFixture());
+  const {
+    chrome: sharedChrome,
+    first: tabA,
+    second: tabB,
+  } = shared;
+  try {
+    const {
+      control: controlA,
+      controller: controllerA,
+      key,
+      scope: suppressionScope,
+    } = officialViewedContext(tabA.app);
+    const {
+      control: controlB,
+      controller: controllerB,
+    } = officialViewedContext(tabB.app);
+    assert.equal(controllerB.officialSuppressionKey, key);
+
+    await seedSharedOfficialSuppression(tabA, tabB, key);
+    controlA.setAttribute("data-loading", "true");
+    respondToOfficialClicks(controlA, true);
+    controlA.click();
+
+    let generationA;
+    await waitFor(() => {
+      generationA =
+        tabA.app.officialViewedReconcileGenerationByKey.get(key);
+      assert.equal(Number.isInteger(generationA), true);
+      assert.equal(key in sharedChrome.snapshot(), false);
+    });
+
+    setOfficialViewed(controlB, true);
+    respondToOfficialClicks(controlB, false);
+    controlB.click();
+
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assert.equal(
+        tabB.app.officialViewedReconcileGenerationByKey.has(key),
+        false,
+      );
+    });
+
+    tabA.app.reconcileOfficialViewedAfterClick(
+      key,
+      controllerA.fileElement,
+      false,
+      generationA,
+      suppressionScope,
+      20,
+    );
+
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assert.equal(
+        tabA.app.officialViewedReconcileGenerationByKey.has(key),
+        false,
+      );
+      assert.equal(
+        tabA.app.officialViewedSyncSuppressed.has(key),
+        true,
+      );
+    });
+  } finally {
+    stopExtensions(tabB, tabA);
+  }
+});
+
+test("preserves a newer tab's Not Viewed intent after an older host observation", async () => {
+  const shared = await startSharedExtensions(commitSelectionFixture());
+  const {
+    chrome: sharedChrome,
+    first: tabA,
+    second: tabB,
+  } = shared;
+  try {
+    const {
+      control: controlA,
+      controllers: controllersA,
+      key,
+    } = officialViewedContext(tabA.app);
+    const {
+      control: controlB,
+      controller: controllerB,
+    } = officialViewedContext(tabB.app);
+    assert.equal(controllerB.officialSuppressionKey, key);
+    tabA.app.syncOfficialViewedForControllers(controllersA);
+
+    setOfficialViewed(controlB, true);
+    respondToOfficialClicks(controlB, false);
+    controlB.click();
+
+    await waitFor(() => {
+      assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+      assert.equal(
+        tabA.app.officialViewedSyncSuppressed.has(key),
+        true,
+      );
+    });
+
+    setOfficialViewed(controlA, true);
+    tabA.app.syncOfficialViewedForControllers(controllersA);
+    await tabA.app.withReviewStorageLock(() => undefined);
+
+    assert.equal(sharedChrome.snapshot()[key]?.suppressed, true);
+    assert.equal(
+      tabA.app.officialViewedSyncSuppressed.has(key),
+      true,
+    );
+  } finally {
+    stopExtensions(tabB, tabA);
+  }
+});
+
+test("keeps cleared suppression when Viewed reconciliation crosses a route change", async () => {
+  const extension = await startExtension(commitSelectionFixture());
+  const { app, chrome, dom } = extension;
+  try {
+    const {
+      control: officialControl,
+      fileElement,
+      key,
+      scope: suppressionScope,
+    } = officialViewedContext(app);
+    await seedOfficialSuppression(app, key);
+    officialControl.setAttribute("data-loading", "true");
+    respondToOfficialClicks(officialControl, true);
+
+    officialControl.click();
+    let generation;
+    await waitFor(() => {
+      generation =
+        app.officialViewedReconcileGenerationByKey.get(key);
+      assert.equal(Number.isInteger(generation), true);
+      assert.equal(key in chrome.snapshot(), false);
+    });
+
+    dom.window.history.pushState(
+      {},
+      "",
+      "/octo/repo/pull/124/files",
+    );
+    app.resetOfficialViewedState();
+    app.reconcileOfficialViewedAfterClick(
+      key,
+      fileElement,
+      false,
+      generation,
+      suppressionScope,
+      20,
+    );
+
+    await waitFor(() => {
+      assert.equal(
+        app.officialViewedReconcileGenerationByKey.has(key),
+        false,
+      );
+      assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+      assert.equal(key in chrome.snapshot(), false);
+    });
+  } finally {
+    stopExtensions(extension);
+  }
+});
+
+test("persists a cold-cache Not Viewed intent to its original route", async () => {
+  const { app, chrome, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
+  const keyGenerationStarted = createDeferred();
+  const keyGenerationGate = createDeferred();
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const filePath = app.resolveFilePath(fileElement, 0);
+    const suppressionScope = app.officialViewedSuppressionScope();
+    assert.equal(
+      app.Core.cachedOfficialSyncSuppressionKey(
+        suppressionScope,
+        filePath,
+      ),
+      null,
+    );
+
+    const generateSuppressionKey =
+      app.officialViewedSuppressionKey.bind(app);
+    app.officialViewedSuppressionKey = async (path, scope) => {
+      keyGenerationStarted.resolve();
+      await keyGenerationGate.promise;
+      return generateSuppressionKey(path, scope);
+    };
+
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Viewed"]',
+    );
+    respondToOfficialClicks(officialControl, false);
+
+    officialControl.click();
+    await keyGenerationStarted.promise;
+    dom.window.history.pushState(
+      {},
+      "",
+      "/octo/repo/pull/124/files",
+    );
+    app.resetOfficialViewedState();
+    keyGenerationGate.resolve();
+
+    const key = await generateSuppressionKey(
+      filePath,
+      suppressionScope,
+    );
+    const originalMetadataKey =
+      await app.Core.reviewContextMetadataKey(suppressionScope);
+    const newSuppressionScope = app.Core.reviewStateScope(
+      app.Core.parseReviewScope(dom.window.location),
+      app.Core.ALL_COMMITS_REVIEW_VARIANT,
+    );
+    const newMetadataKey =
+      await app.Core.reviewContextMetadataKey(newSuppressionScope);
+
+    await waitFor(() => {
+      const stored = chrome.snapshot();
+      assert.equal(stored[key]?.suppressed, true);
+      assert.equal(Number.isFinite(stored[key]?.updatedAt), true);
+      assert.equal(Boolean(stored[originalMetadataKey]), true);
+      assert.equal(newMetadataKey in stored, false);
+      assert.equal(
+        app.officialViewedReconcileGenerationByKey.has(key),
+        false,
+      );
+      assert.equal(app.officialViewedSyncSuppressed.has(key), false);
+    });
+  } finally {
+    keyGenerationGate.resolve();
+    stopExtensions({ app, dom });
+  }
+});
+
 test("restores collapsed hunks before paint after GitHub removes its diff body", async () => {
   const { app, dom } = await startExtension(commitSelectionFixture());
   try {
@@ -935,7 +2245,12 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
       }
     });
 
-    Array.from(app.controllersByRow.values()).forEach((controller) => {
+    const initialControllers = Array.from(
+      app.controllersByRow.values(),
+    );
+    const suppressionKey =
+      initialControllers[0].officialSuppressionKey;
+    initialControllers.forEach((controller) => {
       controller.input.checked = true;
       controller.input.dispatchEvent(
         new dom.window.Event("change", { bubbles: true }),
@@ -959,6 +2274,10 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
       ({ immediate }) => immediate === true,
     ).length;
     officialControl.click();
+    assert.equal(
+      app.officialViewedRestoreGuards.has(suppressionKey),
+      true,
+    );
     await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
 
     const rows = Array.from(dom.window.document.querySelectorAll("tbody tr"));
@@ -2626,13 +3945,17 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
   );
   const metadataKey = await Core.reviewContextMetadataKey(currentContext);
   const previousAccess = now - 60 * 60 * 1000;
-  const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
-    [stateKey]: {
-      contextFingerprint: "A".repeat(43),
-      viewedAt: previousAccess,
+  const extension = await startLockedExtension(
+    duplicateHunkFixture(),
+    {
+      [stateKey]: {
+        contextFingerprint: "A".repeat(43),
+        viewedAt: previousAccess,
+      },
+      [metadataKey]: { lastAccessedAt: previousAccess },
     },
-    [metadataKey]: { lastAccessedAt: previousAccess },
-  });
+  );
+  const { app, chrome, dom, locks } = extension;
   try {
     await waitFor(() => {
       assert.equal(
@@ -2641,11 +3964,13 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
       );
     });
 
+    const requestsBeforeTouch = locks.requests.length;
     const beforeInterval = await app.touchReviewContextAccess(
       currentContext,
       previousAccess + app.constants.REVIEW_ACCESS_TOUCH_INTERVAL_MS - 1,
     );
     assert.equal(beforeInterval, false);
+    assert.equal(locks.requests.length, requestsBeforeTouch);
     assert.equal(
       chrome.snapshot()[metadataKey].lastAccessedAt,
       previousAccess,
@@ -2658,6 +3983,7 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
       nextAccess,
     );
     assert.equal(afterInterval, true);
+    assert.equal(locks.requests.length, requestsBeforeTouch + 1);
     assert.equal(chrome.snapshot()[metadataKey].lastAccessedAt, nextAccess);
 
     const emptyContext = "github.com:empty/repo:pull:99";
@@ -2666,6 +3992,7 @@ test("updates pull-request access metadata at most once per 24 hours", async () 
       nextAccess,
     );
     assert.equal(emptyAccess, false);
+    assert.equal(locks.requests.length, requestsBeforeTouch + 1);
     const emptyMetadataKey =
       await Core.reviewContextMetadataKey(emptyContext);
     assert.equal(
@@ -3019,6 +4346,194 @@ test("restores the UI when a storage write fails", async () => {
   }
 });
 
+test("restores collapsed state from storage when its write fails", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = controllerAt(app);
+    const warnings = captureWarnings(dom);
+
+    chrome.failNextSet();
+    await app.setCollapsed(controller, true);
+
+    assert.equal(warnings.length, 1);
+    assert.equal(controller.collapsed, false);
+    assert.equal(controller.collapsedKey in chrome.snapshot(), false);
+    assert.equal(controller.collapseButton.disabled, false);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("restores dragged lines from storage when their write fails", async () => {
+  const { app, chrome, dom } = await startExtension(dragFixture());
+  try {
+    const controller = controllerAt(app);
+    const warnings = captureWarnings(dom);
+
+    app.startLineDrag(controller.lines[0], true, 17);
+    chrome.failNextSet();
+    await app.finishLineDrag(true);
+
+    assert.equal(warnings.length, 1);
+    assert.equal(controller.lines.every((line) => !line.marked), true);
+    assert.equal(controller.marked, false);
+    assert.equal(
+      controller.lines.some((line) => line.key in chrome.snapshot()),
+      false,
+    );
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("rolls back a partially stored line mutation when removal fails", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = controllerAt(app);
+    const line = controller.lines[0];
+    const warnings = captureWarnings(dom);
+
+    chrome.failNextRemove();
+    await app.setLineViewed(line, true);
+
+    const stored = chrome.snapshot();
+    assert.equal(warnings.length, 1);
+    assert.equal(line.marked, false);
+    assert.equal(controller.marked, false);
+    assert.equal(controller.collapsed, false);
+    assert.equal(line.key in stored, false);
+    assert.equal(controller.key in stored, false);
+    assert.equal(controller.collapsedKey in stored, false);
+    assert.equal(line.input.disabled, false);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("restores prior review values when a mixed mutation fails", async () => {
+  const { app, chrome, dom } = await startExtension(dragFixture());
+  try {
+    const controller = controllerAt(app);
+    const previousLine = controller.lines[0];
+    const nextLine = controller.lines[1];
+    const previousAt = Date.now();
+    const previousValue = app.lineReviewStorageValue(
+      previousLine,
+      previousAt,
+    );
+    await app.setReviewStorage(
+      { [previousLine.key]: previousValue },
+      app.currentReviewScope,
+      previousAt,
+    );
+
+    chrome.failNextRemove();
+    const nextAt = previousAt + 1;
+    await assert.rejects(
+      app.mutateReviewStorage({
+        values: {
+          [nextLine.key]: app.lineReviewStorageValue(nextLine, nextAt),
+        },
+        removals: [previousLine.key],
+        scope: app.currentReviewScope,
+        now: nextAt,
+      }),
+      /storage removal failed/,
+    );
+
+    const stored = chrome.snapshot();
+    assert.equal(
+      stored[previousLine.key].contextFingerprint,
+      previousValue.contextFingerprint,
+    );
+    assert.equal(
+      stored[previousLine.key].viewedAt,
+      previousValue.viewedAt,
+    );
+    assert.equal(nextLine.key in stored, false);
+    assert.equal(previousLine.marked, true);
+    assert.equal(nextLine.marked, false);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("reconciles a partial line mutation when its rollback also fails", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = controllerAt(app);
+    const line = controller.lines[0];
+    const removeLocalStorage = app.removeLocalStorage.bind(app);
+    let removalAttempts = 0;
+    app.removeLocalStorage = async (keys) => {
+      removalAttempts += 1;
+      if (removalAttempts <= 2) {
+        throw new Error(
+          removalAttempts === 1
+            ? "review removal failed"
+            : "review rollback failed",
+        );
+      }
+      return removeLocalStorage(keys);
+    };
+    const warnings = captureWarnings(dom);
+
+    await app.setLineViewed(line, true);
+
+    const stored = chrome.snapshot();
+    assert.equal(removalAttempts, 2);
+    assert.equal(warnings.length, 1);
+    assert.match(
+      warnings[0][2].rollbackError.message,
+      /review rollback failed/,
+    );
+    assert.ok(stored[line.key]);
+    assert.ok(stored[controller.collapsedKey]);
+    assert.equal(line.marked, true);
+    assert.equal(controller.marked, true);
+    assert.equal(controller.collapsed, true);
+    assert.equal(line.input.disabled, false);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+test("keeps a committed line review when retention pruning fails", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = controllerAt(app);
+    const line = controller.lines[0];
+    app.reviewStorageLimitExceeded = () => true;
+    app.ensureStoredReviewStatePrunedUnlocked = async () => {
+      throw new Error("retention pruning failed");
+    };
+    const warnings = captureWarnings(dom);
+
+    await app.setLineViewed(line, true);
+    await waitFor(() => {
+      assert.equal(
+        warnings.some(([message]) =>
+          String(message).includes("prune old review state after saving"),
+        ),
+        true,
+      );
+    });
+
+    assert.equal(
+      warnings.some(([message]) =>
+        String(message).includes("could not save a line mark"),
+      ),
+      false,
+    );
+    assert.ok(chrome.snapshot()[line.key]);
+    assert.equal(line.marked, true);
+    assert.equal(controller.marked, true);
+    assert.equal(controller.collapsed, true);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
 test("stops quietly when the extension context is invalidated", async () => {
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
   try {
@@ -3100,51 +4615,18 @@ test("stops quietly when collapse storage loses the extension context", async ()
 });
 
 test("stops quietly when official Viewed override loses the storage API", async () => {
-  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
+  const { app, chrome, dom } = await startExtension(
+    initiallyViewedCommitSelectionFixture(),
+  );
   try {
     const warnings = [];
     dom.window.console.warn = (...args) => warnings.push(args);
-    const controller = Array.from(app.controllersByRow.values())[0];
 
     chrome.api.storage = undefined;
     assert.doesNotThrow(() => {
-      app.persistOfficialViewedSuppression(
-        controller.officialSuppressionKey,
-      );
-    });
-
-    await waitFor(() => {
-      assert.equal(app.stopped, true);
-      assert.equal(app.observer, null);
-      assert.equal(app.navigationPollTimer, null);
-    });
-    assert.equal(warnings.length, 0);
-    const notice = dom.window.document.getElementById(
-      app.constants.RECONNECT_NOTICE_ID,
-    );
-    assert.ok(notice);
-    assert.match(notice.textContent, /Reload this page/);
-  } finally {
-    app.stop();
-    dom.window.close();
-  }
-});
-
-test("stops quietly when clearing a Viewed override loses the storage API", async () => {
-  const { app, chrome, dom } = await startExtension(commitSelectionFixture());
-  try {
-    const warnings = [];
-    dom.window.console.warn = (...args) => warnings.push(args);
-    const controller = Array.from(app.controllersByRow.values())[0];
-    app.officialViewedSyncSuppressed.add(
-      controller.officialSuppressionKey,
-    );
-
-    chrome.api.storage = undefined;
-    assert.doesNotThrow(() => {
-      app.clearOfficialViewedSuppressionKeys([
-        controller.officialSuppressionKey,
-      ]);
+      dom.window.document
+        .querySelector('button[aria-label="Viewed"]')
+        .click();
     });
 
     await waitFor(() => {
