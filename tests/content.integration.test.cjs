@@ -1234,6 +1234,40 @@ test("materializes line controls near the viewport when a large file is revealed
   }
 });
 
+test("keeps newly materialized line controls disabled with their hunk", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = Array.from(app.controllersByRow.values())[0];
+    const clearLineControls = () => {
+      controller.lines.forEach((line) => {
+        line.control?.remove();
+        line.control = null;
+      });
+    };
+    const assertLineControlsDisabled = () => {
+      assert.equal(
+        controller.lines.every((line) => line.control?.disabled === true),
+        true,
+      );
+    };
+
+    controller.input.disabled = true;
+    clearLineControls();
+    app.applyControllerAppearance(controller);
+    assertLineControlsDisabled();
+
+    clearLineControls();
+    controller.lazyLineControls = true;
+    controller.materializedLazyLines = new Set();
+    app.observeLazyControllerLineControls(controller);
+    assert.equal(controller.lazyLineControls, false);
+    assertLineControlsDisabled();
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("links split diff sides and syncs GitHub's official Viewed control", async () => {
   const { app, dom } = await startExtension(splitFixture());
   try {

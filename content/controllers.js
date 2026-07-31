@@ -298,7 +298,9 @@
       if (!observer) {
         controller.lazyLineControls = false;
         controller.materializedLazyLines = null;
-        this.materializeControllerLineControls(controller);
+        this.materializeControllerLineControls(controller, null, {
+          disabled: controller.input.disabled,
+        });
         return;
       }
       const chunkSize = this.constants.LAZY_LINE_CONTROL_CHUNK_SIZE;
@@ -449,7 +451,9 @@
       if (!controller.collapsed && controller.lazyLineControls) {
         this.observeLazyControllerLineControls(controller);
       } else if (!controller.collapsed) {
-        this.materializeControllerLineControls(controller);
+        this.materializeControllerLineControls(controller, null, {
+          disabled: controller.input.disabled,
+        });
       } else if (controller.lazyLineControls) {
         this.unobserveLazyControllerLineControls(controller);
       }
