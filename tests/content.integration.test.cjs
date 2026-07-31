@@ -343,6 +343,10 @@ function changeCheckbox(dom, input, checked = true) {
   );
 }
 
+function lineControls(dom) {
+  return dom.window.document.querySelectorAll(".hunkmark-line-control");
+}
+
 function setOfficialViewed(control, viewed) {
   control.setAttribute("aria-label", viewed ? "Viewed" : "Not Viewed");
   control.setAttribute("aria-pressed", String(viewed));
@@ -729,23 +733,18 @@ test("boots on a pull request and isolates duplicate lines in separate hunks", a
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
   try {
     await waitFor(() => {
-      assert.equal(
-        dom.window.document.querySelectorAll(".hunkmark-line-control input")
-          .length,
-        2,
-      );
+      const controls = lineControls(dom);
+      assert.equal(controls.length, 2);
+      assert.equal(controls[0].disabled, false);
     });
 
-    const inputs = dom.window.document.querySelectorAll(
-      ".hunkmark-line-control input",
-    );
+    const controls = lineControls(dom);
     const firstController = Array.from(app.controllersByRow.values())[0];
-    inputs[0].checked = true;
-    inputs[0].dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    controls[0].click();
 
     await waitFor(() => {
-      assert.equal(inputs[0].checked, true);
-      assert.equal(inputs[1].checked, false);
+      assert.equal(controls[0].getAttribute("aria-pressed"), "true");
+      assert.equal(controls[1].getAttribute("aria-pressed"), "false");
       assert.equal(firstController.marked, true);
       assert.equal(firstController.collapsed, true);
       assert.equal(
@@ -786,7 +785,7 @@ test("boots on a pull request and isolates duplicate lines in separate hunks", a
   }
 });
 
-test("hashes a large changed block once before deriving line contexts", async () => {
+test("bounds hashing and line-control DOM for a large changed block", async () => {
   const digestInputSizes = [];
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(),
@@ -796,6 +795,14 @@ test("hashes a large changed block once before deriving line contexts", async ()
   try {
     const controller = Array.from(app.controllersByRow.values())[0];
     assert.equal(controller.lines.length, 200);
+    assert.equal(
+      controller.lines.every(
+        (line) =>
+          line.control.tagName === "BUTTON" &&
+          line.control.childElementCount === 0,
+      ),
+      true,
+    );
     assert.equal(
       digestInputSizes.filter((size) => size > 10_000).length,
       2,
@@ -821,21 +828,16 @@ test("links split diff sides and syncs GitHub's official Viewed control", async 
     });
 
     await waitFor(() => {
-      assert.equal(
-        dom.window.document.querySelectorAll(".hunkmark-line-control input")
-          .length,
-        2,
-      );
+      const controls = lineControls(dom);
+      assert.equal(controls.length, 2);
+      assert.equal(controls[0].disabled, false);
     });
-    const inputs = dom.window.document.querySelectorAll(
-      ".hunkmark-line-control input",
-    );
-    inputs[0].checked = true;
-    inputs[0].dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    const controls = lineControls(dom);
+    controls[0].click();
 
     await waitFor(() => {
-      assert.equal(inputs[0].checked, true);
-      assert.equal(inputs[1].checked, true);
+      assert.equal(controls[0].getAttribute("aria-pressed"), "true");
+      assert.equal(controls[1].getAttribute("aria-pressed"), "true");
       assert.equal(officialControl.getAttribute("aria-pressed"), "true");
     });
   } finally {
@@ -1467,8 +1469,8 @@ test("keeps a newer tab's review after an older hunk write fails", async () => {
   },
   {
     name: "waits for a concurrent line write before syncing official Viewed",
-    startSecondWrite({ controllers, dom }) {
-      changeCheckbox(dom, controllers[1].lines[0].input);
+    startSecondWrite({ controllers }) {
+      controllers[1].lines[0].control.click();
     },
     assertFinal({ controllers, getOfficialClicks, officialControl }) {
       assert.equal(controllers.every((controller) => controller.marked), true);
@@ -2703,23 +2705,15 @@ test("restores saved review state after a page reload", async () => {
   let stored;
   try {
     await waitFor(() => {
-      assert.equal(
-        first.dom.window.document.querySelectorAll(
-          ".hunkmark-line-control input",
-        ).length,
-        2,
-      );
+      const controls = lineControls(first.dom);
+      assert.equal(controls.length, 2);
+      assert.equal(controls[0].disabled, false);
     });
-    const input = first.dom.window.document.querySelector(
-      ".hunkmark-line-control input",
-    );
-    input.checked = true;
-    input.dispatchEvent(
-      new first.dom.window.Event("change", { bubbles: true }),
-    );
+    const control = lineControls(first.dom)[0];
+    control.click();
     await waitFor(() => {
-      assert.equal(input.disabled, false);
-      assert.equal(input.checked, true);
+      assert.equal(control.disabled, false);
+      assert.equal(control.getAttribute("aria-pressed"), "true");
     });
     stored = first.chrome.snapshot();
   } finally {
@@ -2730,12 +2724,10 @@ test("restores saved review state after a page reload", async () => {
   const second = await startExtension(duplicateHunkFixture(), stored);
   try {
     await waitFor(() => {
-      const inputs = second.dom.window.document.querySelectorAll(
-        ".hunkmark-line-control input",
-      );
-      assert.equal(inputs.length, 2);
-      assert.equal(inputs[0].checked, true);
-      assert.equal(inputs[1].checked, false);
+      const controls = lineControls(second.dom);
+      assert.equal(controls.length, 2);
+      assert.equal(controls[0].getAttribute("aria-pressed"), "true");
+      assert.equal(controls[1].getAttribute("aria-pressed"), "false");
       assert.equal(
         Array.from(second.app.controllersByRow.values())[0].collapsed,
         true,
@@ -3437,7 +3429,9 @@ test("isolates selected-commit state and resets only the selected range", async 
     });
     const selectedReviewScope = app.currentReviewScope;
     assert.equal(
-      dom.window.document.querySelector('button[aria-pressed]'),
+      dom.window.document.querySelector(
+        app.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+      ),
       null,
     );
 
@@ -4241,7 +4235,17 @@ test("shrinks a dragged line range before persisting it", async () => {
       ];
     });
 
-    app.startLineDrag(controller.lines[0], true, 7);
+    const pointerDown = new dom.window.Event("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperties(pointerDown, {
+      button: { value: 0 },
+      pointerId: { value: 7 },
+      pointerType: { value: "mouse" },
+    });
+    controller.lines[0].control.dispatchEvent(pointerDown);
+    assert.equal(pointerDown.defaultPrevented, true);
     app.touchLineRange(controller.lines[2]);
     assert.deepEqual(
       Array.from(controller.lines, (line) => line.marked),
@@ -4299,10 +4303,7 @@ test("enables auto-collapse by default and persists its setting", async () => {
     });
 
     const controller = Array.from(app.controllersByRow.values())[0];
-    controller.lines[0].input.checked = true;
-    controller.lines[0].input.dispatchEvent(
-      new dom.window.Event("change", { bubbles: true }),
-    );
+    controller.lines[0].control.click();
     await waitFor(() => {
       assert.equal(controller.marked, true);
       assert.equal(controller.collapsed, false);
@@ -4317,25 +4318,20 @@ test("restores the UI when a storage write fails", async () => {
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
   try {
     await waitFor(() => {
-      assert.equal(
-        dom.window.document.querySelectorAll(".hunkmark-line-control input")
-          .length,
-        2,
-      );
+      const controls = lineControls(dom);
+      assert.equal(controls.length, 2);
+      assert.equal(controls[0].disabled, false);
     });
-    const input = dom.window.document.querySelector(
-      ".hunkmark-line-control input",
-    );
+    const control = lineControls(dom)[0];
     const controller = Array.from(app.controllersByRow.values())[0];
     const warnings = [];
     dom.window.console.warn = (...args) => warnings.push(args);
     chrome.failNextSet();
-    input.checked = true;
-    input.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    control.click();
 
     await waitFor(() => {
-      assert.equal(input.disabled, false);
-      assert.equal(input.checked, false);
+      assert.equal(control.disabled, false);
+      assert.equal(control.getAttribute("aria-pressed"), "false");
       assert.equal(controller.collapsed, false);
     });
     assert.equal(Object.keys(chrome.snapshot()).length, 0);
@@ -4411,7 +4407,7 @@ test("rolls back a partially stored line mutation when removal fails", async () 
     assert.equal(controller.collapsedKey in stored, false);
     assert.equal(metadataKey in stored, false);
     assert.equal(app.reviewContextAccessedAtById.has(contextId), false);
-    assert.equal(line.input.disabled, false);
+    assert.equal(line.control.disabled, false);
   } finally {
     stopExtensions({ app, dom });
   }
@@ -4510,7 +4506,7 @@ test("reconciles a partial line mutation when its rollback also fails", async ()
     assert.equal(line.marked, true);
     assert.equal(controller.marked, true);
     assert.equal(controller.collapsed, true);
-    assert.equal(line.input.disabled, false);
+    assert.equal(line.control.disabled, false);
   } finally {
     stopExtensions({ app, dom });
   }
@@ -4852,7 +4848,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
       "24px",
     );
     assert.equal(
-      dom.window.getComputedStyle(controller.lines[0].label).right,
+      dom.window.getComputedStyle(controller.lines[0].control).right,
       "calc(4px + var(--hunkmark-host-line-action-inset, 0px))",
     );
     assert.equal(
@@ -4862,7 +4858,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
       "12px",
     );
     assert.equal(
-      dom.window.getComputedStyle(controller.lines[1].label).top,
+      dom.window.getComputedStyle(controller.lines[1].control).top,
       "var(--hunkmark-first-line-center, 12px)",
     );
     const reviewButton = dom.window.document.querySelector(
@@ -4875,10 +4871,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
       dom.window.getComputedStyle(reviewButton).backgroundColor,
       "rgb(31, 111, 235)",
     );
-    controller.lines[1].input.checked = true;
-    controller.lines[1].input.dispatchEvent(
-      new dom.window.Event("change", { bubbles: true }),
-    );
+    controller.lines[1].control.click();
     await waitFor(() => {
       assert.equal(controller.lines[1].marked, true);
     });
@@ -4891,7 +4884,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
       "rgba(0, 0, 0, 0)",
     );
     assert.equal(
-      dom.window.getComputedStyle(controller.lines[0].label).opacity,
+      dom.window.getComputedStyle(controller.lines[0].control).opacity,
       "0",
     );
   } finally {

@@ -381,7 +381,10 @@
       }
 
       return Array.from(
-        fileElement.querySelectorAll("button, [role=button]"),
+        fileElement.querySelectorAll(
+          "button:not(.hunkmark-line-control), " +
+            "[role=button]:not(.hunkmark-line-control)",
+        ),
       ).some((element) => {
         if (element.matches(this.constants.OFFICIAL_FILE_VIEWED_SELECTOR)) {
           return false;
@@ -677,7 +680,7 @@
           const controller = this.createController(hunk);
           controller.lines.forEach((line, index) => {
             line.marked = lineStates[index].marked;
-            line.input.disabled = false;
+            line.control.disabled = false;
           });
           controller.marked =
             controller.lines.length === 0 &&

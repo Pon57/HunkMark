@@ -131,19 +131,15 @@
     },
 
     createLineController(controller, line, layout) {
-      const label = this.document.createElement("label");
-      label.className = "hunkmark-line-control";
-      label.title = "Mark this code line as viewed";
-      label.setAttribute("data-hunkmark-ui", "true");
-
-      const input = this.document.createElement("input");
-      input.type = "checkbox";
-      input.disabled = true;
-      input.setAttribute("aria-label", "Mark this code line as viewed");
-
-      const text = this.document.createElement("span");
-      text.textContent = "Viewed";
-      label.append(input, text);
+      const control = this.document.createElement("button");
+      control.type = "button";
+      control.className = "hunkmark-line-control";
+      control.disabled = true;
+      control.textContent = "Viewed";
+      control.title = "Mark this code line as viewed";
+      control.setAttribute("aria-label", "Mark this code line as viewed");
+      control.setAttribute("aria-pressed", "false");
+      control.setAttribute("data-hunkmark-ui", "true");
 
       const { firstLineCenter, safeHostRightInset } =
         layout ?? this.measureLineHostLayout(line);
@@ -156,45 +152,67 @@
         `${firstLineCenter}px`,
       );
       line.element.classList.add("hunkmark-line-cell");
-      line.element.append(label);
+      line.element.append(control);
 
       const lineController = {
         ...line,
+        control,
         controller,
-        input,
-        label,
         marked: false,
         peers: [],
         suppressPointerClick: false,
       };
       this.lineControllersByElement.set(line.element, lineController);
-      label.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (lineController.suppressPointerClick) {
-          event.preventDefault();
-        }
-      });
-      label.addEventListener("pointerdown", (event) => {
-        event.stopPropagation();
-        if (
-          event.button !== 0 ||
-          lineController.input.disabled ||
-          (event.pointerType !== "mouse" && event.pointerType !== "pen")
-        ) {
-          return;
-        }
-        event.preventDefault();
-        lineController.suppressPointerClick = true;
-        this.startLineDrag(
-          lineController,
-          !lineController.marked,
-          event.pointerId,
-        );
-      });
-      input.addEventListener("change", () => {
-        void this.setLineViewed(lineController, input.checked);
-      });
       return lineController;
+    },
+
+    lineControllerForControlEvent(event) {
+      const control =
+        event.target instanceof this.window.Element
+          ? event.target.closest(".hunkmark-line-control")
+          : null;
+      const lineController = control
+        ? this.lineControllersByElement.get(control.parentElement)
+        : null;
+      return lineController?.control === control ? lineController : null;
+    },
+
+    handleLineControlClick(event) {
+      const lineController = this.lineControllerForControlEvent(event);
+      if (!lineController) {
+        return;
+      }
+      event.stopPropagation();
+      if (
+        lineController.control.disabled ||
+        lineController.suppressPointerClick
+      ) {
+        event.preventDefault();
+        return;
+      }
+      void this.setLineViewed(lineController, !lineController.marked);
+    },
+
+    handleLineControlPointerDown(event) {
+      const lineController = this.lineControllerForControlEvent(event);
+      if (!lineController) {
+        return;
+      }
+      event.stopPropagation();
+      if (
+        event.button !== 0 ||
+        lineController.control.disabled ||
+        (event.pointerType !== "mouse" && event.pointerType !== "pen")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      lineController.suppressPointerClick = true;
+      this.startLineDrag(
+        lineController,
+        !lineController.marked,
+        event.pointerId,
+      );
     },
 
     updateControllerRows(controller, nextRows) {
@@ -249,8 +267,11 @@
       const dragPreviewActive = Boolean(
         this.dragState?.touched.has(lineController),
       );
-      lineController.input.checked = lineController.marked;
-      lineController.label.classList.toggle(
+      lineController.control.setAttribute(
+        "aria-pressed",
+        String(lineController.marked),
+      );
+      lineController.control.classList.toggle(
         "is-viewed",
         lineController.marked,
       );
@@ -529,7 +550,7 @@
       this.updateProgress();
 
       affectedLines.forEach((line) => {
-        line.input.disabled = true;
+        line.control.disabled = true;
       });
       const officialViewedPendingKeys =
         this.beginOfficialViewedReviewPersistence(affectedControllers);
@@ -590,7 +611,7 @@
             this.applyControllerAppearance(affectedController);
           });
           affectedLines.forEach((line) => {
-            line.input.disabled = false;
+            line.control.disabled = false;
           });
           if (reviewStateKnown) {
             this.syncOfficialViewedForControllers(affectedControllers);
@@ -612,7 +633,7 @@
         "--hunkmark-first-line-center",
       );
       lineController.element?.classList.remove("hunkmark-line-drag-touched");
-      lineController.label?.remove();
+      lineController.control?.remove();
     },
 
     destroyController(controller) {
