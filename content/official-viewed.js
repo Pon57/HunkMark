@@ -588,7 +588,7 @@
       this.settleOfficialViewedRestoreGuard(key);
     },
 
-    startOfficialViewedRestoreGuard(key, filePath) {
+    startOfficialViewedRestoreGuard(key, filePath, fileElement = null) {
       // GitHub can replace diff rows when its Viewed state is removed. Keep the
       // existing collapsed hunk identities and stored line contexts so the
       // replacement state is restored before the debounced full refresh runs.
@@ -597,7 +597,9 @@
           .filter(
             (controller) =>
               controller.hunkRow.isConnected &&
-              controller.filePath === filePath &&
+              (fileElement
+                ? controller.fileElement === fileElement
+                : controller.filePath === filePath) &&
               controller.collapsed,
           )
           .map((controller) => controller.key),
@@ -790,6 +792,55 @@
       return restore;
     },
 
+    finishCleanCachedFileReveal(searchRoot = this.document) {
+      const candidates = Array.from(
+        this.fileRevealPrepaintRestores.entries(),
+      ).filter(
+        ([fileElement]) =>
+          fileElement.isConnected &&
+          (searchRoot === this.document || searchRoot === fileElement),
+      );
+      if (candidates.length !== 1) {
+        return false;
+      }
+      const [fileElement, restore] = candidates[0];
+      const progress = restore.cachedProgress;
+      if (
+        !progress ||
+        progress.lines <
+          this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD ||
+        progress.viewed !== 0 ||
+        progress.viewedLines !== 0 ||
+        (progress.collapsed ?? 0) !== 0
+      ) {
+        return false;
+      }
+      for (const keys of progress.reviewKeyGroups ?? []) {
+        for (const key of keys) {
+          if (this.reviewStorageKeys.has(key)) {
+            return false;
+          }
+        }
+      }
+      let renderedHunkReady = false;
+      for (const marker of fileElement.querySelectorAll(
+        this.constants.HUNK_ELEMENT_SELECTOR,
+      )) {
+        if (this.Core.isHunkHeaderText(this.cleanElementText(marker))) {
+          renderedHunkReady = true;
+          break;
+        }
+      }
+      if (!renderedHunkReady) {
+        return false;
+      }
+
+      // With no visual review state to restore, keeping a large host diff
+      // hidden until full identity discovery only delays first paint.
+      this.finishFileRevealPrepaintRestore(fileElement, restore);
+      return true;
+    },
+
     finishFileRevealPrepaintRestore(fileElement, restore) {
       if (this.fileRevealPrepaintRestores.get(fileElement) !== restore) {
         return;
@@ -864,7 +915,9 @@
           controllers.some(
             (controller) =>
               controller.input.disabled ||
-              controller.lines.some((line) => line.control.disabled),
+              controller.lines.some(
+                (line) => line.control?.disabled === true,
+              ),
           )
         ) {
           return;
@@ -1070,18 +1123,29 @@
         }
 
         this.fileRevealRestorePending.delete(progressKey);
+        const lazyLineControls =
+          candidates.reduce(
+            (total, { hunk }) => total + hunk.lines.length,
+            0,
+          ) >= this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD;
         candidates.forEach(({ hunk, lineStates }) => {
-          const controller = this.createController(hunk);
+          const collapsed = this.reviewStorageKeys.has(
+            `${hunk.key}:collapsed`,
+          );
+          const controller = this.createController(hunk, {
+            deferLineControls: collapsed || lazyLineControls,
+            lazyLineControls,
+          });
           controller.lines.forEach((line, index) => {
             line.marked = lineStates[index].marked;
-            line.control.disabled = false;
+            if (line.control) {
+              line.control.disabled = false;
+            }
           });
           controller.marked =
             controller.lines.length === 0 &&
             this.reviewStorageKeys.has(controller.key);
-          controller.collapsed = this.reviewStorageKeys.has(
-            controller.collapsedKey,
-          );
+          controller.collapsed = collapsed;
           this.updateAggregateFromLines(controller);
           controller.input.disabled = false;
           this.applyControllerAppearance(controller);
@@ -1198,18 +1262,17 @@
         return;
       }
 
-      const controller = Array.from(this.controllersByRow.values()).find(
-        (candidate) =>
-          candidate.hunkRow.isConnected &&
-          candidate.fileElement.contains(control),
-      );
       const fileElement =
-        controller?.fileElement ??
         control.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
         control.closest("article, details, section, [role=region]");
       if (!fileElement) {
         return;
       }
+      const controller = Array.from(this.controllersByRow.values()).find(
+        (candidate) =>
+          candidate.hunkRow.isConnected &&
+          candidate.fileElement === fileElement,
+      );
 
       this.officialViewedSyncPending.delete(fileElement);
       const filePath =
@@ -1217,15 +1280,22 @@
       const viewedBeforeClick = control.matches('input[type="checkbox"]')
         ? !control.checked
         : this.officialControlIsViewed(control);
+      const cachedReveal = this.fileProgressStateByKey.has(
+        this.fileProgressStateKey(filePath),
+      );
       const willRevealDiff =
         viewedBeforeClick &&
         !controller &&
-        this.findHunkMarkers(fileElement).length === 0;
+        (cachedReveal ||
+          !fileElement.querySelector(
+            this.constants.HUNK_ELEMENT_SELECTOR,
+          ));
       const prepaintRestore = willRevealDiff
         ? this.beginFileRevealPrepaintRestore(
             fileElement,
             filePath,
             control,
+            { cachedReveal },
           )
         : null;
       if (!prepaintRestore) {
@@ -1254,7 +1324,11 @@
           filePath,
         );
       if (viewedBeforeClick && knownKey) {
-        this.startOfficialViewedRestoreGuard(knownKey, filePath);
+        this.startOfficialViewedRestoreGuard(
+          knownKey,
+          filePath,
+          fileElement,
+        );
       }
       let intent;
       try {
@@ -1286,7 +1360,7 @@
       const { generation: reconcileGeneration, key } = intent;
       if (viewedBeforeClick) {
         if (key !== knownKey) {
-          this.startOfficialViewedRestoreGuard(key, filePath);
+          this.startOfficialViewedRestoreGuard(key, filePath, fileElement);
         }
       } else {
         this.officialViewedRestoreGuards.delete(key);

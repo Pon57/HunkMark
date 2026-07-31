@@ -58,71 +58,120 @@
       }
     },
 
-    updatePanelClearance(panel, spacer) {
+    panelClearanceFileForElement(element) {
+      if (!element?.isConnected) {
+        return null;
+      }
+      if (!element.matches("button, input, [role=button]")) {
+        return element;
+      }
+      return element.closest("article, details, section, [role=region]");
+    },
+
+    lastPanelClearanceFile() {
+      let lastFileElement = null;
+      const addCandidate = (element, normalize = false) => {
+        const fileElement = normalize
+          ? this.panelClearanceFileForElement(element)
+          : element;
+        if (
+          !fileElement?.isConnected ||
+          fileElement === lastFileElement ||
+          lastFileElement?.contains(fileElement)
+        ) {
+          return;
+        }
+        if (
+          !lastFileElement ||
+          fileElement.contains(lastFileElement) ||
+          (lastFileElement.compareDocumentPosition(fileElement) &
+            this.window.Node.DOCUMENT_POSITION_FOLLOWING)
+        ) {
+          lastFileElement = fileElement;
+        }
+      };
+
+      this.controllersByRow.forEach((controller) => {
+        if (controller.hunkRow.isConnected) {
+          addCandidate(controller.fileElement);
+        }
+      });
+      this.fileRevealPrepaintRestores.forEach((_, fileElement) =>
+        addCandidate(fileElement),
+      );
+      this.fileDiffVisibilityPending.forEach((_, fileElement) =>
+        addCandidate(fileElement),
+      );
+
+      this.document
+        .querySelectorAll(
+          [
+            this.constants.FILE_CONTAINER_SELECTOR,
+            this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+          ].join(", "),
+        )
+        .forEach((element) => addCandidate(element, true));
+      return lastFileElement;
+    },
+
+    panelClearanceContentBottom(fileElement) {
+      if (!fileElement?.isConnected) {
+        return 0;
+      }
+      let bottom =
+        fileElement.getBoundingClientRect().bottom + this.window.scrollY;
+      let trailingController = null;
+      this.controllersByRow.forEach((controller) => {
+        if (
+          !controller.hunkRow.isConnected ||
+          (controller.fileElement !== fileElement &&
+            !fileElement.contains(controller.fileElement) &&
+            !controller.fileElement.contains(fileElement))
+        ) {
+          return;
+        }
+        if (
+          !trailingController ||
+          (trailingController.hunkRow.compareDocumentPosition(
+            controller.hunkRow,
+          ) &
+            this.window.Node.DOCUMENT_POSITION_FOLLOWING)
+        ) {
+          trailingController = controller;
+        }
+      });
+      const trailingRow = trailingController?.collapsed
+        ? trailingController.hunkRow
+        : trailingController?.groupRows.at(-1);
+      if (trailingRow?.isConnected) {
+        bottom = Math.max(
+          bottom,
+          trailingRow.getBoundingClientRect().bottom + this.window.scrollY,
+        );
+      }
+      return bottom;
+    },
+
+    updatePanelClearance(
+      panel,
+      spacer,
+      fileElement = this.lastPanelClearanceFile(),
+    ) {
       if (!panel.isConnected || !spacer.isConnected) {
         return;
       }
       const bottom =
         Number.parseFloat(this.window.getComputedStyle(panel).bottom) || 0;
-      const boundary = this.lastVisibleDiffBoundary();
-      const contentGap = boundary.collapsedFile ? 16 : 8;
       const requiredClearance =
-        panel.getBoundingClientRect().height + bottom + contentGap;
-      const previousSpacerHeight =
-        Number.parseFloat(spacer.style.height) || 0;
-      const pageBottomWithoutSpacer = Math.max(
-        0,
-        this.document.documentElement.scrollHeight - previousSpacerHeight,
-      );
-      const existingClearance = Math.max(
-        0,
-        pageBottomWithoutSpacer - boundary.bottom,
-      );
+        panel.getBoundingClientRect().height + bottom + 16;
+      const spacerTop =
+        spacer.getBoundingClientRect().top + this.window.scrollY;
+      const existingClearance =
+        spacerTop - this.panelClearanceContentBottom(fileElement);
       const height = Math.ceil(
         Math.max(0, requiredClearance - existingClearance),
       );
       spacer.style.height = `${height}px`;
-    },
-
-    lastVisibleDiffBoundary() {
-      const boundary = { bottom: 0, collapsedFile: false };
-      const fileContainers = this.document.querySelectorAll(
-        this.constants.FILE_CONTAINER_SELECTOR,
-      );
-      fileContainers.forEach((fileElement) => {
-        if (
-          !fileElement.isConnected ||
-          fileElement.getClientRects().length === 0
-        ) {
-          return;
-        }
-        const bottom =
-          fileElement.getBoundingClientRect().bottom + this.window.scrollY;
-        if (bottom <= boundary.bottom) {
-          return;
-        }
-        const hasVisibleHunk = Array.from(
-          fileElement.querySelectorAll(
-            this.constants.HUNK_ELEMENT_SELECTOR,
-          ),
-        ).some((element) => element.getClientRects().length > 0);
-        boundary.bottom = bottom;
-        boundary.collapsedFile = !hasVisibleHunk;
-      });
-      this.controllersByRow.forEach((controller) => {
-        controller.groupRows.forEach((row) => {
-          if (!row.isConnected || row.getClientRects().length === 0) {
-            return;
-          }
-          const bottom =
-            row.getBoundingClientRect().bottom + this.window.scrollY;
-          if (bottom > boundary.bottom) {
-            boundary.bottom = bottom;
-            boundary.collapsedFile = false;
-          }
-        });
-      });
-      return boundary;
     },
 
     ensurePanelClearance(panel) {
@@ -136,29 +185,33 @@
         this.document.body.append(spacer);
       }
 
-      if (this.panelClearanceTarget !== panel) {
+      const fileTarget = this.lastPanelClearanceFile();
+      const targetChanged =
+        this.panelClearanceTarget !== panel ||
+        this.panelClearanceFileTarget !== fileTarget;
+      if (targetChanged) {
         this.panelClearanceObserver?.disconnect();
         this.panelClearanceTarget = panel;
+        this.panelClearanceFileTarget = fileTarget;
         if (typeof this.window.ResizeObserver === "function") {
           this.panelClearanceObserver = new this.window.ResizeObserver(() => {
-            this.updatePanelClearance(panel, spacer);
+            this.updatePanelClearance(panel, spacer, fileTarget);
           });
           this.panelClearanceObserver.observe(panel);
+          if (fileTarget && fileTarget !== panel) {
+            this.panelClearanceObserver.observe(fileTarget);
+          }
         }
       }
-      if (this.panelClearanceObserver) {
-        this.document
-          .querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR)
-          .forEach((fileElement) =>
-            this.panelClearanceObserver.observe(fileElement),
-          );
+      if (targetChanged || !this.panelClearanceObserver) {
+        this.updatePanelClearance(panel, spacer, fileTarget);
       }
-      this.updatePanelClearance(panel, spacer);
     },
 
     removePanel() {
       this.panelClearanceObserver?.disconnect();
       this.panelClearanceObserver = null;
+      this.panelClearanceFileTarget = null;
       this.panelClearanceTarget = null;
       this.document.getElementById(this.constants.PANEL_ID)?.remove();
       this.document.getElementById(this.constants.PANEL_SPACER_ID)?.remove();
@@ -426,22 +479,60 @@
       return removed;
     },
 
-    updateProgress() {
-      const connectedControllers = Array.from(
-        this.controllersByRow.values(),
-      ).filter((controller) => controller.hunkRow.isConnected);
-      const byFile = new Map();
+    countViewedLines(controller) {
+      if (controller.marked) {
+        return controller.lines.length;
+      }
+      if (!controller.indeterminate) {
+        return 0;
+      }
+      return controller.lines.reduce(
+        (count, line) => count + Number(line.marked),
+        0,
+      );
+    },
 
-      connectedControllers.forEach((controller) => {
-        const list = byFile.get(controller.fileElement) ?? [];
-        list.push(controller);
-        byFile.set(controller.fileElement, list);
+    updateProgress() {
+      const byFile = new Map();
+      let hunkCount = 0;
+      let lineCount = 0;
+      let viewedHunkCount = 0;
+      let viewedLineCount = 0;
+
+      this.controllersByRow.forEach((controller) => {
+        if (!controller.hunkRow.isConnected) {
+          return;
+        }
+
+        hunkCount += 1;
+        viewedHunkCount += Number(controller.marked);
+        lineCount += controller.lines.length;
+        const controllerViewedLines = this.countViewedLines(controller);
+        viewedLineCount += controllerViewedLines;
+
+        let file = byFile.get(controller.fileElement);
+        if (!file) {
+          file = {
+            collapsed: 0,
+            controllers: [],
+            lines: 0,
+            viewed: 0,
+            viewedLines: 0,
+          };
+          byFile.set(controller.fileElement, file);
+        }
+        file.controllers.push(controller);
+        file.collapsed += Number(controller.collapsed);
+        file.lines += controller.lines.length;
+        file.viewed += Number(controller.marked);
+        file.viewedLines += controllerViewedLines;
       });
 
+      const fileElements = Array.from(byFile.keys());
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((badge) => {
-          const owner = Array.from(byFile.keys()).find((file) =>
+          const owner = fileElements.find((file) =>
             file.contains(badge),
           );
           if (!owner) {
@@ -449,47 +540,57 @@
           }
         });
 
-      byFile.forEach((controllers, fileElement) => {
-        const viewed = controllers.filter(
-          (controller) => controller.marked,
-        ).length;
-        const lines = controllers.flatMap((controller) => controller.lines);
-        const viewedLines = lines.filter((line) => line.marked).length;
+      byFile.forEach((file, fileElement) => {
+        const { controllers } = file;
         const lineText =
-          lines.length > 0 ? ` · Lines ${viewedLines}/${lines.length}` : "";
-        const nextText = `Hunks ${viewed}/${controllers.length}${lineText}`;
-        const state = {
-          complete: viewed === controllers.length,
-          hunks: controllers.length,
-          lines: lines.length,
-          text: nextText,
-          viewed,
-          viewedLines,
-        };
-        this.fileProgressStateByKey.set(
-          this.fileProgressStateKey(controllers[0].filePath),
-          state,
+          file.lines > 0
+            ? ` · Lines ${file.viewedLines}/${file.lines}`
+            : "";
+        const nextText =
+          `Hunks ${file.viewed}/${controllers.length}${lineText}`;
+        const progressKey = this.fileProgressStateKey(
+          controllers[0].filePath,
         );
+        const previousReviewKeyGroups =
+          this.fileProgressStateByKey.get(progressKey)?.reviewKeyGroups;
+        const reviewKeyGroupsMatch =
+          previousReviewKeyGroups?.length === controllers.length &&
+          controllers.every(
+            (controller, index) =>
+              previousReviewKeyGroups[index] === controller.reviewKeys,
+          );
+        const reviewKeyGroups = reviewKeyGroupsMatch
+          ? previousReviewKeyGroups
+          : Object.freeze(
+              controllers.map((controller) => controller.reviewKeys),
+            );
+        const state = {
+          collapsed: file.collapsed,
+          complete: file.viewed === controllers.length,
+          hunks: controllers.length,
+          lines: file.lines,
+          reviewKeyGroups,
+          text: nextText,
+          viewed: file.viewed,
+          viewedLines: file.viewedLines,
+        };
+        this.fileProgressStateByKey.set(progressKey, state);
         this.renderFileProgress(fileElement, state);
       });
 
-      if (connectedControllers.length === 0) {
+      if (hunkCount === 0) {
         this.removePanel();
         return;
       }
 
       const panel = this.ensurePanel();
       const summary = panel.querySelector(".hunkmark-panel-summary");
-      const viewed = connectedControllers.filter(
-        (controller) => controller.marked,
-      ).length;
-      const lines = connectedControllers.flatMap(
-        (controller) => controller.lines,
-      );
-      const viewedLines = lines.filter((line) => line.marked).length;
       const lineText =
-        lines.length > 0 ? ` · Lines ${viewedLines} / ${lines.length}` : "";
-      const nextText = `Hunks ${viewed} / ${connectedControllers.length}${lineText}`;
+        lineCount > 0
+          ? ` · Lines ${viewedLineCount} / ${lineCount}`
+          : "";
+      const nextText =
+        `Hunks ${viewedHunkCount} / ${hunkCount}${lineText}`;
       if (summary.textContent !== nextText) {
         summary.textContent = nextText;
       }

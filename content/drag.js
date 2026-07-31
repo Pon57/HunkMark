@@ -12,14 +12,25 @@
         void this.finishLineDrag(true);
       }
 
-      let orderedLines = Array.from(
-        this.document.querySelectorAll(".hunkmark-line-cell"),
-      )
-        .map((element) => this.lineControllersByElement.get(element))
+      let orderedLines = Array.from(this.controllersByRow.values())
         .filter(
-          (candidate) =>
-            candidate && candidate.element.getClientRects().length > 0,
-        );
+          (controller) =>
+            controller === lineController.controller ||
+            (!controller.collapsed &&
+              controller.hunkRow.isConnected &&
+              controller.hunkRow.getClientRects().length > 0),
+        )
+        .flatMap((controller) => controller.lines)
+        .filter((candidate) => candidate.element.isConnected)
+        .sort((left, right) => {
+          if (left.element === right.element) {
+            return 0;
+          }
+          return left.element.compareDocumentPosition(right.element) &
+            this.window.Node.DOCUMENT_POSITION_FOLLOWING
+            ? -1
+            : 1;
+        });
       if (
         lineController.controller.split &&
         lineController.side !== "unified"

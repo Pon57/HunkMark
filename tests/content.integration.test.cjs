@@ -446,6 +446,8 @@ async function startExtension(
   {
     chromeInstance = null,
     digestInputSizes = null,
+    intersectionObserverClass = null,
+    lineLayoutReads = null,
     lockManager = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
@@ -482,6 +484,22 @@ async function startExtension(
     observe() {}
     disconnect() {}
   };
+  if (intersectionObserverClass) {
+    dom.window.IntersectionObserver = intersectionObserverClass;
+  }
+  if (lineLayoutReads) {
+    const getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+    dom.window.getComputedStyle = (element, pseudoElement) => {
+      if (
+        element.matches?.(
+          ".blob-code-addition, .blob-code-deletion, .diff-text-cell",
+        )
+      ) {
+        lineLayoutReads.push(element);
+      }
+      return getComputedStyle(element, pseudoElement);
+    };
+  }
 
   extensionScripts.forEach((relative) => {
     dom.window.eval(fs.readFileSync(path.join(root, relative), "utf8"));
@@ -513,18 +531,28 @@ function duplicateHunkFixture() {
     </body></html>`;
 }
 
-function largeChangedBlockFixture(lineCount = 200, lineWidth = 96) {
+function largeChangedBlockFixture(
+  lineCount = 200,
+  lineWidth = 96,
+  { hunkSize = lineCount } = {},
+) {
   const lines = Array.from({ length: lineCount }, (_, index) => {
     const prefix = `+line-${String(index).padStart(4, "0")}-`;
     const text = `${prefix}${"x".repeat(lineWidth - prefix.length)}`;
-    return `<tr><td class="blob-code-addition">${text}</td></tr>`;
+    const hunkLineCount = Math.min(hunkSize, lineCount - index);
+    const hunkHeader =
+      index % hunkSize === 0
+        ? `<tr><td class="blob-code-hunk">@@ -${index + 1},0 +${
+            index + 1
+          },${hunkLineCount} @@</td></tr>`
+        : "";
+    return `${hunkHeader}<tr><td class="blob-code-addition">${text}</td></tr>`;
   }).join("");
   return `<!doctype html>
     <html><body>
       <div class="js-file" data-file-path="src/large.js">
         <div class="file-header"><span class="file-info">src/large.js</span></div>
         <table><tbody>
-          <tr><td class="blob-code-hunk">@@ -1,0 +1,${lineCount} @@</td></tr>
           ${lines}
         </tbody></table>
       </div>
@@ -758,6 +786,7 @@ function modernGridFixture() {
                 <a href="#diff-modern"><code>src/modern.ts</code></a>
               </h3>
             </div>
+            <button data-file-path="src/modern.ts" aria-label="Expand all diff lines">Expand lines</button>
             <button aria-label="Not Viewed" aria-pressed="false">Viewed</button>
             <button aria-labelledby="modern-file-toggle-label">Collapse</button>
             <span id="modern-file-toggle-label">Collapse file</span>
@@ -831,6 +860,26 @@ test("places per-file progress beside the file name", async () => {
         /Hunks 0\/2 · Lines 0\/2/,
       );
     });
+    const controller = Array.from(app.controllersByRow.values())[0];
+    const progressKey = app.fileProgressStateKey(controller.filePath);
+    const reviewKeyGroups =
+      app.fileProgressStateByKey.get(progressKey).reviewKeyGroups;
+    const controllers = Array.from(app.controllersByRow.values());
+    assert.equal(reviewKeyGroups.length, controllers.length);
+    assert.equal(
+      reviewKeyGroups.every(
+        (keys, index) => keys === controllers[index].reviewKeys,
+      ),
+      true,
+    );
+
+    controller.lines[0].marked = true;
+    app.updateAggregateFromLines(controller);
+    app.updateProgress();
+
+    const updatedProgress = app.fileProgressStateByKey.get(progressKey);
+    assert.equal(updatedProgress.reviewKeyGroups, reviewKeyGroups);
+    assert.equal(updatedProgress.viewedLines, 1);
     assert.equal(
       dom.window.document.querySelector(
         ".file-header > .hunkmark-file-progress",
@@ -899,15 +948,16 @@ test("boots on a pull request and isolates duplicate lines in separate hunks", a
   }
 });
 
-test("bounds hashing and line-control DOM for a large changed block", async () => {
+test("bounds hashing and defers line controls for a collapsed large block", async () => {
   const digestInputSizes = [];
-  const { app, dom } = await startExtension(
+  const first = await startExtension(
     largeChangedBlockFixture(),
     {},
     { digestInputSizes },
   );
+  let stored;
   try {
-    const controller = Array.from(app.controllersByRow.values())[0];
+    const controller = Array.from(first.app.controllersByRow.values())[0];
     assert.equal(controller.lines.length, 200);
     assert.equal(
       controller.lines.every(
@@ -925,6 +975,293 @@ test("bounds hashing and line-control DOM for a large changed block", async () =
       digestInputSizes.reduce((total, size) => total + size, 0) < 500_000,
       true,
     );
+    changeCheckbox(first.dom, controller.input);
+    await waitFor(() => {
+      assert.equal(controller.collapsed, true);
+      assert.equal(controller.input.disabled, false);
+      assert.equal(
+        Object.keys(first.chrome.snapshot()).filter((key) =>
+          key.includes(":line:"),
+        ).length,
+        200,
+      );
+    });
+    stored = first.chrome.snapshot();
+  } finally {
+    first.app.stop();
+    first.dom.window.close();
+  }
+
+  const lineLayoutReads = [];
+  const second = await startExtension(
+    largeChangedBlockFixture(),
+    stored,
+    { lineLayoutReads },
+  );
+  try {
+    const controller = Array.from(second.app.controllersByRow.values())[0];
+    assert.equal(controller.collapsed, true);
+    assert.equal(
+      controller.lines.every((line) => line.control === null),
+      true,
+    );
+    assert.equal(lineControls(second.dom).length, 0);
+    assert.equal(lineLayoutReads.length, 0);
+
+    let unchangedAppearanceUpdates = 0;
+    const applyControllerAppearance =
+      second.app.applyControllerAppearance.bind(second.app);
+    second.app.applyControllerAppearance = (candidate) => {
+      unchangedAppearanceUpdates += 1;
+      return applyControllerAppearance(candidate);
+    };
+    await second.app.refresh();
+    assert.equal(unchangedAppearanceUpdates, 0);
+    assert.equal(lineLayoutReads.length, 0);
+
+    controller.groupRows[1].classList.remove("hunkmark-collapsed");
+    await second.app.refresh();
+    assert.equal(unchangedAppearanceUpdates, 1);
+    assert.equal(
+      controller.groupRows[1].classList.contains("hunkmark-collapsed"),
+      true,
+    );
+    assert.equal(lineLayoutReads.length, 0);
+
+    controller.collapseButton.click();
+    await waitFor(() => {
+      assert.equal(controller.collapsed, false);
+      assert.equal(lineControls(second.dom).length, 200);
+      assert.equal(
+        controller.lines.every(
+          (line) => line.control?.disabled === false,
+        ),
+        true,
+      );
+    });
+    assert.equal(lineLayoutReads.length, 200);
+
+    const pendingControl = controller.lines[0].control;
+    pendingControl.disabled = true;
+    pendingControl.remove();
+    await second.app.refresh();
+    assert.notEqual(controller.lines[0].control, pendingControl);
+    assert.equal(controller.lines[0].control.disabled, true);
+    assert.equal(lineLayoutReads.length, 201);
+
+    second.app.destroyController(controller);
+    second.app.applyControllerAppearance(controller);
+    assert.equal(lineControls(second.dom).length, 0);
+  } finally {
+    second.app.stop();
+    second.dom.window.close();
+  }
+});
+
+test("materializes line controls near the viewport when a large file is revealed", async () => {
+  let observer;
+  class TestIntersectionObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = new Set();
+      observer = this;
+    }
+
+    observe(element) {
+      this.observed.add(element);
+    }
+
+    unobserve(element) {
+      this.observed.delete(element);
+    }
+
+    disconnect() {
+      this.observed.clear();
+    }
+
+    intersect(elements) {
+      this.callback(
+        elements.map((target) => ({ isIntersecting: true, target })),
+        this,
+      );
+    }
+  }
+
+  const fixture = largeChangedBlockFixture(600, 96, {
+    hunkSize: 100,
+  }).replace(
+    '<span class="file-info">src/large.js</span>',
+    '<span class="file-info">src/large.js</span><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>',
+  );
+  const cleanFixture = new JSDOM(fixture);
+  const cleanTable =
+    cleanFixture.window.document.querySelector("table").outerHTML;
+  cleanFixture.window.close();
+  const lineLayoutReads = [];
+  const { app, dom } = await startExtension(fixture, {}, {
+    intersectionObserverClass: TestIntersectionObserver,
+    lineLayoutReads,
+  });
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const officialControl = fileElement.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    const controllers = Array.from(app.controllersByRow.values());
+
+    assert.equal(controllers.length, 6);
+    assert.equal(
+      controllers.every((controller) => controller.lazyLineControls),
+      true,
+    );
+    assert.equal(lineControls(dom).length, 0);
+    assert.equal(lineLayoutReads.length, 0);
+    const expectedObservedLines = controllers.reduce(
+      (total, controller) =>
+        total +
+        Math.ceil(
+          controller.lines.length /
+            app.constants.LAZY_LINE_CONTROL_CHUNK_SIZE,
+        ),
+      0,
+    );
+    assert.equal(expectedObservedLines, 42);
+    assert.equal(observer.observed.size, expectedObservedLines);
+
+    const mutationAffectsDiff = app.mutationAffectsDiff.bind(app);
+    let mutationClassifications = 0;
+    app.mutationAffectsDiff = (...args) => {
+      mutationClassifications += 1;
+      return mutationAffectsDiff(...args);
+    };
+
+    officialControl.addEventListener("click", () => {
+      const viewed = officialControl.getAttribute("aria-pressed") !== "true";
+      officialControl.setAttribute(
+        "aria-label",
+        viewed ? "Viewed" : "Not Viewed",
+      );
+      officialControl.setAttribute("aria-pressed", String(viewed));
+      if (viewed) {
+        fileElement.querySelector("table")?.remove();
+      } else {
+        fileElement.insertAdjacentHTML("beforeend", cleanTable);
+      }
+    });
+
+    officialControl.click();
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(fileElement.querySelector("table"), null);
+    });
+    assert.equal(observer.observed.size, 0);
+    assert.equal(mutationClassifications, 0);
+    app.mutationAffectsDiff = mutationAffectsDiff;
+
+    const findHunkMarkers = app.findHunkMarkers.bind(app);
+    const discoverCachedHunks = app.discoverCachedHunks.bind(app);
+    let cachedDiscoveryCalls = 0;
+    app.discoverCachedHunks = (...args) => {
+      cachedDiscoveryCalls += 1;
+      return discoverCachedHunks(...args);
+    };
+    let synchronousHunkScans = 0;
+    app.findHunkMarkers = (...args) => {
+      synchronousHunkScans += 1;
+      return findHunkMarkers(...args);
+    };
+    officialControl.click();
+    assert.equal(synchronousHunkScans, 0);
+    app.findHunkMarkers = findHunkMarkers;
+    await Promise.resolve();
+    assert.equal(cachedDiscoveryCalls, 0);
+    assert.equal(app.fileRevealPrepaintRestores.size, 0);
+    assert.equal(app.controllersByRow.size, 0);
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 6);
+      assert.equal(app.fileRevealPrepaintRestores.size, 0);
+    });
+
+    const restoredControllers = Array.from(app.controllersByRow.values());
+    assert.equal(
+      restoredControllers.every((controller) => controller.lazyLineControls),
+      true,
+    );
+    assert.equal(lineControls(dom).length, 0);
+    assert.equal(lineLayoutReads.length, 0);
+    assert.equal(observer.observed.size, expectedObservedLines);
+
+    const observedTarget = Array.from(observer.observed).at(-1);
+    const observedLine = app.lineControllersByElement.get(observedTarget);
+    const materializedLineCount = observedLine.lazyControlChunk.length;
+    observer.intersect([observedTarget]);
+    assert.equal(lineControls(dom).length, materializedLineCount);
+    assert.equal(lineLayoutReads.length, materializedLineCount);
+    assert.equal(observer.observed.size, expectedObservedLines - 1);
+
+    const previousControl = observedLine.control;
+    previousControl.remove();
+    assert.equal(previousControl.isConnected, false);
+    app.updateControllerRows(
+      observedLine.controller,
+      [...observedLine.controller.groupRows],
+    );
+    assert.equal(observer.observed.has(observedTarget), true);
+
+    observer.intersect([observedTarget]);
+    assert.notEqual(observedLine.control, previousControl);
+    assert.equal(observedLine.control.isConnected, true);
+    assert.equal(lineControls(dom).length, materializedLineCount);
+    assert.equal(lineLayoutReads.length, materializedLineCount + 1);
+
+    const progressKey = app.fileProgressStateKey(
+      observedLine.controller.filePath,
+    );
+    const cachedProgress = app.fileProgressStateByKey.get(progressKey);
+    const storedReviewKey = cachedProgress.reviewKeyGroups.at(-1).at(-1);
+    app.reviewStorageKeys.add(storedReviewKey);
+    app.fileRevealPrepaintRestores.set(fileElement, { cachedProgress });
+    try {
+      assert.equal(app.finishCleanCachedFileReveal(fileElement), false);
+      assert.equal(app.fileRevealPrepaintRestores.has(fileElement), true);
+    } finally {
+      app.fileRevealPrepaintRestores.delete(fileElement);
+      app.reviewStorageKeys.delete(storedReviewKey);
+    }
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps newly materialized line controls disabled with their hunk", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = Array.from(app.controllersByRow.values())[0];
+    const clearLineControls = () => {
+      controller.lines.forEach((line) => {
+        line.control?.remove();
+        line.control = null;
+      });
+    };
+    const assertLineControlsDisabled = () => {
+      assert.equal(
+        controller.lines.every((line) => line.control?.disabled === true),
+        true,
+      );
+    };
+
+    controller.input.disabled = true;
+    clearLineControls();
+    app.applyControllerAppearance(controller);
+    assertLineControlsDisabled();
+
+    clearLineControls();
+    controller.lazyLineControls = true;
+    controller.materializedLazyLines = new Set();
+    app.observeLazyControllerLineControls(controller);
+    assert.equal(controller.lazyLineControls, false);
+    assertLineControlsDisabled();
   } finally {
     app.stop();
     dom.window.close();
@@ -995,7 +1332,7 @@ test("does not redraw review controls for storage changes that preserve visible 
   }
 });
 
-test("refreshes immediately when a manual Viewed click hides the diff", async () => {
+test("defers discovery when a manual Viewed click hides the diff", async () => {
   const { app, chrome, dom } = await startExtension(commitSelectionFixture());
   try {
     const scheduled = [];
@@ -1011,6 +1348,12 @@ test("refreshes immediately when a manual Viewed click hides the diff", async ()
     const filePath = app.resolveFilePath(fileElement, 0);
     const suppressionKey =
       await app.officialViewedSuppressionKey(filePath);
+    const discoverCachedHunks = app.discoverCachedHunks.bind(app);
+    let cachedDiscoveryCalls = 0;
+    app.discoverCachedHunks = (...args) => {
+      cachedDiscoveryCalls += 1;
+      return discoverCachedHunks(...args);
+    };
     officialControl.addEventListener("click", () => {
       officialControl.setAttribute("aria-label", "Viewed");
       officialControl.setAttribute("aria-pressed", "true");
@@ -1031,7 +1374,8 @@ test("refreshes immediately when a manual Viewed click hides the diff", async ()
       );
       assert.equal(suppressionKey in chrome.snapshot(), false);
     });
-    assert.equal(scheduled[0]?.immediate, true);
+    assert.equal(scheduled[0]?.immediate, false);
+    assert.equal(cachedDiscoveryCalls, 0);
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     app.stop();
@@ -2132,7 +2476,7 @@ test("does not couple manual intent persistence to retention pruning", async () 
   }
 });
 
-test("refreshes immediately when HunkMark Viewed sync hides the diff", async () => {
+test("defers discovery when HunkMark Viewed sync hides the diff", async () => {
   const { app, dom } = await startExtension(commitSelectionFixture());
   try {
     const scheduled = [];
@@ -2167,7 +2511,7 @@ test("refreshes immediately when HunkMark Viewed sync hides the diff", async () 
     });
     assert.equal(
       scheduled.some(({ immediate }) => immediate === true),
-      true,
+      false,
     );
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
@@ -2699,7 +3043,7 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
   }
 });
 
-test("restores cached controls before paint when GitHub expands a Viewed file", async () => {
+test("restores cached collapsed state before materializing line controls", async () => {
   const { app, dom } = await startExtension(commitSelectionFixture());
   try {
     await waitFor(() => {
@@ -2744,7 +3088,13 @@ test("restores cached controls before paint when GitHub expands a Viewed file", 
     );
     assert.equal(
       fileElement.querySelectorAll(".hunkmark-line-control").length,
-      2,
+      0,
+    );
+    assert.equal(
+      Array.from(app.controllersByRow.values()).every((controller) =>
+        controller.lines.every((line) => line.control === null),
+      ),
+      true,
     );
     assert.match(
       fileElement.querySelector(".hunkmark-file-progress").textContent,
@@ -2811,11 +3161,11 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     });
     assert.equal(
       scheduled.some(({ immediate }) => immediate === true),
-      true,
+      false,
     );
     assert.equal(app.fileDiffVisibilityPending.size, 0);
 
-    const immediateRefreshesAfterCollapse = scheduled.filter(
+    const immediateRefreshCountAfterCollapse = scheduled.filter(
       ({ immediate }) => immediate === true,
     ).length;
     const cachedDiscoveryRoots = recordCachedDiscoveryRoots(app);
@@ -2846,7 +3196,7 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     );
     assert.equal(
       scheduled.filter(({ immediate }) => immediate === true).length,
-      immediateRefreshesAfterCollapse,
+      immediateRefreshCountAfterCollapse,
     );
     assert.equal(cachedDiscoveryRoots.length > 0, true);
     assert.equal(
@@ -3125,12 +3475,24 @@ test("restores saved review state after a page reload", async () => {
   try {
     await waitFor(() => {
       const controls = lineControls(second.dom);
-      assert.equal(controls.length, 2);
-      assert.equal(controls[0].getAttribute("aria-pressed"), "true");
-      assert.equal(controls[1].getAttribute("aria-pressed"), "false");
+      const controllers = Array.from(second.app.controllersByRow.values());
+      assert.equal(controls.length, 1);
+      assert.equal(controls[0].getAttribute("aria-pressed"), "false");
+      assert.equal(controllers[0].collapsed, true);
+      assert.equal(controllers[0].lines[0].control, null);
+      assert.equal(controllers[1].lines[0].control, controls[0]);
+    });
+
+    const firstController = Array.from(
+      second.app.controllersByRow.values(),
+    )[0];
+    firstController.collapseButton.click();
+    await waitFor(() => {
+      assert.equal(firstController.collapsed, false);
+      assert.equal(lineControls(second.dom).length, 2);
       assert.equal(
-        Array.from(second.app.controllersByRow.values())[0].collapsed,
-        true,
+        firstController.lines[0].control?.getAttribute("aria-pressed"),
+        "true",
       );
     });
   } finally {
@@ -5327,44 +5689,51 @@ test("ignores DOM mutations unrelated to a diff", async () => {
   }
 });
 
-test("adds only the missing clearance below the final diff", async () => {
-  const { app, dom } = await startExtension(duplicateHunkFixture());
+test("uses the current React file container for panel clearance", async () => {
+  const { app, dom } = await startExtension(modernGridFixture());
   try {
     await waitFor(() => {
-      assert.equal(app.controllersByRow.size, 2);
+      assert.equal(app.controllersByRow.size, 1);
     });
     const panel = dom.window.document.getElementById("hunkmark-panel");
     const spacer = dom.window.document.getElementById("hunkmark-panel-spacer");
+    const fileElement = dom.window.document.querySelector(
+      "section.position-relative",
+    );
+    const pathButton = dom.window.document.querySelector(
+      "button[data-file-path]",
+    );
+    dom.window.document
+      .querySelector('button[aria-label="Not Viewed"]')
+      .remove();
+    Array.from(app.controllersByRow.values()).forEach((controller) =>
+      app.destroyController(controller),
+    );
+    fileElement
+      .querySelectorAll('[role="row"]')
+      .forEach((row) => row.remove());
+    fileElement.append(
+      Object.assign(dom.window.document.createElement("button"), {
+        textContent: "Load Diff",
+      }),
+    );
     panel.style.bottom = "18px";
     panel.getBoundingClientRect = () => ({ height: 40 });
-    Array.from(app.controllersByRow.values()).forEach((controller) => {
-      controller.groupRows.forEach((row) => {
-        row.getClientRects = () => [{ bottom: 400 }];
-        row.getBoundingClientRect = () => ({ bottom: 400 });
-      });
-    });
-    Object.defineProperty(dom.window.document.documentElement, "scrollHeight", {
-      configurable: true,
-      value: 500,
-    });
-    spacer.style.height = "0px";
+    fileElement.getBoundingClientRect = () => ({ bottom: 300 });
+    spacer.getBoundingClientRect = () => ({ top: 320 });
 
+    assert.equal(app.controllersByRow.size, 0);
+    assert.equal(app.lastPanelClearanceFile(), fileElement);
+    assert.notEqual(app.lastPanelClearanceFile(), pathButton);
     app.updatePanelClearance(panel, spacer);
-    assert.equal(spacer.style.height, "0px");
-
-    Object.defineProperty(dom.window.document.documentElement, "scrollHeight", {
-      configurable: true,
-      value: 420,
-    });
-    app.updatePanelClearance(panel, spacer);
-    assert.equal(spacer.style.height, "46px");
+    assert.equal(spacer.style.height, "54px");
   } finally {
     app.stop();
     dom.window.close();
   }
 });
 
-test("keeps the panel clear of a collapsed file below the final hunk", async () => {
+test("adds only the missing panel clearance after the last file", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
     await waitFor(() => {
@@ -5373,29 +5742,67 @@ test("keeps the panel clear of a collapsed file below the final hunk", async () 
     const panel = dom.window.document.getElementById("hunkmark-panel");
     const spacer = dom.window.document.getElementById("hunkmark-panel-spacer");
     panel.style.bottom = "18px";
-    panel.getBoundingClientRect = () => ({ height: 40 });
+    let panelLayoutReads = 0;
+    panel.getBoundingClientRect = () => {
+      panelLayoutReads += 1;
+      return { height: 40 };
+    };
+    const fileElement = Array.from(app.controllersByRow.values())[0].fileElement;
+    fileElement.getBoundingClientRect = () => ({ bottom: 300 });
+    let rowLayoutReads = 0;
     Array.from(app.controllersByRow.values()).forEach((controller) => {
       controller.groupRows.forEach((row) => {
-        row.getClientRects = () => [{ bottom: 400 }];
-        row.getBoundingClientRect = () => ({ bottom: 400 });
+        row.getClientRects = () => {
+          throw new Error("Panel clearance must not inspect row visibility");
+        };
+        row.getBoundingClientRect = () => {
+          rowLayoutReads += 1;
+          return { bottom: 400 };
+        };
       });
     });
+    Object.defineProperty(dom.window.document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 900,
+    });
+    spacer.getBoundingClientRect = () => ({ top: 400 });
+    spacer.style.height = "0px";
+    app.updatePanelClearance(panel, spacer, fileElement);
+    assert.equal(spacer.style.height, "74px");
+    assert.equal(rowLayoutReads, 1);
 
     const collapsedFile = dom.window.document.createElement("section");
     collapsedFile.className = "js-file";
-    collapsedFile.dataset.filePath = "src/collapsed.js";
-    collapsedFile.textContent = "src/collapsed.js";
-    collapsedFile.getClientRects = () => [{ bottom: 470 }];
+    collapsedFile.innerHTML = '<button aria-label="Expand file">Expand</button>';
     collapsedFile.getBoundingClientRect = () => ({ bottom: 470 });
     dom.window.document.body.insertBefore(collapsedFile, panel);
-    Object.defineProperty(dom.window.document.documentElement, "scrollHeight", {
-      configurable: true,
-      value: 500,
-    });
+    spacer.getBoundingClientRect = () => ({ top: 470 });
     spacer.style.height = "0px";
+    app.ensurePanelClearance(panel);
+    assert.equal(spacer.style.height, "74px");
 
-    app.updatePanelClearance(panel, spacer);
-    assert.equal(spacer.style.height, "44px");
+    const unresolvedFile = dom.window.document.createElement("section");
+    unresolvedFile.className = "js-file";
+    unresolvedFile.innerHTML = "<button>Load Diff</button>";
+    unresolvedFile.getBoundingClientRect = () => ({ bottom: 500 });
+    dom.window.document.body.insertBefore(unresolvedFile, panel);
+    spacer.getBoundingClientRect = () => ({ top: 500 });
+    spacer.style.height = "0px";
+    app.ensurePanelClearance(panel);
+    assert.equal(spacer.style.height, "74px");
+
+    spacer.getBoundingClientRect = () => ({ top: 600 });
+    spacer.style.height = "0px";
+    app.updatePanelClearance(panel, spacer, unresolvedFile);
+    assert.equal(spacer.style.height, "0px");
+
+    spacer.getBoundingClientRect = () => ({ top: 480 });
+    app.updatePanelClearance(panel, spacer, unresolvedFile);
+    assert.equal(spacer.style.height, "94px");
+
+    const layoutReadsBeforeStableEnsure = panelLayoutReads;
+    app.ensurePanelClearance(panel);
+    assert.equal(panelLayoutReads, layoutReadsBeforeStableEnsure);
   } finally {
     app.stop();
     dom.window.close();

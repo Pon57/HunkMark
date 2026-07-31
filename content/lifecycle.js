@@ -36,21 +36,29 @@
     },
 
     consumeExpectedFileDiffVisibility() {
-      let changed = false;
+      const settled = {
+        changed: false,
+        fileElements: new Set(),
+        revealed: false,
+      };
       this.fileDiffVisibilityPending.forEach((expectation, fileElement) => {
         if (!fileElement.isConnected) {
           this.cancelExpectedFileDiffVisibility(fileElement, expectation);
-          changed = true;
+          settled.changed = true;
+          settled.fileElements.add(fileElement);
+          settled.revealed ||= expectation.visible;
           return;
         }
         const visible =
           this.findHunkMarkers(fileElement).length > 0;
         if (visible === expectation.visible) {
           this.cancelExpectedFileDiffVisibility(fileElement, expectation);
-          changed = true;
+          settled.changed = true;
+          settled.fileElements.add(fileElement);
+          settled.revealed ||= visible;
         }
       });
-      return changed;
+      return settled;
     },
 
     controllerMatchesHunk(controller, hunk) {
@@ -180,6 +188,22 @@
         ]),
       );
       const seenRows = new Set(discovered.map((hunk) => hunk.hunkRow));
+      const lineCountsByFile = new Map();
+      discovered.forEach((hunk) => {
+        lineCountsByFile.set(
+          hunk.fileElement,
+          (lineCountsByFile.get(hunk.fileElement) ?? 0) + hunk.lines.length,
+        );
+      });
+      const lazyLineControlFiles = new Set(
+        Array.from(lineCountsByFile)
+          .filter(
+            ([, lineCount]) =>
+              lineCount >=
+              this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD,
+          )
+          .map(([fileElement]) => fileElement),
+      );
       const newControllers = [];
       const previousByController = new Map();
 
@@ -202,7 +226,15 @@
           controller.filePath = hunk.filePath;
           this.updateControllerRows(controller, hunk.groupRows);
         } else {
-          const newController = this.createController(hunk);
+          const lazyLineControls = lazyLineControlFiles.has(
+            hunk.fileElement,
+          );
+          const newController = this.createController(hunk, {
+            deferLineControls:
+              lazyLineControls ||
+              this.reviewStorageKeys.has(`${hunk.key}:collapsed`),
+            lazyLineControls,
+          });
           newControllers.push(newController);
           previousByController.set(
             newController,
@@ -223,10 +255,8 @@
         const keys = [
           ...new Set(
             newControllers.flatMap((controller) => [
-              controller.key,
-              controller.collapsedKey,
+              ...controller.reviewKeys,
               controller.officialSuppressionKey,
-              ...controller.lines.map((line) => line.key),
             ]),
           ),
         ];
@@ -292,7 +322,9 @@
                 (previousLine.contextFingerprint === line.contextFingerprint ||
                   (expandedByHost && previousLine.element === line.element));
               line.marked = storedMatches || previousMatches;
-              line.control.disabled = false;
+              if (line.control) {
+                line.control.disabled = false;
+              }
               if (storedLineReview !== undefined && !storedMatches) {
                 invalidatedLineReview = true;
                 if (this.storedLineReviewHasContext(storedLineReview)) {
@@ -601,21 +633,50 @@
         this.maintainFileRevealPrepaintRestores();
       }
 
-      const hostDiffMutations = mutations.filter(
-        (mutation) =>
-          !this.mutationIsExtensionOnly(mutation) &&
-          this.mutationAffectsDiff(mutation),
-      );
-      if (hostDiffMutations.length > 0) {
-        const expectedFileDiffVisibilityChanged =
-          this.consumeExpectedFileDiffVisibility();
+      const expectedFileDiffVisibility =
+        this.consumeExpectedFileDiffVisibility();
+      const hostDiffMutations = expectedFileDiffVisibility.changed
+        ? []
+        : mutations.filter(
+            (mutation) =>
+              !this.mutationIsExtensionOnly(mutation) &&
+              this.mutationAffectsDiff(mutation),
+          );
+      if (
+        expectedFileDiffVisibility.changed ||
+        hostDiffMutations.length > 0
+      ) {
         const progressRemoved =
+          !expectedFileDiffVisibility.changed &&
           this.removeProgressForFilesWithoutRenderedHunks();
-        const restoreRoot =
-          this.fileRevealRestoreRootForMutations(hostDiffMutations);
-        const restored =
-          this.preserveOfficialViewedRestoredState(restoreRoot) ||
-          this.restoreCachedFileControllers(restoreRoot);
+        const expectedRestoreRoots = [
+          ...Array.from(
+            this.fileRevealPrepaintRestores.keys(),
+          ).filter((fileElement) => fileElement.isConnected),
+          ...Array.from(
+            expectedFileDiffVisibility.fileElements,
+          ).filter((fileElement) => fileElement.isConnected),
+        ];
+        const uniqueExpectedRestoreRoots = [
+          ...new Set(expectedRestoreRoots),
+        ];
+        const restoreRoot = expectedFileDiffVisibility.changed
+          ? uniqueExpectedRestoreRoots.length === 1
+            ? uniqueExpectedRestoreRoots[0]
+            : this.document
+          : this.fileRevealRestoreRootForMutations(hostDiffMutations);
+        const expectedHideOnly =
+          expectedFileDiffVisibility.changed &&
+          !expectedFileDiffVisibility.revealed &&
+          this.fileRevealPrepaintRestores.size === 0;
+        // Removing a diff cannot expose review state that needs restoring.
+        // Avoid rediscovering every still-rendered file before the host can
+        // paint its Viewed/collapse update; the queued refresh handles cleanup.
+        const restored = expectedHideOnly
+          ? false
+          : this.finishCleanCachedFileReveal(restoreRoot) ||
+            this.preserveOfficialViewedRestoredState(restoreRoot) ||
+            this.restoreCachedFileControllers(restoreRoot);
         this.finishReadyFileRevealPrepaintRestores();
         const canDeferRefresh =
           restoreRoot !== this.document &&
@@ -623,9 +684,10 @@
           !this.fileRevealPrepaintRestores.has(restoreRoot);
         this.scheduleRefresh({
           immediate:
-            progressRemoved ||
-            (!canDeferRefresh &&
-              (expectedFileDiffVisibilityChanged || restored)),
+            !expectedHideOnly &&
+            (progressRemoved ||
+              (!canDeferRefresh &&
+                (expectedFileDiffVisibility.changed || restored))),
         });
       }
     },
