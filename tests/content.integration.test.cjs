@@ -628,6 +628,24 @@ function hiddenLargeDiffFixture(
     </body></html>`;
 }
 
+function nonHunkDiffFixture(
+  controlHtml = "",
+  { hidden = false } = {},
+) {
+  return `<!doctype html>
+    <html><body>
+      <div id="diff-binary" class="js-file" data-file-path="assets/logo.png">
+        <div class="file-header">
+          <span class="file-info">assets/logo.png</span>
+          ${controlHtml}
+        </div>
+        <div class="diff-body"${hidden ? " hidden" : ""}>
+          <div class="binary-diff">Binary file not shown.</div>
+        </div>
+      </div>
+    </body></html>`;
+}
+
 function evolvingCommitFixture(updated = false, officialViewed = null) {
   const officialControl =
     officialViewed === null
@@ -1276,6 +1294,59 @@ test("shows Load Diff immediately after a hidden large diff is revealed", async 
           callback(dom.window.performance.now());
         }
 
+        await waitFor(() => {
+          assertFileRevealState(dom, fileElement, diffBody, false);
+          assert.equal(app.fileRevealPrepaintRestores.size, 0);
+        });
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("shows stable non-hunk content immediately after a file reveal", async (t) => {
+  const cases = [
+    {
+      name: "file expansion",
+      html: nonHunkDiffFixture(
+        '<button aria-label="Expand file">Expand</button>',
+        { hidden: true },
+      ),
+      reveal: (fileElement, control) => {
+        control.setAttribute("aria-label", "Collapse file");
+        fileElement.querySelector(".diff-body").hidden = false;
+      },
+    },
+    {
+      name: "official Viewed removal",
+      html: initiallyViewedCommitSelectionFixture(),
+      reveal: (fileElement, control) => {
+        setOfficialViewed(control, false);
+        fileElement.insertAdjacentHTML(
+          "beforeend",
+          '<div class="diff-body"><div class="binary-diff">Binary file not shown.</div></div>',
+        );
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(scenario.html);
+      try {
+        installContentStyles(dom);
+        const fileElement = dom.window.document.querySelector(".js-file");
+        const control = fileElement.querySelector("button");
+        control.addEventListener("click", () => {
+          scenario.reveal(fileElement, control);
+        });
+
+        control.click();
+
+        const diffBody = fileElement.querySelector(".diff-body");
+        assertFileRevealState(dom, fileElement, diffBody, true);
         await waitFor(() => {
           assertFileRevealState(dom, fileElement, diffBody, false);
           assert.equal(app.fileRevealPrepaintRestores.size, 0);

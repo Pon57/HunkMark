@@ -439,6 +439,43 @@
       });
     },
 
+    fileRevealHasReadyNonHunkContent(fileElement, restore) {
+      const hostHiddenSelector =
+        '[data-hunkmark-ui], [hidden], [aria-hidden="true"], .d-none, ' +
+        "details:not([open])";
+      const mediaSelector = "img, svg, canvas, video, audio";
+      return Array.from(fileElement.children).some((child) => {
+        if (
+          child === restore.headerElement ||
+          restore.controlPathElements.includes(child) ||
+          child.matches(hostHiddenSelector) ||
+          child.closest("details:not([open])") ||
+          child.style.display === "none" ||
+          child.style.visibility === "hidden"
+        ) {
+          return false;
+        }
+
+        const visibleContent = child.cloneNode(true);
+        visibleContent
+          .querySelectorAll(hostHiddenSelector)
+          .forEach((element) => element.remove());
+        visibleContent.querySelectorAll("[style]").forEach((element) => {
+          if (
+            element.style.display === "none" ||
+            element.style.visibility === "hidden"
+          ) {
+            element.remove();
+          }
+        });
+        return (
+          this.cleanElementText(visibleContent).trim().length > 0 ||
+          visibleContent.matches(mediaSelector) ||
+          visibleContent.querySelector(mediaSelector) !== null
+        );
+      });
+    },
+
     controllersCoverRenderedHunks(fileElement, controllers) {
       const renderedHunkRows = new Set(
         this.findHunkMarkers(fileElement).map((marker) =>
@@ -800,18 +837,30 @@
         // Expanding a large file may reveal only GitHub's stable Load Diff
         // placeholder. It has no hunks to restore and is safe to show now;
         // the subsequent Load Diff click starts its own guarded restore.
+        const unresolvedDiff =
+          this.fileDiffHasUnresolvedContent(fileElement);
         const unresolvedPlaceholderReady =
           !restore.waitForResolvedContent &&
           renderedHunkRows.size === 0 &&
           this.fileDiffRevealControl(fileElement) !== null;
+        // Binary, image, empty-file, and metadata-only diffs can resolve to
+        // stable host content without ever rendering a hunk or Load Diff
+        // control. Release those once the host content itself is present.
+        const nonHunkContentReady =
+          !restore.waitForResolvedContent &&
+          renderedHunkRows.size === 0 &&
+          !unresolvedDiff &&
+          this.fileRevealHasReadyNonHunkContent(fileElement, restore);
         const controllersReady =
           controllers.length > 0 &&
           controllers.length === renderedHunkRows.size;
         if (
-          (!unresolvedPlaceholderReady && !controllersReady) ||
+          (!unresolvedPlaceholderReady &&
+            !nonHunkContentReady &&
+            !controllersReady) ||
           (restore.waitForResolvedContent &&
             !cachedFileComplete &&
-            this.fileDiffHasUnresolvedContent(fileElement)) ||
+            unresolvedDiff) ||
           controllers.some(
             (controller) =>
               controller.input.disabled ||
