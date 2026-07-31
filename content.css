@@ -206,6 +206,23 @@ body.hunkmark-line-dragging {
   display: none !important;
 }
 
+:is(
+  .hunkmark-file-reveal-restoring,
+  .hunkmark-file-reveal-restoring
+    .hunkmark-file-reveal-restore-control-path
+)
+  > :not(
+    .hunkmark-file-reveal-restore-control-path,
+    .hunkmark-file-reveal-restore-header,
+    [aria-busy="true"],
+    [aria-label^="Loading "],
+    [data-component="loadingSpinner"],
+    [data-component="Spinner"],
+    [role="progressbar"]
+  ) {
+  display: none !important;
+}
+
 .hunkmark-file-progress {
   background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #afb8c133));
   border: 1px solid var(--borderColor-muted, var(--color-border-muted, #d8dee4));

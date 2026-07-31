@@ -15,6 +15,13 @@
       "[data-file-path]",
       "copilot-diff-entry",
     ].join(", "),
+    FILE_REVEAL_LOADING_INDICATOR_SELECTOR: [
+      '[aria-busy="true"]',
+      '[aria-label^="Loading "]',
+      '[data-component="loadingSpinner"]',
+      '[data-component="Spinner"]',
+      '[role="progressbar"]',
+    ].join(", "),
     HUNK_ELEMENT_SELECTOR: [
       "td.blob-code-hunk",
       ".blob-code-hunk",
@@ -40,6 +47,7 @@
       '[data-testid*="diff-loading"]',
       '[data-testid*="load-diff"]',
       '[data-testid*="load-more"]',
+      '[role="region"][aria-label^="Loading "][id^="diff-"]',
       '[aria-busy="true"]',
     ].join(", "),
     PANEL_ID: "hunkmark-panel",
@@ -83,9 +91,10 @@
       this.nextOfficialViewedIntentGeneration = 0;
       this.fileDiffVisibilityPending = new Map();
       this.officialViewedRestoreGuards = new Map();
+      this.fileRevealPrepaintRestores = new Map();
       this.officialViewedSyncPending = new WeakSet();
       this.officialViewedSyncSuppressed = new Set();
-      this.fileExpandRestorePending = new Set();
+      this.fileRevealRestorePending = new Set();
       this.fileProgressStateByKey = new Map();
       this.lineReviewContextByKey = new Map();
       this.reviewContextAccessedAtById = new Map();
