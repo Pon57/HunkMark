@@ -9,6 +9,7 @@ A Chrome extension that adds hunk-level and line-level `Viewed` controls and hun
 ## Features
 
 - Mark individual hunks and added or deleted lines as `Viewed`
+- Keep the current hunk header visible while scrolling through a file
 - Drag line controls up or down to update a range at once
 - Automatically collapse reviewed hunks, with manual `Collapse / Expand` controls
 - Track review progress per file and across the page
@@ -47,7 +48,7 @@ See [PRIVACY.md](PRIVACY.md) for retention and data-handling details, and [ARCHI
 - GitHub.com pull request **Files changed** pages
 - Unified and split source diffs
 - Legacy table-based diffs and React/grid-based diffs
-- Chrome 114 or later with Manifest V3
+- Chrome 116 or later with Manifest V3
 
 GitHub Enterprise Server, individual commit diffs, and rich diffs are not currently supported.
 

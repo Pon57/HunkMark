@@ -189,12 +189,33 @@
       const officialViewedPendingKeys = persist
         ? this.beginOfficialViewedReviewPersistence(state.controllers)
         : [];
+      const navigationGeneration = this.hunkStickyNavigationGeneration;
+      const returnTarget = persist
+        ? Array.from(state.controllers).find((controller) => {
+            const original = state.originalControllers.get(controller);
+            return (
+              this.autoCollapseViewed &&
+              original?.marked === false &&
+              controller.marked &&
+              controller.hunkRow.classList.contains(
+                "hunkmark-sticky-hunk-active",
+              )
+            );
+          }) ?? null
+        : null;
+      const focusReturnTarget =
+        Boolean(returnTarget) &&
+        this.stickyHunkOriginFocusTarget(returnTarget);
+      let returnScrollPosition = null;
       let reviewStateKnown = true;
 
       try {
         if (persist) {
           const reviewMutation =
             this.buildLineDragReviewMutation(state);
+          if (returnTarget) {
+            returnScrollPosition = this.stickyHunkScrollPosition();
+          }
           await this.mutateReviewStorageAndReleaseOfficialViewed(
             state.controllers,
             reviewMutation,
@@ -229,6 +250,19 @@
           });
           if (persist && reviewStateKnown) {
             this.syncOfficialViewedForControllers(state.controllers);
+          }
+          if (
+            returnTarget &&
+            persist &&
+            reviewStateKnown &&
+            returnTarget.marked &&
+            returnTarget.collapsed
+          ) {
+            this.scheduleStickyHunkReturn(returnTarget.key, {
+              expectedScrollPosition: returnScrollPosition,
+              focusTarget: focusReturnTarget,
+              navigationGeneration,
+            });
           }
           this.window.setTimeout(() => {
             state.touched.forEach((lineController) => {

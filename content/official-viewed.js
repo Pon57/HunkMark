@@ -1094,7 +1094,7 @@
         candidatesByFile.set(hunk.fileElement, candidates);
       });
 
-      let restored = false;
+      const restorationPlans = [];
       candidatesByFile.forEach((candidates) => {
         const progressKey = candidates[0].progressKey;
         const explicitReveal =
@@ -1132,27 +1132,41 @@
           const collapsed = this.reviewStorageKeys.has(
             `${hunk.key}:collapsed`,
           );
-          const controller = this.createController(hunk, {
+          restorationPlans.push({
+            collapsed,
             deferLineControls: collapsed || lazyLineControls,
+            hunk,
             lazyLineControls,
+            lineStates,
           });
-          controller.lines.forEach((line, index) => {
-            line.marked = lineStates[index].marked;
-            if (line.control) {
-              line.control.disabled = false;
-            }
-          });
-          controller.marked =
-            controller.lines.length === 0 &&
-            this.reviewStorageKeys.has(controller.key);
-          controller.collapsed = collapsed;
-          this.updateAggregateFromLines(controller);
-          controller.input.disabled = false;
-          this.applyControllerAppearance(controller);
         });
-        restored = true;
       });
 
+      const hostLayouts = restorationPlans.map((plan) =>
+        this.measureControllerHostLayout(plan.hunk, plan),
+      );
+      restorationPlans.forEach((plan, planIndex) => {
+        const controller = this.createController(plan.hunk, {
+          deferLineControls: plan.deferLineControls,
+          hostLayout: hostLayouts[planIndex],
+          lazyLineControls: plan.lazyLineControls,
+        });
+        controller.lines.forEach((line, lineIndex) => {
+          line.marked = plan.lineStates[lineIndex].marked;
+          if (line.control) {
+            line.control.disabled = false;
+          }
+        });
+        controller.marked =
+          controller.lines.length === 0 &&
+          this.reviewStorageKeys.has(controller.key);
+        controller.collapsed = plan.collapsed;
+        this.updateAggregateFromLines(controller);
+        controller.input.disabled = false;
+        this.applyControllerAppearance(controller);
+      });
+
+      const restored = restorationPlans.length > 0;
       if (restored) {
         this.updateProgress();
       }

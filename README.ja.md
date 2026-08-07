@@ -9,6 +9,7 @@ GitHub の Pull Request にある **Files changed** 画面に、hunk 単位・�
 ## 主な機能
 
 - hunk と追加・削除行を個別に `Viewed` に設定
+- ファイル内のスクロール中も現在の hunk 見出しを固定表示
 - 行のコントロールを上下にドラッグして範囲をまとめて切り替え
 - 確認済み hunk を自動で折りたたみ、任意に `Collapse / Expand`
 - ファイルごと・ページ全体のレビュー進捗を表示
@@ -47,7 +48,7 @@ git clone https://github.com/Pon57/HunkMark.git
 - GitHub.com の Pull Request にある **Files changed** 画面
 - Unified / Split のソース diff
 - 従来のテーブル形式と React/grid 形式の diff
-- Chrome 114 以降（Manifest V3）
+- Chrome 116 以降（Manifest V3）
 
 GitHub Enterprise Server、コミット単体の diff、リッチ diff は現在の対象外です。
 

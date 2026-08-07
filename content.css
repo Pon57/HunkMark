@@ -1,5 +1,281 @@
+@property --hunkmark-sticky-hunk-top-clip {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --hunkmark-sticky-hunk-bottom-clip {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
 .hunkmark-hunk-cell {
+  box-sizing: border-box;
+  padding-right: calc(
+    var(--hunkmark-host-hunk-action-inset, 0px) +
+      var(--hunkmark-hunk-actions-clearance, 122px)
+  ) !important;
   position: relative;
+}
+
+.hunkmark-sticky-hunk-row {
+  background-color: var(--bgColor-default, var(--color-canvas-default, Canvas));
+}
+
+.hunkmark-sticky-hunk-row
+  button[class*="ExpandableHunkHeaderDiffLine-module__"]:not(
+    [class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+  ) {
+  align-self: stretch !important;
+  height: auto !important;
+}
+
+/* GitHub renders bidirectional context expansion as two buttons in a column.
+   Stretch that column against its row-flex sibling containing the wrapped hunk
+   text, then divide only the column's vertical axis. */
+.hunkmark-sticky-hunk-row
+  .d-flex.flex-column:has(
+    > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+  ) {
+  align-self: stretch !important;
+  height: auto !important;
+}
+
+.hunkmark-sticky-hunk-row
+  :has(
+    > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+  )
+  > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"] {
+  align-self: auto !important;
+  flex-basis: 0 !important;
+  flex-grow: 1 !important;
+  flex-shrink: 1 !important;
+  height: auto !important;
+}
+
+.hunkmark-sticky-file-header {
+  z-index: 5 !important;
+}
+
+/* Keep GitHub's original hunk row in flow. Its top clips until the text reaches
+   the sticky boundary; after pinning, its bottom clips at the same rate as the
+   following content. Reversing the scroll restores the bottom before the top,
+   with both phases driven entirely by CSS scroll timelines. */
+.hunkmark-sticky-hunk-candidate {
+  isolation: isolate;
+  position: relative;
+  z-index: 4;
+}
+
+.hunkmark-sticky-hunk-past {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hunkmark-sticky-hunk-past:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hunkmark-sticky-hunk-active {
+  clip-path: inset(
+    var(--hunkmark-sticky-hunk-content-inset, 0px)
+    0
+    var(--hunkmark-sticky-hunk-bottom-inset, 0px)
+    0
+  );
+  cursor: pointer;
+  position: sticky;
+  top: calc(
+    var(--hunkmark-sticky-hunk-top, 0px) -
+      var(--hunkmark-sticky-hunk-content-inset, 0px)
+  );
+  z-index: 3;
+}
+
+.hunkmark-sticky-hunk-active > :is(td, th) {
+  clip-path: inset(
+    var(--hunkmark-sticky-hunk-content-inset, 0px)
+    0
+    var(--hunkmark-sticky-hunk-bottom-inset, 0px)
+    0
+  );
+}
+
+@keyframes hunkmark-sticky-hunk-compress-a {
+  from {
+    --hunkmark-sticky-hunk-top-clip: 0px;
+  }
+
+  to {
+    --hunkmark-sticky-hunk-top-clip:
+      var(--hunkmark-sticky-hunk-content-inset, 0px);
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-compress-b {
+  from {
+    --hunkmark-sticky-hunk-top-clip: 0px;
+  }
+
+  to {
+    --hunkmark-sticky-hunk-top-clip:
+      var(--hunkmark-sticky-hunk-content-inset, 0px);
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-tail-a {
+  from {
+    --hunkmark-sticky-hunk-bottom-clip: 0px;
+  }
+
+  to {
+    --hunkmark-sticky-hunk-bottom-clip:
+      var(--hunkmark-sticky-hunk-bottom-inset, 0px);
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-tail-b {
+  from {
+    --hunkmark-sticky-hunk-bottom-clip: 0px;
+  }
+
+  to {
+    --hunkmark-sticky-hunk-bottom-clip:
+      var(--hunkmark-sticky-hunk-bottom-inset, 0px);
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-push-a {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(
+      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 24px))
+    );
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-push-b {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(
+      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 24px))
+    );
+  }
+}
+
+@keyframes hunkmark-sticky-hunk-fade-auxiliary {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.hunkmark-sticky-hunk-phase-a {
+  --hunkmark-sticky-hunk-compress-animation: hunkmark-sticky-hunk-compress-a;
+  --hunkmark-sticky-hunk-tail-animation: hunkmark-sticky-hunk-tail-a;
+}
+
+.hunkmark-sticky-hunk-phase-b {
+  --hunkmark-sticky-hunk-compress-animation: hunkmark-sticky-hunk-compress-b;
+  --hunkmark-sticky-hunk-tail-animation: hunkmark-sticky-hunk-tail-b;
+}
+
+.hunkmark-sticky-hunk-push-phase-a {
+  --hunkmark-sticky-hunk-push-animation: hunkmark-sticky-hunk-push-a;
+}
+
+.hunkmark-sticky-hunk-push-phase-b {
+  --hunkmark-sticky-hunk-push-animation: hunkmark-sticky-hunk-push-b;
+}
+
+.hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-pushing {
+  animation-name: var(--hunkmark-sticky-hunk-push-animation);
+  animation-duration: 1ms;
+  animation-fill-mode: both;
+  animation-timing-function: linear;
+  animation-timeline: scroll(root block);
+  animation-range:
+    var(--hunkmark-sticky-hunk-push-start)
+    var(--hunkmark-sticky-hunk-push-end);
+  will-change: transform;
+}
+
+.hunkmark-sticky-hunk-compressing {
+  animation-name:
+    var(--hunkmark-sticky-hunk-compress-animation),
+    var(--hunkmark-sticky-hunk-tail-animation);
+  animation-duration: 1ms, 1ms;
+  animation-fill-mode: both, forwards;
+  animation-timing-function: linear, linear;
+  animation-timeline: scroll(root block), scroll(root block);
+  animation-range:
+      var(--hunkmark-sticky-hunk-compress-start)
+      var(--hunkmark-sticky-hunk-compress-end),
+    var(--hunkmark-sticky-hunk-tail-start)
+      var(--hunkmark-sticky-hunk-tail-end);
+}
+
+.hunkmark-sticky-hunk-compressing,
+.hunkmark-sticky-hunk-compressing > :is(td, th) {
+  clip-path: inset(
+    var(--hunkmark-sticky-hunk-top-clip, 0px)
+    0
+    var(--hunkmark-sticky-hunk-bottom-clip, 0px)
+    0
+  );
+}
+
+/* The outgoing hunk can be compressing while the following hunk pushes it
+   away. Both behaviors animate the row, so a combined list is required;
+   otherwise the more-specific push rule replaces the two clip animations. */
+.hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-compressing.hunkmark-sticky-hunk-pushing {
+  animation-name:
+    var(--hunkmark-sticky-hunk-compress-animation),
+    var(--hunkmark-sticky-hunk-tail-animation),
+    var(--hunkmark-sticky-hunk-push-animation);
+  animation-duration: 1ms, 1ms, 1ms;
+  animation-fill-mode: both, forwards, both;
+  animation-timing-function: linear, linear, linear;
+  animation-timeline:
+    scroll(root block),
+    scroll(root block),
+    scroll(root block);
+  animation-range:
+      var(--hunkmark-sticky-hunk-compress-start)
+      var(--hunkmark-sticky-hunk-compress-end),
+    var(--hunkmark-sticky-hunk-tail-start)
+      var(--hunkmark-sticky-hunk-tail-end),
+    var(--hunkmark-sticky-hunk-push-start)
+      var(--hunkmark-sticky-hunk-push-end);
+}
+
+.hunkmark-sticky-hunk-compressing
+  .hunkmark-sticky-hunk-auxiliary {
+  animation-name: hunkmark-sticky-hunk-fade-auxiliary;
+  animation-duration: 1ms;
+  animation-fill-mode: both;
+  animation-timing-function: linear;
+  animation-timeline: scroll(root block);
+  animation-range:
+    var(--hunkmark-sticky-hunk-auxiliary-start)
+    var(--hunkmark-sticky-hunk-auxiliary-end);
+  pointer-events: none !important;
+}
+
+.hunkmark-sticky-hunk-active:not(.hunkmark-sticky-hunk-compressing)
+  .hunkmark-sticky-hunk-auxiliary {
+  visibility: hidden !important;
 }
 
 .hunkmark-hunk-actions {
@@ -14,6 +290,29 @@
   transform: translateY(-50%);
   visibility: visible !important;
   z-index: 2;
+}
+
+.hunkmark-sticky-return-button {
+  background: var(--button-default-bgColor-rest, var(--color-btn-bg, #f6f8fa));
+  border: 1px solid var(--button-default-borderColor-rest, var(--color-btn-border, #d0d7de));
+  border-radius: 6px;
+  clip-path: inset(50%);
+  color: var(--button-default-fgColor-rest, var(--color-btn-text, #24292f));
+  font: 600 12px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  right: calc(100% + 6px);
+  white-space: nowrap;
+  width: 1px;
+}
+
+.hunkmark-sticky-return-button:focus-visible {
+  clip-path: none;
+  height: 22px;
+  padding: 0 7px;
+  width: auto;
 }
 
 .hunkmark-control {
@@ -68,18 +367,49 @@
 }
 
 .hunkmark-collapse-button {
+  align-items: center;
   background: var(--button-default-bgColor-rest, var(--color-btn-bg, #f6f8fa));
   border: 1px solid var(--button-default-borderColor-rest, var(--color-btn-border, #d0d7de));
   border-radius: 6px;
   box-sizing: border-box;
   color: var(--button-default-fgColor-rest, var(--color-btn-text, #24292f));
   cursor: pointer;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 11px;
-  font-weight: 600;
+  display: inline-flex;
+  flex: 0 0 24px;
   height: 22px;
-  line-height: 18px;
-  padding: 0 7px;
+  justify-content: center;
+  max-width: 24px;
+  padding: 0;
+  transition: background-color 80ms ease-out, opacity 80ms ease-out;
+  width: 24px;
+}
+
+.hunkmark-collapse-button::before {
+  border-color: currentColor;
+  border-style: solid;
+  border-width: 0 1.5px 1.5px 0;
+  box-sizing: border-box;
+  content: "";
+  height: 8px;
+  transform: rotate(-135deg);
+  transition: transform 80ms ease-out;
+  width: 8px;
+}
+
+.hunkmark-collapse-button.is-collapsed::before {
+  transform: rotate(45deg);
+}
+
+.hunkmark-sticky-hunk-row .hunkmark-collapse-button {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hunkmark-sticky-hunk-row:is(:hover, :focus-within)
+  .hunkmark-collapse-button,
+.hunkmark-sticky-hunk-row .hunkmark-collapse-button.is-collapsed {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .hunkmark-collapse-button:hover {
@@ -357,9 +687,35 @@ body.hunkmark-line-dragging {
 }
 
 @media (hover: none) {
+  .hunkmark-sticky-hunk-row .hunkmark-collapse-button {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .hunkmark-line-control {
     opacity: 1;
     pointer-events: auto;
     transform: translate(0, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hunkmark-sticky-hunk-compressing
+    .hunkmark-sticky-hunk-auxiliary {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+
+  .hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-pushing {
+    animation-timing-function: steps(1, end);
+  }
+
+  .hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-compressing.hunkmark-sticky-hunk-pushing {
+    animation-timing-function: linear, linear, steps(1, end);
+  }
+
+  .hunkmark-collapse-button,
+  .hunkmark-collapse-button::before {
+    transition: none;
   }
 }

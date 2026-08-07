@@ -11,6 +11,7 @@
       hunk,
       {
         deferLineControls = false,
+        hostLayout = null,
         lazyLineControls = false,
       } = {},
     ) {
@@ -18,11 +19,28 @@
       actions.className = "hunkmark-hunk-actions";
       actions.setAttribute("data-hunkmark-ui", "true");
 
+      const returnButton = this.document.createElement("button");
+      returnButton.type = "button";
+      returnButton.className = "hunkmark-sticky-return-button";
+      returnButton.hidden = true;
+      returnButton.tabIndex = -1;
+      returnButton.textContent = "Return to hunk";
+      returnButton.title = "Return to this hunk's original position";
+      returnButton.setAttribute(
+        "aria-label",
+        "Return to this hunk's original position",
+      );
+
       const collapseButton = this.document.createElement("button");
       collapseButton.type = "button";
       collapseButton.className = "hunkmark-collapse-button";
       collapseButton.disabled = true;
       collapseButton.title = "Collapse this diff hunk";
+      collapseButton.setAttribute(
+        "aria-label",
+        "Collapse this diff hunk",
+      );
+      collapseButton.setAttribute("aria-expanded", "true");
 
       const label = this.document.createElement("label");
       label.className = this.constants.CONTROL_CLASS;
@@ -37,7 +55,7 @@
       text.textContent = "Viewed";
 
       label.append(input, text);
-      actions.append(collapseButton, label);
+      actions.append(returnButton, collapseButton, label);
 
       const controller = {
         ...hunk,
@@ -54,6 +72,9 @@
         marked: false,
         materializedLazyLines: lazyLineControls ? new Set() : null,
         observedLazyLines: new Set(),
+        returnButton,
+        stickyHunkAppliedCollapsed: false,
+        stickyHunkRowObserved: false,
         destroyed: false,
       };
 
@@ -62,10 +83,20 @@
         event.stopPropagation(),
       );
       input.addEventListener("change", () => {
-        void this.setHunkViewed(controller, input.checked);
+        void this.setHunkViewed(controller, input.checked, {
+          returnToOriginFromSticky:
+            input.checked &&
+            controller.hunkRow.classList.contains(
+              "hunkmark-sticky-hunk-active",
+            ),
+        });
       });
       collapseButton.addEventListener("click", () => {
         void this.setCollapsed(controller, !controller.collapsed);
+      });
+      returnButton.addEventListener("click", () => {
+        this.focusStickyHunkOrigin(controller);
+        this.scrollStickyHunkToOrigin(controller);
       });
 
       controller.lines = hunk.lines.map((line) =>
@@ -78,16 +109,17 @@
       ]);
       this.connectSplitLinePeers(controller);
 
-      // Read all host metrics before adding any HunkMark DOM. Interleaving a
-      // computed-style read with each line-control insertion forces repeated
-      // style and layout work on large hunks. Persisted collapsed hunks can
-      // defer this entire pass until the user expands them.
-      const lineLayouts = deferLineControls
-        ? null
-        : controller.lines.map((line) => this.measureLineHostLayout(line));
+      const { lineLayouts, safeHostHunkActionInset } =
+        hostLayout ??
+        this.measureControllerHostLayout(hunk, { deferLineControls });
 
       hunk.hunkCell.classList.add("hunkmark-hunk-cell");
+      hunk.hunkCell.style.setProperty(
+        "--hunkmark-host-hunk-action-inset",
+        `${safeHostHunkActionInset}px`,
+      );
       hunk.hunkCell.append(actions);
+      this.attachStickyHunkRow(controller);
       if (lineLayouts) {
         this.materializeControllerLineControls(controller, lineLayouts, {
           disabled: true,
@@ -96,6 +128,24 @@
 
       this.controllersByRow.set(hunk.hunkRow, controller);
       return controller;
+    },
+
+    measureControllerHostLayout(
+      hunk,
+      { deferLineControls = false } = {},
+    ) {
+      const lineLayouts = deferLineControls
+        ? null
+        : hunk.lines.map((line) => this.measureLineHostLayout(line));
+      const hostHunkPaddingRight = Number.parseFloat(
+        this.window.getComputedStyle(hunk.hunkCell).paddingRight,
+      );
+      const safeHostHunkActionInset = Number.isFinite(
+        hostHunkPaddingRight,
+      )
+        ? Math.min(Math.max(hostHunkPaddingRight, 0), 64)
+        : 0;
+      return { lineLayouts, safeHostHunkActionInset };
     },
 
     connectSplitLinePeers(controller) {
@@ -461,18 +511,29 @@
       controller.input.indeterminate = controller.indeterminate;
       controller.label.classList.toggle("is-viewed", controller.marked);
       controller.label.classList.toggle("is-partial", controller.indeterminate);
-      const collapseText = controller.collapsed ? "Expand" : "Collapse";
       const collapseTitle = controller.collapsed
         ? "Expand this diff hunk"
         : "Collapse this diff hunk";
-      if (controller.collapseButton.textContent !== collapseText) {
-        controller.collapseButton.textContent = collapseText;
-      }
+      controller.collapseButton.classList.toggle(
+        "is-collapsed",
+        controller.collapsed,
+      );
+      controller.collapseButton.setAttribute(
+        "aria-expanded",
+        String(!controller.collapsed),
+      );
+      controller.collapseButton.setAttribute(
+        "aria-label",
+        collapseTitle,
+      );
       if (controller.collapseButton.title !== collapseTitle) {
         controller.collapseButton.title = collapseTitle;
       }
       controller.collapseButton.disabled = controller.collapsePending;
 
+      const stickyLayoutChanged =
+        controller.stickyHunkAppliedCollapsed !== controller.collapsed;
+      controller.stickyHunkAppliedCollapsed = controller.collapsed;
       controller.groupRows.forEach((row) => {
         const isHeader = row === controller.hunkRow;
         row.classList.toggle(
@@ -480,6 +541,9 @@
           controller.collapsed && !isHeader,
         );
       });
+      if (stickyLayoutChanged) {
+        this.invalidateStickyHunkOrigins(controller.fileElement);
+      }
       controller.lines.forEach((line) => this.applyLineAppearance(line));
     },
 
@@ -634,10 +698,25 @@
     },
 
     async setCollapsed(controller, collapsed) {
+      const navigationGeneration = this.hunkStickyNavigationGeneration;
+      const returnTarget =
+        collapsed &&
+        controller.hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-active",
+        )
+          ? controller
+          : null;
+      const focusReturnTarget =
+        Boolean(returnTarget) &&
+        this.stickyHunkOriginFocusTarget(controller);
       controller.collapsed = collapsed;
       controller.collapsePending = true;
       this.applyControllerAppearance(controller);
+      const returnScrollPosition = returnTarget
+        ? this.stickyHunkScrollPosition()
+        : null;
 
+      let collapseStateKnown = true;
       try {
         if (collapsed) {
           await this.setReviewStorage({
@@ -650,20 +729,37 @@
           await this.removeReviewStorage(controller.collapsedKey);
         }
       } catch (error) {
-        await this.reconcileReviewControllersAfterFailure(
-          [controller],
-          error,
-          "HunkMark could not save collapsed state.",
-        );
+        collapseStateKnown =
+          await this.reconcileReviewControllersAfterFailure(
+            [controller],
+            error,
+            "HunkMark could not save collapsed state.",
+          );
       } finally {
         if (!this.stopped) {
           controller.collapsePending = false;
           this.applyControllerAppearance(controller);
+          if (
+            returnTarget &&
+            collapseStateKnown &&
+            controller.collapsed
+          ) {
+            this.scheduleStickyHunkReturn(returnTarget.key, {
+              expectedScrollPosition: returnScrollPosition,
+              focusTarget: focusReturnTarget,
+              navigationGeneration,
+            });
+          }
         }
       }
     },
 
-    async setHunkViewed(controller, viewed) {
+    async setHunkViewed(
+      controller,
+      viewed,
+      { returnToOriginFromSticky = false } = {},
+    ) {
+      const navigationGeneration = this.hunkStickyNavigationGeneration;
       const wasViewed = controller.marked;
       controller.marked = viewed;
       controller.indeterminate = false;
@@ -674,9 +770,21 @@
         controller,
         wasViewed,
       );
+      const returnTarget =
+        viewed &&
+        returnToOriginFromSticky &&
+        collapseTransition === "collapse"
+          ? controller
+          : null;
+      const focusReturnTarget =
+        Boolean(returnTarget) &&
+        this.stickyHunkOriginFocusTarget(controller);
       controller.collapsePending = Boolean(collapseTransition);
       this.applyControllerAppearance(controller);
       this.updateProgress();
+      const returnScrollPosition = returnTarget
+        ? this.stickyHunkScrollPosition()
+        : null;
 
       controller.input.disabled = true;
       const officialViewedPendingKeys =
@@ -732,11 +840,24 @@
           if (reviewStateKnown) {
             this.syncOfficialViewedForControllers([controller]);
           }
+          if (
+            returnTarget &&
+            reviewStateKnown &&
+            controller.marked &&
+            controller.collapsed
+          ) {
+            this.scheduleStickyHunkReturn(returnTarget.key, {
+              expectedScrollPosition: returnScrollPosition,
+              focusTarget: focusReturnTarget,
+              navigationGeneration,
+            });
+          }
         }
       }
     },
 
     async setLineViewed(lineController, viewed) {
+      const navigationGeneration = this.hunkStickyNavigationGeneration;
       const affectedLines = this.interactionLines(lineController);
       const affectedControllers = new Set(
         affectedLines.map((line) => line.controller),
@@ -752,6 +873,8 @@
       affectedLines.forEach((line) => {
         line.marked = viewed;
       });
+      let returnTarget = null;
+      let focusReturnTarget = null;
       affectedControllers.forEach((affectedController) => {
         this.updateAggregateFromLines(affectedController);
         const previous = previousControllers.get(affectedController);
@@ -762,9 +885,23 @@
         affectedController.collapsePending = Boolean(
           previous.collapseTransition,
         );
+        if (
+          !returnTarget &&
+          previous.collapseTransition === "collapse" &&
+          affectedController.hunkRow.classList.contains(
+            "hunkmark-sticky-hunk-active",
+          )
+        ) {
+          returnTarget = affectedController;
+          focusReturnTarget =
+            this.stickyHunkOriginFocusTarget(affectedController);
+        }
         this.applyControllerAppearance(affectedController);
       });
       this.updateProgress();
+      const returnScrollPosition = returnTarget
+        ? this.stickyHunkScrollPosition()
+        : null;
 
       affectedLines.forEach((line) => {
         if (line.control) {
@@ -837,6 +974,18 @@
           if (reviewStateKnown) {
             this.syncOfficialViewedForControllers(affectedControllers);
           }
+          if (
+            returnTarget &&
+            reviewStateKnown &&
+            returnTarget.marked &&
+            returnTarget.collapsed
+          ) {
+            this.scheduleStickyHunkReturn(returnTarget.key, {
+              expectedScrollPosition: returnScrollPosition,
+              focusTarget: focusReturnTarget,
+              navigationGeneration,
+            });
+          }
         }
       }
     },
@@ -869,6 +1018,7 @@
 
     destroyController(controller) {
       controller.destroyed = true;
+      this.detachStickyHunkRow(controller);
       if (controller.groupRows.every((row) => !row.isConnected)) {
         this.unobserveLazyControllerLineControls(controller);
         this.controllersByRow.delete(controller.hunkRow);
@@ -879,6 +1029,9 @@
       });
       controller.lines.forEach((line) => this.destroyLineController(line));
       controller.hunkCell?.classList.remove("hunkmark-hunk-cell");
+      controller.hunkCell?.style.removeProperty(
+        "--hunkmark-host-hunk-action-inset",
+      );
       controller.actions?.remove();
       this.controllersByRow.delete(controller.hunkRow);
     },
@@ -902,6 +1055,7 @@
       this.filePathByElement = new WeakMap();
       this.lineControlVisibilityObserver?.disconnect();
       this.lineControlVisibilityObserver = null;
+      this.cleanupStickyHunks();
       this.removePanel();
       this.document
         .getElementById(this.constants.RECONNECT_NOTICE_ID)

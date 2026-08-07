@@ -206,6 +206,7 @@
       );
       const newControllers = [];
       const previousByController = new Map();
+      const stickyControllersByFile = new Map();
 
       Array.from(this.controllersByRow.values()).forEach((controller) => {
         if (!controller.hunkRow.isConnected || !seenRows.has(controller.hunkRow)) {
@@ -215,31 +216,72 @@
 
       discovered.forEach((hunk) => {
         const existing = this.controllersByRow.get(hunk.hunkRow);
-
         if (existing && !this.controllerMatchesHunk(existing, hunk)) {
           this.destroyController(existing);
         }
+      });
 
-        const controller = this.controllersByRow.get(hunk.hunkRow);
+      // Batch every host style read for new hunks before any controller starts
+      // mutating the diff DOM. This avoids a read/write cycle per hunk on
+      // large files with many small hunks.
+      const newControllerOptionsByHunk = new Map();
+      discovered.forEach((hunk) => {
+        if (this.controllersByRow.has(hunk.hunkRow)) {
+          return;
+        }
+        const lazyLineControls = lazyLineControlFiles.has(
+          hunk.fileElement,
+        );
+        const deferLineControls =
+          lazyLineControls ||
+          this.reviewStorageKeys.has(`${hunk.key}:collapsed`);
+        newControllerOptionsByHunk.set(hunk, {
+          deferLineControls,
+          lazyLineControls,
+        });
+      });
+      newControllerOptionsByHunk.forEach((options, hunk) => {
+        options.hostLayout = this.measureControllerHostLayout(
+          hunk,
+          options,
+        );
+      });
+
+      discovered.forEach((hunk) => {
+        let controller = this.controllersByRow.get(hunk.hunkRow);
         if (controller) {
           controller.fileElement = hunk.fileElement;
           controller.filePath = hunk.filePath;
           this.updateControllerRows(controller, hunk.groupRows);
+          this.attachStickyHunkRow(controller);
         } else {
-          const lazyLineControls = lazyLineControlFiles.has(
-            hunk.fileElement,
+          controller = this.createController(
+            hunk,
+            newControllerOptionsByHunk.get(hunk),
           );
-          const newController = this.createController(hunk, {
-            deferLineControls:
-              lazyLineControls ||
-              this.reviewStorageKeys.has(`${hunk.key}:collapsed`),
-            lazyLineControls,
-          });
-          newControllers.push(newController);
+          newControllers.push(controller);
           previousByController.set(
-            newController,
+            controller,
             previousByHunk.get(hunk) ?? [],
           );
+        }
+        const stickyControllers =
+          stickyControllersByFile.get(hunk.fileElement) ?? [];
+        stickyControllers.push(controller);
+        stickyControllersByFile.set(hunk.fileElement, stickyControllers);
+      });
+
+      // Discovery already returns hunks in document order. Reuse that order
+      // and refresh only visible file headers once instead of sorting and
+      // measuring them again for every existing controller.
+      stickyControllersByFile.forEach((controllers, fileElement) => {
+        const state = this.hunkStickyStateByFile.get(fileElement);
+        if (!state) {
+          return;
+        }
+        this.syncStickyHunkControllerOrder(state, controllers);
+        if (state.visible) {
+          this.syncStickyHunkHeader(state);
         }
       });
 
@@ -612,6 +654,7 @@
       if (nextUrl === this.lastObservedUrl) {
         return false;
       }
+      this.cancelStickyHunkReturn();
       this.lastObservedUrl = nextUrl;
       this.scheduleRefresh();
       return true;
@@ -635,12 +678,18 @@
 
       const expectedFileDiffVisibility =
         this.consumeExpectedFileDiffVisibility();
+      const hostMutations = mutations.filter(
+        (mutation) => !this.mutationIsExtensionOnly(mutation),
+      );
+      if (hostMutations.length > 0) {
+        // Host DOM outside the diff can still move every cached hunk origin.
+        // Invalidate positions without paying for an unrelated rediscovery.
+        this.invalidateVisibleStickyHunkOrigins();
+      }
       const hostDiffMutations = expectedFileDiffVisibility.changed
         ? []
-        : mutations.filter(
-            (mutation) =>
-              !this.mutationIsExtensionOnly(mutation) &&
-              this.mutationAffectsDiff(mutation),
+        : hostMutations.filter(
+            (mutation) => this.mutationAffectsDiff(mutation),
           );
       if (
         expectedFileDiffVisibility.changed ||
@@ -719,6 +768,17 @@
         this.handleFileVisibilityClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
       this.boundNavigationChange = () => this.checkForNavigation();
+      this.boundStickyHunkLayout = () => this.scheduleStickyHunkLayout();
+      this.boundStickyHunkNavigationIntent = () => {
+        if (this.hunkStickyStateByFile.size > 0) {
+          this.cancelStickyHunkReturn();
+        }
+      };
+      this.boundStickyHunkResize = () => {
+        if (this.hunkStickyStateByFile.size > 0) {
+          this.invalidateVisibleStickyHunkLayouts({ refreshHeaders: true });
+        }
+      };
       this.boundWindowBlur = () => {
         if (this.dragState) {
           void this.finishLineDrag(true);
@@ -753,6 +813,16 @@
         { capture: true, passive: false },
       );
       this.document.addEventListener(
+        "pointerdown",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.addEventListener(
+        "keydown",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.addEventListener(
         "click",
         this.boundLineControlClick,
         true,
@@ -781,6 +851,15 @@
       );
       this.document.addEventListener("pjax:end", this.boundScheduleRefresh);
       this.window.addEventListener("popstate", this.boundScheduleRefresh);
+      this.window.addEventListener("scroll", this.boundStickyHunkLayout, {
+        passive: true,
+      });
+      this.window.addEventListener(
+        "wheel",
+        this.boundStickyHunkNavigationIntent,
+        { passive: true },
+      );
+      this.window.addEventListener("resize", this.boundStickyHunkResize);
       this.window.navigation?.addEventListener?.(
         "currententrychange",
         this.boundNavigationChange,
@@ -829,6 +908,16 @@
         true,
       );
       this.document.removeEventListener(
+        "pointerdown",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.removeEventListener(
+        "keydown",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.removeEventListener(
         "click",
         this.boundLineControlClick,
         true,
@@ -857,6 +946,12 @@
       );
       this.document.removeEventListener("pjax:end", this.boundScheduleRefresh);
       this.window.removeEventListener("popstate", this.boundScheduleRefresh);
+      this.window.removeEventListener("scroll", this.boundStickyHunkLayout);
+      this.window.removeEventListener(
+        "wheel",
+        this.boundStickyHunkNavigationIntent,
+      );
+      this.window.removeEventListener("resize", this.boundStickyHunkResize);
       this.window.navigation?.removeEventListener?.(
         "currententrychange",
         this.boundNavigationChange,

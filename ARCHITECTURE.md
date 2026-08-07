@@ -12,6 +12,7 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 | `content/review-storage.js` | Review-state retention and storage bounds |
 | `content/official-viewed.js` | One-way synchronization with GitHub's file-level Viewed control |
 | `content/controllers.js` | Hunk and line controllers, UI state, and persistence |
+| `content/sticky-hunk-*.js`, `content/sticky-hunks.js` | Shared sticky-hunk helpers, geometry, navigation, scroll layout, and observer/controller lifecycle |
 | `content/drag.js` | Drag-range selection and persistence |
 | `content/panel.js` | Progress UI, preferences, and current-page reset |
 | `content/lifecycle.js` | Refresh scheduling, DOM/storage observation, navigation, and teardown |
@@ -35,6 +36,7 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 
 ## Tests
 
-`tests/core.test.cjs` covers URL and commit-range scoping, domain-separated SHA-256 identity, two-generation cache rotation, parent/child storage identity, pull-request metadata, legacy review-key cleanup, invisible-Unicode identity, context fingerprints, and pure state rules. `tests/content.integration.test.cjs` boots the exact manifest script order in jsdom with a Chrome storage fake and exercises legacy-table and modern-grid discovery, bounded hashing of large changed blocks, commit evolution, semantic relocation and invisible-Unicode fail-closed behavior, viewer-independent state restoration, selected-commit isolation, duplicate-line fail-closed behavior, split linking, unresolved-diff gating, official Viewed synchronization and persisted manual suppression, reload restoration, client-side navigation, DOM replacement, drag shrinking, storage failure rollback, pull-request retention and eviction, range-scoped reset, post-write capacity enforcement, and mutation filtering both inside and outside review routes.
+`tests/core.test.cjs` covers URL and commit-range scoping, domain-separated SHA-256 identity, two-generation cache rotation, parent/child storage identity, pull-request metadata, legacy review-key cleanup, invisible-Unicode identity, context fingerprints, and pure state rules. `tests/content.integration.test.cjs` boots the exact manifest script order in jsdom with a Chrome storage fake and exercises legacy-table and modern-grid discovery, bounded hashing of large changed blocks, commit evolution, semantic relocation and invisible-Unicode fail-closed behavior, viewer-independent state restoration, selected-commit isolation, duplicate-line fail-closed behavior, split linking, unresolved-diff gating, official Viewed synchronization and persisted manual suppression, sticky hunk measurement and host-DOM replacement, reload restoration, client-side navigation, drag shrinking, storage failure rollback, pull-request retention and eviction, range-scoped reset, post-write capacity enforcement, and mutation filtering both inside and outside review routes.
 
-GitHub Actions runs `npm ci` and `npm run verify` for pushes to `main` and for pull requests.
+GitHub Actions runs `npm ci` and `npm run verify` for pushes to `main` and for
+pull requests.
