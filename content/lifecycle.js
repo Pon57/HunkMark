@@ -768,12 +768,7 @@
         this.handleFileVisibilityClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
       this.boundNavigationChange = () => this.checkForNavigation();
-      this.boundStickyHunkLayout = () => {
-        if (this.hunkStickyStateByFile.size === 0) {
-          return;
-        }
-        this.scheduleStickyHunkLayout();
-      };
+      this.boundStickyHunkLayout = () => this.scheduleStickyHunkLayout();
       this.boundStickyHunkNavigationIntent = () => {
         if (this.hunkStickyStateByFile.size > 0) {
           this.cancelStickyHunkReturn();

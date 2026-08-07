@@ -7266,6 +7266,62 @@ test("updates sticky layout only for intersecting files", async () => {
   }
 });
 
+test("does not schedule sticky layout when no file intersects", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    if (app.hunkStickyLayoutFrameId !== null) {
+      dom.window.cancelAnimationFrame(app.hunkStickyLayoutFrameId);
+      app.hunkStickyLayoutFrameId = null;
+    }
+    const [state] = app.hunkStickyStateByFile.values();
+    app.hunkStickyFileVisibilityObserver = { disconnect() {} };
+    app.hunkStickyVisibleStates.clear();
+    let frameRequests = 0;
+    dom.window.requestAnimationFrame = () => {
+      frameRequests += 1;
+      return frameRequests;
+    };
+
+    app.boundStickyHunkLayout();
+    assert.equal(frameRequests, 0);
+
+    app.hunkStickyVisibleStates.add(state);
+    app.boundStickyHunkLayout();
+    assert.equal(frameRequests, 1);
+    app.hunkStickyLayoutFrameId = null;
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps initial expanded appearance from invalidating sticky origins", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const host = dom.window.document.createElement("div");
+    host.innerHTML = duplicateHunkFixture().replaceAll(
+      "src/example.js",
+      "src/another.js",
+    );
+    const [hunk] = await app.discoverHunks(host);
+    const controller = app.createController(hunk);
+    let invalidations = 0;
+    app.invalidateStickyHunkOrigins = () => {
+      invalidations += 1;
+    };
+
+    app.applyControllerAppearance(controller);
+    assert.equal(invalidations, 0);
+
+    controller.collapsed = true;
+    app.applyControllerAppearance(controller);
+    assert.equal(invalidations, 1);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("defers sticky hunk observers and style reads until a file intersects", async () => {
   const intersectionObservers = [];
   const resizeObservers = [];

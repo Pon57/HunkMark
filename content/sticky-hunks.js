@@ -371,6 +371,8 @@
       if (
         this.stopped ||
         this.hunkStickyStateByFile.size === 0 ||
+        (this.hunkStickyFileVisibilityObserver &&
+          this.hunkStickyVisibleStates.size === 0) ||
         this.hunkStickyLayoutFrameId !== null
       ) {
         return;

@@ -73,6 +73,7 @@
         materializedLazyLines: lazyLineControls ? new Set() : null,
         observedLazyLines: new Set(),
         returnButton,
+        stickyHunkAppliedCollapsed: false,
         stickyHunkRowObserved: false,
         destroyed: false,
       };
