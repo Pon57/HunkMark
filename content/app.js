@@ -61,6 +61,7 @@
     REVIEW_STORAGE_LOCK_NAME: "hunkmark:review-storage:v3",
     REVIEW_STORAGE_PRUNE_INTERVAL_MS: 24 * 60 * 60 * 1000,
     REVIEW_STORAGE_MAX_ENTRIES: 25_000,
+    STICKY_HUNK_HEIGHT_PX: 24,
     ROW_CANDIDATE_SELECTOR: [
       "tr",
       '[role="row"]',
@@ -86,6 +87,17 @@
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
       this.lineControlVisibilityObserver = null;
+      this.hunkStickyHeaderObserver = null;
+      this.hunkStickyRowObserver = null;
+      this.hunkStickyControllerByRow = new WeakMap();
+      this.hunkStickyFileLayoutObserver = null;
+      this.hunkStickyFileVisibilityObserver = null;
+      this.hunkStickyFileByHeader = new WeakMap();
+      this.hunkStickyLayoutFrameId = null;
+      this.hunkStickyScrollFrameId = null;
+      this.hunkStickyNavigationGeneration = 0;
+      this.hunkStickyStateByFile = new Map();
+      this.hunkStickyVisibleStates = new Set();
       this.officialViewedProgrammaticClicks = new WeakSet();
       this.officialViewedIntentGenerationByKey = new Map();
       this.officialViewedReconcileGenerationByKey = new Map();

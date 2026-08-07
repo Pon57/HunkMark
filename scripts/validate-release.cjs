@@ -15,8 +15,8 @@ const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(
   manifest.minimum_chrome_version,
-  "114",
-  "Chrome 114 or later is required",
+  "116",
+  "Chrome 116 or later is required",
 );
 assert.equal(
   manifest.name,
@@ -139,7 +139,11 @@ const executableSource = executableFiles
   .join("\n");
 assert.doesNotMatch(executableSource, /\beval\s*\(/, "eval is not allowed");
 assert.doesNotMatch(executableSource, /\bnew\s+Function\s*\(/, "Dynamic code is not allowed");
-assert.doesNotMatch(executableSource, /https?:\/\//, "Executable code contains a remote URL");
+assert.doesNotMatch(
+  executableSource,
+  /https?:\/\//,
+  "Executable code contains a remote URL",
+);
 assert.doesNotMatch(
   executableSource,
   /octolytics-dimension-user_(?:id|login)|user-login/,
