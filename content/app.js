@@ -2,8 +2,22 @@
   "use strict";
 
   const namespace = root.HunkMarkContent ?? {};
+  const ACTIVE_DIFF_LOADING_SELECTOR = [
+    "include-fragment[src]",
+    '[data-testid*="diff-loading"]',
+    '[data-component="loadingSpinner"]',
+    '[data-component="Spinner"]',
+    '[role="region"][aria-label^="Loading "][id^="diff-"]',
+    '[role="progressbar"]',
+  ].join(", ");
+  const UNRESOLVED_DIFF_SELECTOR = [
+    ACTIVE_DIFF_LOADING_SELECTOR,
+    '[data-testid*="load-diff"]',
+    '[data-testid*="load-more"]',
+  ].join(", ");
 
   namespace.constants = Object.freeze({
+    ACTIVE_DIFF_LOADING_SELECTOR,
     CONTROL_CLASS: "hunkmark-control",
     FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
     FILE_CONTAINER_SELECTOR: [
@@ -16,8 +30,6 @@
       "copilot-diff-entry",
     ].join(", "),
     FILE_REVEAL_LOADING_INDICATOR_SELECTOR: [
-      '[aria-busy="true"]',
-      '[aria-label^="Loading "]',
       '[data-component="loadingSpinner"]',
       '[data-component="Spinner"]',
       '[role="progressbar"]',
@@ -42,16 +54,7 @@
       'input[type="checkbox"][name="viewed"]',
     ].join(", "),
     NAVIGATION_POLL_INTERVAL_MS: 250,
-    UNRESOLVED_DIFF_SELECTOR: [
-      "include-fragment[src]",
-      ".js-diff-load-container",
-      ".js-diff-progressive-container",
-      '[data-testid*="diff-loading"]',
-      '[data-testid*="load-diff"]',
-      '[data-testid*="load-more"]',
-      '[role="region"][aria-label^="Loading "][id^="diff-"]',
-      '[aria-busy="true"]',
-    ].join(", "),
+    UNRESOLVED_DIFF_SELECTOR,
     PANEL_ID: "hunkmark-panel",
     PANEL_SPACER_ID: "hunkmark-panel-spacer",
     RECONNECT_NOTICE_ID: "hunkmark-reconnect-notice",

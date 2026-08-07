@@ -249,6 +249,21 @@
         }
       }
 
+      // A Load Diff replacement can introduce a nested file container before
+      // GitHub gives that container its own path metadata. Keep the identity
+      // captured at click time so review keys remain stable across discovery.
+      const pendingRevealPath = Array.from(
+        this.fileRevealPrepaintRestores,
+      ).find(
+        ([revealRoot]) =>
+          revealRoot.isConnected &&
+          (revealRoot === fileElement || revealRoot.contains(fileElement)),
+      )?.[1]?.filePath;
+      if (pendingRevealPath) {
+        this.filePathByElement.set(fileElement, pendingRevealPath);
+        return pendingRevealPath;
+      }
+
       const stableId = fileElement.id || fileElement.getAttribute("data-testid");
       return stableId
         ? `unknown-file:${stableId}`

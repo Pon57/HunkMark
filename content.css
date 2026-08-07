@@ -544,8 +544,6 @@ body.hunkmark-line-dragging {
   > :not(
     .hunkmark-file-reveal-restore-control-path,
     .hunkmark-file-reveal-restore-header,
-    [aria-busy="true"],
-    [aria-label^="Loading "],
     [data-component="loadingSpinner"],
     [data-component="Spinner"],
     [role="progressbar"]

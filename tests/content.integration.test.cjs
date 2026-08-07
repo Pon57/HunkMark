@@ -624,7 +624,7 @@ function initiallyViewedCommitSelectionFixture() {
 }
 
 function loadDiffPlaceholderHtml() {
-  return `<div class="load-diff-container">
+  return `<div class="js-diff-load-container">
     <div class="load-diff-placeholder">
       <div class="loading-skeleton">Loading preview</div>
       <button>Load Diff</button>
@@ -633,16 +633,42 @@ function loadDiffPlaceholderHtml() {
   </div>`;
 }
 
-function loadDiffFixture({ loaded = false } = {}) {
+function loadDiffFixture({
+  activeLoading = false,
+  loaded = false,
+  nonHunk = false,
+  reactRegionLoading = false,
+  staticLoadMore = false,
+} = {}) {
   const content = loaded
-    ? `<table><tbody>
-        <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
-        <tr><td class="blob-num">1</td><td class="blob-code-addition">+loaded</td></tr>
-      </tbody></table>`
+    ? `<div class="js-diff-load-container">
+        ${
+          activeLoading
+            ? '<span data-component="loadingSpinner"><span data-component="Spinner">Loading</span></span>'
+            : ""
+        }
+        ${
+          staticLoadMore
+            ? '<button data-testid="load-more-lines">Load more lines</button>'
+            : ""
+        }
+        ${
+          nonHunk
+            ? '<div class="binary-diff">Binary file not shown.</div>'
+            : `<table><tbody>
+                <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+                <tr><td class="blob-num">1</td><td class="blob-code-addition">+loaded</td></tr>
+              </tbody></table>`
+        }
+      </div>`
     : loadDiffPlaceholderHtml();
   return `<!doctype html>
     <html><body>
-      <div id="diff-large" class="js-file" data-file-path="src/large-diff.js">
+      <div id="diff-large" class="js-file" data-file-path="src/large-diff.js"${
+        reactRegionLoading
+          ? ' role="region" aria-label="Loading src/large-diff.js"'
+          : ""
+      }>
         <div class="file-header"><span class="file-info">src/large-diff.js</span></div>
         <div class="diff-body">${content}</div>
       </div>
@@ -1524,13 +1550,15 @@ test("does not hide an already-rendered diff when Viewed is removed", async () =
   }
 });
 
-test("hides Load Diff content until review controls are ready", async () => {
+test("releases a ready loaded diff inside GitHub's persistent load container", async () => {
   const { app, dom } = await startExtension(loadDiffFixture());
   const reviewRead = delayReviewStorageRead(app);
   try {
     const fileElement = dom.window.document.querySelector(".js-file");
     installContentStyles(dom);
-    const loadedFixture = new JSDOM(loadDiffFixture({ loaded: true }));
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({ loaded: true }),
+    );
     const loadedFileHtml =
       loadedFixture.window.document.querySelector(".js-file").outerHTML;
     loadedFixture.window.close();
@@ -1582,7 +1610,7 @@ test("hides Load Diff content until review controls are ready", async () => {
       assertFileRevealState(
         dom,
         replacementFileElement,
-        table.parentElement,
+        table.closest(".diff-body"),
         true,
       );
       assert.equal(
@@ -1592,10 +1620,14 @@ test("hides Load Diff content until review controls are ready", async () => {
     });
     await reviewRead.started;
     assert.equal(app.controllersByRow.size, 1);
-    assertFileRevealState(
-      dom,
-      replacementFileElement,
-      replacementFileElement.querySelector("table").parentElement,
+    // GitHub's replacement can introduce a different nested file container,
+    // causing discovery to resolve a different fallback path for the same row.
+    Array.from(app.controllersByRow.values())[0].filePath =
+      "unknown-file:replacement";
+    assert.equal(
+      replacementFileElement.classList.contains(
+        "hunkmark-file-reveal-restoring",
+      ),
       true,
     );
     assert.equal(cachedDiscoveryRoots.length, 0);
@@ -1606,7 +1638,7 @@ test("hides Load Diff content until review controls are ready", async () => {
       assertFileRevealState(
         dom,
         replacementFileElement,
-        replacementFileElement.querySelector("table").parentElement,
+        replacementFileElement.querySelector(".diff-body"),
         false,
       );
       assert.equal(
@@ -1619,6 +1651,343 @@ test("hides Load Diff content until review controls are ready", async () => {
     });
   } finally {
     reviewRead.release();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps a loaded diff guarded while cached content is still missing", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const filePath = app.resolveFilePath(fileElement, 0);
+    app.fileProgressStateByKey.set(app.fileProgressStateKey(filePath), {
+      hunks: 2,
+      lines: 2,
+    });
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({ activeLoading: true, loaded: true }),
+    );
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    const loadButton = fileElement.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+
+    let replacementFileElement;
+    await waitFor(() => {
+      replacementFileElement = dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      assert.equal(app.controllersByRow.size, 1);
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        true,
+      );
+    });
+
+    replacementFileElement
+      .querySelector('[data-component="loadingSpinner"]')
+      .remove();
+    app.finishReadyFileRevealPrepaintRestores();
+    assertFileRevealState(
+      dom,
+      replacementFileElement,
+      replacementFileElement.querySelector(".diff-body"),
+      false,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps an actively loading partial diff guarded without cached progress", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({
+        activeLoading: true,
+        loaded: true,
+      }),
+    );
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    const loadButton = fileElement.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+
+    let replacementFileElement;
+    await waitFor(() => {
+      replacementFileElement = dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      assert.equal(app.controllersByRow.size, 1);
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        true,
+      );
+    });
+
+    replacementFileElement
+      .querySelector('[data-component="loadingSpinner"]')
+      .remove();
+    app.finishReadyFileRevealPrepaintRestores();
+    assertFileRevealState(
+      dom,
+      replacementFileElement,
+      replacementFileElement.querySelector(".diff-body"),
+      false,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps a current React diff-region skeleton guarded without a spinner", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({ loaded: true, reactRegionLoading: true }),
+    );
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    const loadButton = fileElement.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+    const pendingRestore = app.fileRevealPrepaintRestores.get(fileElement);
+    const originalLoadingStateObserver =
+      pendingRestore.loadingStateAttributeObserver;
+    assert.ok(originalLoadingStateObserver);
+
+    let replacementFileElement;
+    await waitFor(() => {
+      replacementFileElement = dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(
+        app.fileDiffHasActiveLoadingContent(replacementFileElement),
+        true,
+      );
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        true,
+      );
+    });
+    assert.equal(
+      app.fileRevealPrepaintRestores.get(replacementFileElement),
+      pendingRestore,
+    );
+    assert.notEqual(
+      pendingRestore.loadingStateAttributeObserver,
+      originalLoadingStateObserver,
+    );
+    fileElement.setAttribute("aria-label", "Loading stale replacement");
+    assert.equal(originalLoadingStateObserver.takeRecords().length, 0);
+
+    replacementFileElement.removeAttribute("aria-label");
+    assert.equal(
+      app.fileDiffHasActiveLoadingContent(replacementFileElement),
+      false,
+    );
+    await waitFor(() => {
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        false,
+      );
+      assert.equal(app.fileRevealPrepaintRestores.size, 0);
+      assert.equal(pendingRestore.loadingStateAttributeObserver, null);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("releases a loaded diff that retains a static Load more control", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({ loaded: true, staticLoadMore: true }),
+    );
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    const loadButton = fileElement.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+
+    await waitFor(() => {
+      const replacementFileElement =
+        dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(
+        app.fileDiffHasUnresolvedContent(replacementFileElement),
+        true,
+      );
+      assert.equal(
+        app.fileDiffHasActiveLoadingContent(replacementFileElement),
+        false,
+      );
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        false,
+      );
+      assert.equal(app.fileRevealRestorePending.size, 0);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("preserves cached review identity across a nested Load Diff replacement", async () => {
+  const { app, dom } = await startExtension(
+    loadDiffFixture({ loaded: true }),
+  );
+  try {
+    installContentStyles(dom);
+    const originalController = controllerAt(app);
+    const originalFilePath = originalController.filePath;
+    const originalKey = originalController.key;
+    changeCheckbox(dom, originalController.input, true);
+    await waitFor(() => {
+      assert.equal(originalController.marked, true);
+      assert.equal(
+        originalController.lines.every((line) =>
+          app.reviewStorageKeys.has(line.key),
+        ),
+        true,
+      );
+    });
+
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const diffBody = fileElement.querySelector(".diff-body");
+    diffBody.innerHTML = loadDiffPlaceholderHtml();
+    await waitFor(() => assert.equal(app.controllersByRow.size, 0));
+
+    const loadButton = diffBody.querySelector("button");
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        diffBody.innerHTML = `<div data-testid="diff-file-replacement">
+          <table><tbody>
+            <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+            <tr><td class="blob-num">1</td><td class="blob-code-addition">+loaded</td></tr>
+          </tbody></table>
+        </div>`;
+      }, 0);
+    });
+
+    loadButton.click();
+
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 1);
+      const replacementController = controllerAt(app);
+      assert.equal(replacementController.input.disabled, false);
+      assert.equal(replacementController.filePath, originalFilePath);
+      assert.equal(replacementController.key, originalKey);
+      assert.equal(replacementController.marked, true);
+      assert.equal(app.fileRevealPrepaintRestores.size, 0);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("releases stable non-hunk content after Load Diff resolves", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const loadButton = fileElement.querySelector("button");
+    installContentStyles(dom);
+    const loadedFixture = new JSDOM(
+      loadDiffFixture({ loaded: true, nonHunk: true }),
+    );
+    const loadedFileHtml =
+      loadedFixture.window.document.querySelector(".js-file").outerHTML;
+    loadedFixture.window.close();
+    loadButton.addEventListener("click", () => {
+      dom.window.setTimeout(() => {
+        const replacementTemplate = dom.window.document.createElement(
+          "template",
+        );
+        replacementTemplate.innerHTML = loadedFileHtml;
+        fileElement.replaceWith(replacementTemplate.content.firstElementChild);
+      }, 0);
+    });
+
+    loadButton.click();
+
+    await waitFor(() => {
+      const replacementFileElement =
+        dom.window.document.querySelector(".js-file");
+      assert.notEqual(replacementFileElement, fileElement);
+      assertFileRevealState(
+        dom,
+        replacementFileElement,
+        replacementFileElement.querySelector(".diff-body"),
+        false,
+      );
+      assert.equal(app.fileRevealRestorePending.size, 0);
+    });
+  } finally {
     app.stop();
     dom.window.close();
   }
@@ -3188,9 +3557,6 @@ test("synchronizes modern file progress with expand and collapse before paint", 
         return;
       }
       fileToggleLabel.textContent = "Collapse file";
-      fileElement
-        .querySelector(".Diff-module__diffHeaderWrapper__VTI5w")
-        .setAttribute("aria-busy", "true");
       fileElement.insertAdjacentHTML("beforeend", rowsHtml);
     });
 
@@ -3233,12 +3599,6 @@ test("synchronizes modern file progress with expand and collapse before paint", 
     assert.match(
       fileElement.querySelector(".hunkmark-file-progress").textContent,
       /Hunks 0\/1 · Lines 0\/2/,
-    );
-    assert.equal(
-      fileElement
-        .querySelector(".Diff-module__diffHeaderWrapper__VTI5w")
-        .getAttribute("aria-busy"),
-      "true",
     );
     assert.equal(
       scheduled.filter(({ immediate }) => immediate === true).length,
@@ -4200,6 +4560,44 @@ test("does not sync official Viewed while diff content is unresolved", async () 
       assert.equal(officialClicks, 1);
       assert.equal(officialControl.getAttribute("aria-pressed"), "true");
     });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("does not sync official Viewed while a host loading spinner remains", async () => {
+  const fixture = contextualLineFixture({ officialControl: true }).replace(
+    "<table>",
+    '<div class="js-diff-progressive-container"><span data-component="Spinner">Loading</span></div><table>',
+  );
+  const { app, dom } = await startExtension(fixture);
+  try {
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    let officialClicks = 0;
+    officialControl.addEventListener("click", () => {
+      officialClicks += 1;
+      officialControl.setAttribute("aria-label", "Viewed");
+      officialControl.setAttribute("aria-pressed", "true");
+    });
+    const controller = controllerAt(app);
+    changeCheckbox(dom, controller.input, true);
+    await waitFor(() => {
+      assert.equal(controller.marked, true);
+      assert.equal(controller.input.disabled, false);
+    });
+    assert.equal(officialClicks, 0);
+
+    dom.window.document.querySelector('[data-component="Spinner"]').remove();
+    changeCheckbox(dom, controller.input, false);
+    await waitFor(() => {
+      assert.equal(controller.marked, false);
+      assert.equal(controller.input.disabled, false);
+    });
+    changeCheckbox(dom, controller.input, true);
+    await waitFor(() => assert.equal(officialClicks, 1));
   } finally {
     app.stop();
     dom.window.close();
