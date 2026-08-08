@@ -409,11 +409,33 @@
       );
     },
 
-    fileDiffHasUnresolvedContent(fileElement) {
+    fileElementHasHostMatch(fileElement, selector) {
       if (
-        fileElement.matches(this.constants.UNRESOLVED_DIFF_SELECTOR) ||
-        fileElement.querySelector(this.constants.UNRESOLVED_DIFF_SELECTOR)
+        fileElement.matches(selector) &&
+        !this.extensionOwnsNode(fileElement)
       ) {
+        return true;
+      }
+      for (const element of fileElement.querySelectorAll(selector)) {
+        if (!this.extensionOwnsNode(element)) {
+          return true;
+        }
+      }
+      return false;
+    },
+
+    fileDiffHasActiveLoadingContent(fileElement) {
+      return this.fileElementHasHostMatch(
+        fileElement,
+        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
+      );
+    },
+
+    fileDiffHasUnresolvedContent(fileElement) {
+      if (this.fileElementHasHostMatch(
+        fileElement,
+        this.constants.UNRESOLVED_DIFF_SELECTOR,
+      )) {
         return true;
       }
 
@@ -635,6 +657,30 @@
       restore.controlPathElements = [];
     },
 
+    observeFileRevealLoadingState(fileElement, restore) {
+      restore.loadingStateAttributeObserver?.disconnect();
+      restore.loadingStateAttributeObserver = null;
+      if (!restore.waitForResolvedContent) {
+        return;
+      }
+
+      // GitHub's current React diff root uses aria-label="Loading <path>"
+      // without a spinner while its content is unresolved. The main observer
+      // intentionally watches child-list changes only, so observe this root
+      // attribute for the lifetime of the Load Diff restore.
+      const observer = new this.window.MutationObserver(() => {
+        if (this.fileRevealPrepaintRestores.get(fileElement) !== restore) {
+          return;
+        }
+        this.finishReadyFileRevealPrepaintRestores();
+      });
+      observer.observe(fileElement, {
+        attributeFilter: ["aria-label"],
+        attributes: true,
+      });
+      restore.loadingStateAttributeObserver = observer;
+    },
+
     maintainFileRevealPrepaintRestores() {
       // GitHub replaces the complete file region when Load Diff resolves.
       // Move the pre-paint guard to that replacement before the browser paints.
@@ -667,6 +713,8 @@
             : null;
 
         this.fileRevealPrepaintRestores.delete(fileElement);
+        restore.loadingStateAttributeObserver?.disconnect();
+        restore.loadingStateAttributeObserver = null;
         this.clearFileRevealPrepaintClasses(fileElement, restore);
         if (restore.timeoutId !== null) {
           this.window.clearTimeout(restore.timeoutId);
@@ -710,6 +758,7 @@
             "hunkmark-file-reveal-restore-control-path",
           ),
         );
+        this.observeFileRevealLoadingState(replacement, restore);
         restore.timeoutId = this.window.setTimeout(
           () => this.finishFileRevealPrepaintRestore(replacement, restore),
           Math.max(0, restore.expiresAt - Date.now()),
@@ -763,6 +812,7 @@
         filePath,
         headerElement,
         loadingPresentationElement: null,
+        loadingStateAttributeObserver: null,
         readinessFrameId: null,
         timeoutId: null,
         waitForResolvedContent,
@@ -775,6 +825,7 @@
           "hunkmark-file-reveal-restore-control-path",
         ),
       );
+      this.observeFileRevealLoadingState(fileElement, restore);
       restore.timeoutId = this.window.setTimeout(
         () => this.finishFileRevealPrepaintRestore(fileElement, restore),
         timeoutMs,
@@ -857,6 +908,8 @@
         this.window.cancelAnimationFrame(restore.readinessFrameId);
         restore.readinessFrameId = null;
       }
+      restore.loadingStateAttributeObserver?.disconnect();
+      restore.loadingStateAttributeObserver = null;
       this.clearFileRevealPrepaintClasses(fileElement, restore);
     },
 
@@ -871,24 +924,38 @@
             this.semanticRow(marker),
           ),
         );
-        const controllers = Array.from(
+        // Match controllers by the rendered rows in the current replacement.
+        // GitHub may resolve the same file through a different nested container,
+        // which can legitimately change its fallback file path.
+        const renderedControllers = Array.from(
           renderedHunkRows,
           (row) => this.controllersByRow.get(row),
         ).filter(
           (controller) =>
             controller?.hunkRow.isConnected &&
-            controller.filePath === restore.filePath,
+            fileElement.contains(controller.hunkRow),
         );
-        const cachedFileComplete =
-          restore.cachedProgress?.hunks === controllers.length &&
-          restore.cachedProgress?.lines === controllers.reduce(
-            (total, controller) => total + controller.lines.length,
-            0,
-          );
+        // Cached counts detect a partial render even after GitHub has mounted
+        // some hunk rows. Active host loading indicators are handled below.
+        const cachedFileIncomplete = Boolean(
+          restore.cachedProgress &&
+          (restore.cachedProgress.hunks > renderedControllers.length ||
+            restore.cachedProgress.lines >
+              renderedControllers.reduce(
+                (total, controller) => total + controller.lines.length,
+                0,
+              )),
+        );
+        const activeLoadingContent =
+          restore.waitForResolvedContent &&
+          this.fileDiffHasActiveLoadingContent(fileElement);
         // Expanding a large file may reveal only GitHub's stable Load Diff
         // placeholder. It has no hunks to restore and is safe to show now;
         // the subsequent Load Diff click starts its own guarded restore.
         const unresolvedDiff =
+          (renderedHunkRows.size === 0 ||
+            (restore.waitForResolvedContent &&
+              (cachedFileIncomplete || activeLoadingContent))) &&
           this.fileDiffHasUnresolvedContent(fileElement);
         const unresolvedPlaceholderReady =
           !restore.waitForResolvedContent &&
@@ -898,21 +965,20 @@
         // stable host content without ever rendering a hunk or Load Diff
         // control. Release those once the host content itself is present.
         const nonHunkContentReady =
-          !restore.waitForResolvedContent &&
           renderedHunkRows.size === 0 &&
           !unresolvedDiff &&
           this.fileRevealHasReadyNonHunkContent(fileElement, restore);
         const controllersReady =
-          controllers.length > 0 &&
-          controllers.length === renderedHunkRows.size;
+          renderedControllers.length > 0 &&
+          renderedControllers.length === renderedHunkRows.size;
         if (
           (!unresolvedPlaceholderReady &&
             !nonHunkContentReady &&
             !controllersReady) ||
           (restore.waitForResolvedContent &&
-            !cachedFileComplete &&
+            (cachedFileIncomplete || activeLoadingContent) &&
             unresolvedDiff) ||
-          controllers.some(
+          renderedControllers.some(
             (controller) =>
               controller.input.disabled ||
               controller.lines.some(
