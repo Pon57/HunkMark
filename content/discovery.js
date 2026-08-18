@@ -1,12 +1,7 @@
-(function attachHunkMarkDiscovery(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     cleanElementText(element) {
       if (!element) {
         return "";
@@ -66,9 +61,15 @@
       if (
         target &&
         (target.matches(this.constants.FILE_CONTAINER_SELECTOR) ||
+          target.matches(
+            this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+          ) ||
           target.matches(this.constants.HUNK_ELEMENT_SELECTOR) ||
           target.matches(this.constants.ROW_CANDIDATE_SELECTOR) ||
-          target.closest(this.constants.FILE_CONTAINER_SELECTOR))
+          target.closest(this.constants.FILE_CONTAINER_SELECTOR) ||
+          target.closest(
+            this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+          ))
       ) {
         return true;
       }
@@ -80,10 +81,19 @@
         }
         return Boolean(
           element.matches(this.constants.FILE_CONTAINER_SELECTOR) ||
+            element.matches(
+              this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+            ) ||
             element.matches(this.constants.HUNK_ELEMENT_SELECTOR) ||
             element.matches(this.constants.ROW_CANDIDATE_SELECTOR) ||
             element.closest(this.constants.FILE_CONTAINER_SELECTOR) ||
+            element.closest(
+              this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+            ) ||
             element.querySelector(this.constants.FILE_CONTAINER_SELECTOR) ||
+            element.querySelector(
+              this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+            ) ||
             element.querySelector(this.constants.HUNK_ELEMENT_SELECTOR),
         );
       });
@@ -203,49 +213,184 @@
       );
     },
 
+    trustedFilePath(value) {
+      // Repository paths may be extensionless or contain significant
+      // whitespace. Path-specific GitHub metadata is authoritative and must
+      // remain byte-for-byte distinct from presentation labels.
+      return typeof value === "string" && value.length > 0 ? value : null;
+    },
+
+    knownFilePath(fileElement) {
+      return this.fileIdentityByElement.get(fileElement)?.path ?? null;
+    },
+
+    rememberFileIdentity(fileElement, path, presentedPath) {
+      const previous = this.fileIdentityByElement.get(fileElement);
+      this.fileIdentityByElement.set(fileElement, {
+        path,
+        presentedPath:
+          presentedPath === undefined && previous?.path === path
+            ? previous.presentedPath
+            : (presentedPath ?? null),
+      });
+      return path;
+    },
+
     resolveFilePath(fileElement, fallbackIndex) {
-      const cachedPath = this.filePathByElement.get(fileElement);
-      if (cachedPath) {
-        return cachedPath;
-      }
+      const cachedIdentity = this.fileIdentityByElement.get(fileElement);
+      const cachedPath = cachedIdentity?.path ?? null;
+      const pathElements = Array.from(
+        fileElement.querySelectorAll(
+          [
+            "[data-file-path]",
+            ".file-header[data-path]",
+            '[data-testid*="file-header"][data-path]',
+            '[data-testid*="file-name"]',
+            "clipboard-copy[value]",
+            '[role="grid"][aria-label^="Diff for: "]',
+            'a[href^="#diff-"]',
+          ].join(", "),
+        ),
+      );
+      const cleanPresentedPath = (element) => {
+        const codeElement = element.matches("code")
+          ? element
+          : element.querySelector("code");
+        let presentedPath = this.cleanElementText(codeElement ?? element);
+        if (
+          presentedPath.startsWith("\u200e") &&
+          presentedPath.endsWith("\u200e")
+        ) {
+          // GitHub inserts exactly one outer LRM pair. Removing only that pair
+          // preserves an LRM that is genuinely part of the repository path.
+          presentedPath = presentedPath.slice(1, -1);
+        }
+        return presentedPath;
+      };
+      const presentedPaths = [
+        ...new Set(
+          pathElements
+            .filter((element) => element.matches('a[href^="#diff-"]'))
+            .map(cleanPresentedPath)
+            .map((value) => this.trustedFilePath(value))
+            .filter(Boolean),
+        ),
+      ];
+      const currentPresentedPath =
+        presentedPaths.length === 1 ? presentedPaths[0] : null;
+      const rememberPath = (value, { trusted = false } = {}) => {
+        const path = trusted
+          ? this.trustedFilePath(value)
+          : String(value ?? "").trim();
+        if (!path || (!trusted && !this.Core.looksLikeFilePath(path))) {
+          return null;
+        }
+        return this.rememberFileIdentity(fileElement, path);
+      };
+      const rememberAuthoritativePath = (value) => {
+        const path = rememberPath(value, { trusted: true });
+        if (path) {
+          this.rememberFileIdentity(
+            fileElement,
+            path,
+            currentPresentedPath,
+          );
+        }
+        return path;
+      };
       const directAttributes = [
         "data-tagsearch-path",
         "data-file-path",
         "data-path",
       ];
       for (const attribute of directAttributes) {
-        const value = fileElement.getAttribute(attribute);
-        if (this.Core.looksLikeFilePath(value)) {
-          const path = value.trim();
-          this.filePathByElement.set(fileElement, path);
+        const path = rememberAuthoritativePath(
+          fileElement.getAttribute(attribute),
+        );
+        if (path) {
           return path;
         }
       }
 
-      const pathElements = fileElement.querySelectorAll(
-        [
-          "[data-file-path]",
-          ".file-header[data-path]",
-          '[data-testid*="file-header"][data-path]',
-          '[data-testid*="file-name"]',
-          "clipboard-copy[value]",
-          'a[href^="#diff-"]',
-        ].join(", "),
-      );
+      // The grid labels the rendered rows, so it outranks a staged or stale
+      // expansion button elsewhere in the same React file region.
+      const gridPaths = [
+        ...new Set(
+          pathElements
+            .filter((element) =>
+              element.matches('[role="grid"][aria-label^="Diff for: "]'),
+            )
+            .map((element) =>
+              this.trustedFilePath(
+                element
+                  .getAttribute("aria-label")
+                  ?.slice("Diff for: ".length),
+              ),
+            )
+            .filter(Boolean),
+        ),
+      ];
+      if (gridPaths.length === 1) {
+        return rememberAuthoritativePath(gridPaths[0]);
+      }
 
+      if (
+        cachedPath &&
+        cachedIdentity?.presentedPath &&
+        currentPresentedPath &&
+        currentPresentedPath !== cachedIdentity.presentedPath
+      ) {
+        return rememberAuthoritativePath(currentPresentedPath);
+      }
+      if (
+        cachedPath &&
+        currentPresentedPath &&
+        !cachedIdentity?.presentedPath
+      ) {
+        this.rememberFileIdentity(
+          fileElement,
+          cachedPath,
+          currentPresentedPath,
+        );
+      }
+
+      // Prefer remaining machine-readable values before unchanged visible
+      // header text.
       for (const element of pathElements) {
-        const values = [
+        if (element.matches('[role="grid"][aria-label^="Diff for: "]')) {
+          continue;
+        }
+        const authoritativeValues = [
           element.getAttribute("data-file-path"),
           element.getAttribute("data-path"),
           element.getAttribute("value"),
-          element.getAttribute("title"),
-          this.cleanElementText(element),
         ];
-        const path = values.find((value) => this.Core.looksLikeFilePath(value));
+        for (const value of authoritativeValues) {
+          const path = rememberAuthoritativePath(value);
+          if (path) {
+            return path;
+          }
+        }
+      }
+
+      if (cachedPath && !cachedPath.startsWith("unknown-file:")) {
+        return cachedPath;
+      }
+
+      for (const element of pathElements) {
+        const titlePath = rememberPath(element.getAttribute("title"));
+        if (titlePath) {
+          return titlePath;
+        }
+        const presentedPath = cleanPresentedPath(element);
+        const semanticPath = element.matches(
+          '[data-testid*="file-name"], a[href^="#diff-"]',
+        );
+        const path = semanticPath
+          ? rememberAuthoritativePath(presentedPath)
+          : rememberPath(presentedPath);
         if (path) {
-          const resolvedPath = path.trim();
-          this.filePathByElement.set(fileElement, resolvedPath);
-          return resolvedPath;
+          return path;
         }
       }
 
@@ -260,14 +405,24 @@
           (revealRoot === fileElement || revealRoot.contains(fileElement)),
       )?.[1]?.filePath;
       if (pendingRevealPath) {
-        this.filePathByElement.set(fileElement, pendingRevealPath);
-        return pendingRevealPath;
+        return this.rememberFileIdentity(
+          fileElement,
+          pendingRevealPath,
+          currentPresentedPath,
+        );
+      }
+
+      if (cachedPath) {
+        return cachedPath;
       }
 
       const stableId = fileElement.id || fileElement.getAttribute("data-testid");
-      return stableId
-        ? `unknown-file:${stableId}`
-        : `unknown-file:${fallbackIndex}`;
+      return this.rememberFileIdentity(
+        fileElement,
+        stableId
+          ? `unknown-file:${stableId}`
+          : `unknown-file:${fallbackIndex}`,
+      );
     },
 
     collectRows(fileElement) {
@@ -436,7 +591,7 @@
       return changedLines;
     },
 
-    contextLineDescriptors(row) {
+    contextLineDescriptors(row, { includeEmpty = false } = {}) {
       const legacyCells = row.querySelectorAll("td.blob-code-context");
       const dataCodeTextElements = row.querySelectorAll("[data-code-text]");
       const candidates =
@@ -461,7 +616,8 @@
         }))
         .filter(
           ({ text }) =>
-            text.length > 0 && !this.Core.isHunkHeaderText(text),
+            (includeEmpty || text.length > 0) &&
+            !this.Core.isHunkHeaderText(text),
         );
     },
 
@@ -661,6 +817,7 @@
               fileElement,
               filePath,
               groupRows,
+              headerText,
               hunkCell: entry.marker,
               hunkRow: entry.hunkRow,
               lineInputs,
@@ -718,6 +875,7 @@
               fileElement: hunk.fileElement,
               filePath,
               groupRows: hunk.groupRows,
+              headerText: hunk.headerText,
               hunkCell: hunk.hunkCell,
               hunkRow: hunk.hunkRow,
               key: await this.Core.hunkStorageKey(
@@ -805,6 +963,7 @@
             fileElement: hunk.fileElement,
             filePath,
             groupRows: hunk.groupRows,
+            headerText: hunk.headerText,
             hunkCell: hunk.hunkCell,
             hunkRow: hunk.hunkRow,
             key,
@@ -816,4 +975,4 @@
       return hunks;
     },
   });
-})(globalThis);
+}

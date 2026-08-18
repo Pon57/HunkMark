@@ -1,12 +1,7 @@
-(function attachHunkMarkPanel(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     async loadPreferences() {
       if (this.preferencesLoaded) {
         return;
@@ -551,25 +546,18 @@
         const progressKey = this.fileProgressStateKey(
           controllers[0].filePath,
         );
-        const previousReviewKeyGroups =
-          this.fileProgressStateByKey.get(progressKey)?.reviewKeyGroups;
-        const reviewKeyGroupsMatch =
-          previousReviewKeyGroups?.length === controllers.length &&
-          controllers.every(
-            (controller, index) =>
-              previousReviewKeyGroups[index] === controller.reviewKeys,
-          );
-        const reviewKeyGroups = reviewKeyGroupsMatch
-          ? previousReviewKeyGroups
-          : Object.freeze(
-              controllers.map((controller) => controller.reviewKeys),
-            );
+        this.fileReviewSnapshotsByKey.set(
+          progressKey,
+          this.captureFileReviewSnapshot(
+            controllers,
+            controllers[0].filePath,
+          ),
+        );
         const state = {
           collapsed: file.collapsed,
           complete: file.viewed === controllers.length,
           hunks: controllers.length,
           lines: file.lines,
-          reviewKeyGroups,
           text: nextText,
           viewed: file.viewed,
           viewedLines: file.viewedLines,
@@ -596,4 +584,4 @@
       }
     },
   });
-})(globalThis);
+}

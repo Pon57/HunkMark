@@ -1,12 +1,7 @@
-(function attachHunkMarkOfficialViewed(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     officialViewedControlForFile(fileElement) {
       if (!fileElement) {
         return null;
@@ -806,6 +801,11 @@
               this.fileProgressStateKey(filePath),
             ) ?? null
           : null,
+        cachedReviewSnapshot: cachedReveal
+          ? this.fileReviewSnapshotsByKey.get(
+              this.fileProgressStateKey(filePath),
+            ) ?? null
+          : null,
         controlPathElements,
         controlContainer,
         expiresAt: Date.now() + timeoutMs,
@@ -856,8 +856,10 @@
       }
       const [fileElement, restore] = candidates[0];
       const progress = restore.cachedProgress;
+      const reviewSnapshot = restore.cachedReviewSnapshot;
       if (
         !progress ||
+        !reviewSnapshot ||
         progress.lines <
           this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD ||
         progress.viewed !== 0 ||
@@ -866,8 +868,12 @@
       ) {
         return false;
       }
-      for (const keys of progress.reviewKeyGroups ?? []) {
-        for (const key of keys) {
+      for (const hunk of reviewSnapshot.hunks) {
+        for (const key of [
+          hunk.key,
+          `${hunk.key}:collapsed`,
+          ...hunk.lines.map((line) => line.key),
+        ]) {
           if (this.reviewStorageKeys.has(key)) {
             return false;
           }
@@ -1031,6 +1037,7 @@
       if (!discovered) {
         return false;
       }
+      this.attachCachedHostContextExpansionBaselines(discovered);
       discovered.forEach((hunk) => {
         const key = hunk.officialSuppressionKey;
         const guard = this.officialViewedRestoreGuards.get(key);
@@ -1048,10 +1055,7 @@
           if (!this.reviewStorageKeys.has(line.key)) {
             return;
           }
-          if (
-            this.lineReviewContextByKey.get(line.key) ===
-            line.contextFingerprint
-          ) {
+          if (this.cachedLineReviewMatches(line)) {
             line.element.classList.add("hunkmark-line-viewed");
           } else {
             invalidatedLineReview = true;
@@ -1121,6 +1125,7 @@
       if (!discovered) {
         return false;
       }
+      this.attachCachedHostContextExpansionBaselines(discovered);
       discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
           return;
@@ -1146,14 +1151,10 @@
           progressKey,
           lineStates: hunk.lines.map((line) => {
             const hasStoredLine = this.reviewStorageKeys.has(line.key);
-            const storedContext = this.lineReviewContextByKey.get(line.key);
+            const storedMatches = this.cachedLineReviewMatches(line);
             return {
-              invalidated:
-                hasStoredLine &&
-                storedContext !== line.contextFingerprint,
-              marked:
-                hasStoredLine &&
-                storedContext === line.contextFingerprint,
+              invalidated: hasStoredLine && !storedMatches,
+              marked: storedMatches,
             };
           }),
         });
@@ -1557,4 +1558,4 @@
       );
     },
   });
-})(globalThis);
+}

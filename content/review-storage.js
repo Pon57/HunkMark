@@ -1,37 +1,7 @@
-(function attachHunkMarkReviewStorage(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
-    lineReviewStorageValue(lineController, viewedAt, extra = {}) {
-      if (
-        !this.Core.isReviewIdentifier(lineController?.contextFingerprint)
-      ) {
-        throw new TypeError("A line review context fingerprint is required");
-      }
-      return {
-        ...extra,
-        contextFingerprint: lineController.contextFingerprint,
-        viewedAt,
-      };
-    },
-
-    storedLineReviewHasContext(value) {
-      return this.Core.isReviewIdentifier(value?.contextFingerprint);
-    },
-
-    storedLineReviewMatches(lineController, value) {
-      return (
-        this.Core.isReviewIdentifier(lineController?.contextFingerprint) &&
-        this.storedLineReviewHasContext(value) &&
-        value.contextFingerprint === lineController.contextFingerprint
-      );
-    },
-
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     rememberLineReviewContext(key, value) {
       if (
         typeof key !== "string" ||
@@ -41,8 +11,16 @@
       }
       if (this.storedLineReviewHasContext(value)) {
         this.lineReviewContextByKey.set(key, value.contextFingerprint);
+        const baselineContext =
+          this.storedLineReviewBaselineContext(value);
+        if (baselineContext && baselineContext !== value.contextFingerprint) {
+          this.lineReviewBaselineContextByKey.set(key, baselineContext);
+        } else {
+          this.lineReviewBaselineContextByKey.delete(key);
+        }
       } else {
         this.lineReviewContextByKey.delete(key);
+        this.lineReviewBaselineContextByKey.delete(key);
       }
     },
 
@@ -492,6 +470,7 @@
     ) {
       const stored = await this.getLocalStorage(null);
       this.reviewStorageKeys.clear();
+      this.lineReviewBaselineContextByKey.clear();
       this.lineReviewContextByKey.clear();
       Object.entries(stored).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
@@ -626,4 +605,4 @@
       });
     },
   });
-})(globalThis);
+}

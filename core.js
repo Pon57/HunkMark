@@ -163,6 +163,29 @@
     return normalized.match(HUNK_HEADER_PATTERN)?.[0]?.trim() ?? null;
   }
 
+  function hunkHeaderSemanticSuffix(value) {
+    const header = findHunkHeader(value);
+    if (!header) {
+      return "";
+    }
+    return header
+      .replace(
+        /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@\s*/,
+        "",
+      )
+      .trim();
+  }
+
+  function hunkHeadersSemanticallyCompatible(previous, current) {
+    const previousSuffix = hunkHeaderSemanticSuffix(previous);
+    const currentSuffix = hunkHeaderSemanticSuffix(current);
+    return (
+      previousSuffix.length === 0 ||
+      currentSuffix.length === 0 ||
+      previousSuffix === currentSuffix
+    );
+  }
+
   function isHunkHeaderText(value) {
     return findHunkHeader(value) !== null;
   }
@@ -655,6 +678,8 @@
     clearIdentifierCache,
     commitIdentifierCacheGeneration,
     findHunkHeader,
+    hunkHeaderSemanticSuffix,
+    hunkHeadersSemanticallyCompatible,
     hashIdentifier,
     IDENTIFIER_DOMAINS,
     isObsoleteReviewStorageKey,

@@ -1,12 +1,7 @@
-(function attachHunkMarkDrag(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     startLineDrag(lineController, viewed, pointerId) {
       if (this.dragState) {
         void this.finishLineDrag(true);
@@ -336,4 +331,4 @@
       }
     },
   });
-})(globalThis);
+}
