@@ -377,12 +377,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         .map((id) => this.document.getElementById(id)?.textContent ?? "")
         .join(" ");
       return (
-        control.getAttribute("aria-label") ||
-        control.getAttribute("title") ||
-        labelledBy ||
-        control.textContent ||
-        ""
-      ).trim();
+        [
+          control.getAttribute("aria-label"),
+          control.getAttribute("title"),
+          labelledBy,
+          control.textContent,
+        ]
+          .map((value) => value?.trim() ?? "")
+          .find(Boolean) ?? ""
+      );
     },
 
     fileDiffRevealControl(fileElement) {

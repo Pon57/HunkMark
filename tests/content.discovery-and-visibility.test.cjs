@@ -134,6 +134,29 @@ test("resolves current GitHub file paths without presentation marks", async () =
   }
 });
 
+test("skips blank file-visibility labels before using fallbacks", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const label = dom.window.document.createElement("span");
+    label.id = "file-visibility-label";
+    label.textContent = "  Load Diff  ";
+    const control = dom.window.document.createElement("button");
+    control.setAttribute("aria-label", "   ");
+    control.setAttribute("title", "\n\t");
+    control.setAttribute("aria-labelledby", label.id);
+    control.textContent = "  Show Diff  ";
+    dom.window.document.body.append(label, control);
+
+    assert.equal(app.fileVisibilityControlLabel(control), "Load Diff");
+
+    control.removeAttribute("aria-labelledby");
+    assert.equal(app.fileVisibilityControlLabel(control), "Show Diff");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("resolves current GitHub extensionless root-file paths", async () => {
   const html = `<!doctype html>
     <html><body>
