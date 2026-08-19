@@ -65,7 +65,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           settled.fileElements.add(fileElement);
           // A detached container proves only that GitHub replaced or removed
           // it. Do not turn the expected state into observed reveal evidence;
-          // a connected replacement/prepaint root will establish that itself.
+          // a connected replacement/prepaint root will provide that evidence.
           return;
         }
         const visible =
