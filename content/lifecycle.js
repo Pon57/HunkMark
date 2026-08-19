@@ -1,16 +1,14 @@
-(function attachHunkMarkLifecycle(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     expectFileDiffVisibility(fileElement, visible) {
       const previous = this.fileDiffVisibilityPending.get(fileElement);
       if (previous) {
         this.cancelExpectedFileDiffVisibility(fileElement, previous);
+      }
+      if (!visible) {
+        this.setHostContextExpansionFileHidden(fileElement, true);
       }
       const expectation = {
         timeoutId: null,
@@ -25,13 +23,30 @@
       return expectation;
     },
 
-    cancelExpectedFileDiffVisibility(fileElement, expectation) {
-      if (this.fileDiffVisibilityPending.get(fileElement) === expectation) {
+    cancelExpectedFileDiffVisibility(
+      fileElement,
+      expectation,
+      { settled = false } = {},
+    ) {
+      const wasCurrent =
+        this.fileDiffVisibilityPending.get(fileElement) === expectation;
+      if (wasCurrent) {
         this.fileDiffVisibilityPending.delete(fileElement);
       }
       if (expectation.timeoutId !== null) {
         this.window.clearTimeout(expectation.timeoutId);
         expectation.timeoutId = null;
+      }
+      if (!settled && wasCurrent && fileElement.isConnected) {
+        const visible = this.findHunkMarkers(fileElement).length > 0;
+        if (expectation.visible === false && visible) {
+          this.setHostContextExpansionFileHidden(fileElement, false);
+        } else if (expectation.visible === true && !visible) {
+          // GitHub can ignore an Expand file click while leaving the diff
+          // folded. Keep pending context transitions associated with that hidden
+          // DOM while their original wall-clock expiry remains in force.
+          this.setHostContextExpansionFileHidden(fileElement, true);
+        }
       }
     },
 
@@ -43,7 +58,9 @@
       };
       this.fileDiffVisibilityPending.forEach((expectation, fileElement) => {
         if (!fileElement.isConnected) {
-          this.cancelExpectedFileDiffVisibility(fileElement, expectation);
+          this.cancelExpectedFileDiffVisibility(fileElement, expectation, {
+            settled: true,
+          });
           settled.changed = true;
           settled.fileElements.add(fileElement);
           settled.revealed ||= expectation.visible;
@@ -52,7 +69,9 @@
         const visible =
           this.findHunkMarkers(fileElement).length > 0;
         if (visible === expectation.visible) {
-          this.cancelExpectedFileDiffVisibility(fileElement, expectation);
+          this.cancelExpectedFileDiffVisibility(fileElement, expectation, {
+            settled: true,
+          });
           settled.changed = true;
           settled.fileElements.add(fileElement);
           settled.revealed ||= visible;
@@ -104,320 +123,6 @@
         }
       }
       return [];
-    },
-
-    async refresh() {
-      const nextScope = this.Core.parseReviewScope(this.window.location);
-      const nextReviewVariant = this.Core.parseReviewVariant(
-        this.window.location,
-      );
-      const nextReviewScope = this.Core.reviewStateScope(
-        nextScope,
-        nextReviewVariant,
-      );
-      if (nextReviewScope !== this.currentReviewScope) {
-        this.Core.clearIdentifierCache();
-        this.cleanupExtensionElements();
-        this.resetOfficialViewedState();
-        this.currentScope = nextScope;
-        this.currentReviewScope = nextReviewScope;
-        this.currentReviewVariant = nextReviewVariant;
-      }
-
-      if (!this.currentReviewScope) {
-        return;
-      }
-
-      const now = Date.now();
-      const reviewStoragePruneDue =
-        !this.reviewStoragePruned ||
-        now - this.reviewStoragePrunedAt >=
-          this.constants.REVIEW_STORAGE_PRUNE_INTERVAL_MS;
-      if (reviewStoragePruneDue) {
-        try {
-          await this.ensureStoredReviewStatePruned();
-          this.reviewStoragePruned = true;
-          this.reviewStoragePrunedAt = now;
-        } catch (error) {
-          if (this.isExtensionContextInvalidated(error)) {
-            throw error;
-          }
-          console.warn("HunkMark could not prune old review state.", error);
-        }
-      } else {
-        try {
-          await this.touchReviewContextAccess();
-        } catch (error) {
-          if (this.isExtensionContextInvalidated(error)) {
-            throw error;
-          }
-          console.warn("HunkMark could not update review access time.", error);
-        }
-      }
-
-      await this.loadPreferences();
-
-      const previousControllers = Array.from(this.controllersByRow.values());
-      const cacheGeneration =
-        this.Core.beginIdentifierCacheGeneration();
-      let discovered;
-      try {
-        discovered = await this.discoverHunks();
-      } catch (error) {
-        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
-        throw error;
-      }
-      if (this.stopped) {
-        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
-        return;
-      }
-      const discoveredScope = this.Core.reviewStateScope(
-        this.Core.parseReviewScope(this.window.location),
-        this.Core.parseReviewVariant(this.window.location),
-      );
-      if (discoveredScope !== this.currentReviewScope) {
-        this.Core.abortIdentifierCacheGeneration(cacheGeneration);
-        this.scheduleRefresh({ immediate: true });
-        return;
-      }
-      this.Core.commitIdentifierCacheGeneration(cacheGeneration);
-      const previousByHunk = new Map(
-        discovered.map((hunk) => [
-          hunk,
-          this.previousControllersForHunk(previousControllers, hunk),
-        ]),
-      );
-      const seenRows = new Set(discovered.map((hunk) => hunk.hunkRow));
-      const lineCountsByFile = new Map();
-      discovered.forEach((hunk) => {
-        lineCountsByFile.set(
-          hunk.fileElement,
-          (lineCountsByFile.get(hunk.fileElement) ?? 0) + hunk.lines.length,
-        );
-      });
-      const lazyLineControlFiles = new Set(
-        Array.from(lineCountsByFile)
-          .filter(
-            ([, lineCount]) =>
-              lineCount >=
-              this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD,
-          )
-          .map(([fileElement]) => fileElement),
-      );
-      const newControllers = [];
-      const previousByController = new Map();
-      const stickyControllersByFile = new Map();
-
-      Array.from(this.controllersByRow.values()).forEach((controller) => {
-        if (!controller.hunkRow.isConnected || !seenRows.has(controller.hunkRow)) {
-          this.destroyController(controller);
-        }
-      });
-
-      discovered.forEach((hunk) => {
-        const existing = this.controllersByRow.get(hunk.hunkRow);
-        if (existing && !this.controllerMatchesHunk(existing, hunk)) {
-          this.destroyController(existing);
-        }
-      });
-
-      // Batch every host style read for new hunks before any controller starts
-      // mutating the diff DOM. This avoids a read/write cycle per hunk on
-      // large files with many small hunks.
-      const newControllerOptionsByHunk = new Map();
-      discovered.forEach((hunk) => {
-        if (this.controllersByRow.has(hunk.hunkRow)) {
-          return;
-        }
-        const lazyLineControls = lazyLineControlFiles.has(
-          hunk.fileElement,
-        );
-        const deferLineControls =
-          lazyLineControls ||
-          this.reviewStorageKeys.has(`${hunk.key}:collapsed`);
-        newControllerOptionsByHunk.set(hunk, {
-          deferLineControls,
-          lazyLineControls,
-        });
-      });
-      newControllerOptionsByHunk.forEach((options, hunk) => {
-        options.hostLayout = this.measureControllerHostLayout(
-          hunk,
-          options,
-        );
-      });
-
-      discovered.forEach((hunk) => {
-        let controller = this.controllersByRow.get(hunk.hunkRow);
-        if (controller) {
-          controller.fileElement = hunk.fileElement;
-          controller.filePath = hunk.filePath;
-          this.updateControllerRows(controller, hunk.groupRows);
-          this.attachStickyHunkRow(controller);
-        } else {
-          controller = this.createController(
-            hunk,
-            newControllerOptionsByHunk.get(hunk),
-          );
-          newControllers.push(controller);
-          previousByController.set(
-            controller,
-            previousByHunk.get(hunk) ?? [],
-          );
-        }
-        const stickyControllers =
-          stickyControllersByFile.get(hunk.fileElement) ?? [];
-        stickyControllers.push(controller);
-        stickyControllersByFile.set(hunk.fileElement, stickyControllers);
-      });
-
-      // Discovery already returns hunks in document order. Reuse that order
-      // and refresh only visible file headers once instead of sorting and
-      // measuring them again for every existing controller.
-      stickyControllersByFile.forEach((controllers, fileElement) => {
-        const state = this.hunkStickyStateByFile.get(fileElement);
-        if (!state) {
-          return;
-        }
-        this.syncStickyHunkControllerOrder(state, controllers);
-        if (state.visible) {
-          this.syncStickyHunkHeader(state);
-        }
-      });
-
-      if (newControllers.length > 0) {
-        const suppressionIntentGenerationByKey = new Map(
-          newControllers.map((controller) => [
-            controller.officialSuppressionKey,
-            this.officialViewedIntentGenerationByKey.get(
-              controller.officialSuppressionKey,
-            ),
-          ]),
-        );
-        const keys = [
-          ...new Set(
-            newControllers.flatMap((controller) => [
-              ...controller.reviewKeys,
-              controller.officialSuppressionKey,
-            ]),
-          ),
-        ];
-        await this.withReviewStorageLock(async () => {
-          const stored = await this.getLocalStorage(keys);
-          const migrations = {};
-          const migrationRemovals = new Set();
-          const migrationTime = Date.now();
-
-          newControllers.forEach((controller) => {
-            const previous = previousByController.get(controller) ?? [];
-            const previousLineMarks = new Map(
-              previous.flatMap((candidate) =>
-                candidate.lines.map((line) => [
-                  line.key,
-                  {
-                    contextFingerprint: line.contextFingerprint,
-                    element: line.element,
-                    marked: line.marked,
-                  },
-                ]),
-              ),
-            );
-            const hunkStored =
-              controller.lines.length === 0 &&
-              Boolean(stored[controller.key]);
-            const expandedByHost =
-              previous.length > 1 ||
-              (previous.length === 1 &&
-                controller.groupRows.length > previous[0].groupRows.length);
-            const suppressionKey = controller.officialSuppressionKey;
-            if (
-              this.officialViewedIntentGenerationByKey.get(suppressionKey) ===
-              suppressionIntentGenerationByKey.get(suppressionKey)
-            ) {
-              const generation =
-                this.createOfficialViewedIntentGeneration();
-              this.registerOfficialViewedIntent(
-                [suppressionKey],
-                generation,
-              );
-              this.applyOfficialViewedIntent(
-                [suppressionKey],
-                Boolean(stored[suppressionKey]),
-                generation,
-              );
-            }
-            controller.collapsed =
-              !expandedByHost && Boolean(stored[controller.collapsedKey]);
-            controller.marked = hunkStored;
-            let invalidatedLineReview = false;
-            let preservedLineReviewForOtherContext = false;
-            controller.lines.forEach((line) => {
-              const storedLineReview = stored[line.key];
-              const storedMatches = this.storedLineReviewMatches(
-                line,
-                storedLineReview,
-              );
-              const previousLine = previousLineMarks.get(line.key);
-              const previousMatches =
-                storedLineReview === undefined &&
-                previousLine?.marked === true &&
-                (previousLine.contextFingerprint === line.contextFingerprint ||
-                  (expandedByHost && previousLine.element === line.element));
-              line.marked = storedMatches || previousMatches;
-              if (line.control) {
-                line.control.disabled = false;
-              }
-              if (storedLineReview !== undefined && !storedMatches) {
-                invalidatedLineReview = true;
-                if (this.storedLineReviewHasContext(storedLineReview)) {
-                  preservedLineReviewForOtherContext = true;
-                } else {
-                  migrationRemovals.add(line.key);
-                }
-              }
-              if (line.marked && !storedMatches) {
-                migrations[line.key] = this.lineReviewStorageValue(
-                  line,
-                  migrationTime,
-                  { migratedFromHostExpansion: true },
-                );
-              }
-            });
-            this.updateAggregateFromLines(controller);
-            if (invalidatedLineReview) {
-              controller.collapsed = false;
-              if (!preservedLineReviewForOtherContext) {
-                migrationRemovals.add(controller.collapsedKey);
-              }
-            }
-            if (
-              expandedByHost &&
-              !preservedLineReviewForOtherContext
-            ) {
-              migrationRemovals.add(controller.collapsedKey);
-              previous.forEach((candidate) =>
-                migrationRemovals.add(candidate.collapsedKey),
-              );
-            }
-            controller.input.disabled = false;
-            this.applyControllerAppearance(controller);
-          });
-
-          Object.keys(migrations).forEach((key) =>
-            migrationRemovals.delete(key),
-          );
-          await this.mutateReviewStorageUnlocked({
-            values: migrations,
-            removals: Array.from(migrationRemovals),
-            scope: this.currentReviewScope,
-            now: migrationTime,
-          });
-        });
-      }
-
-      this.updateProgress();
-      this.finishReadyFileRevealPrepaintRestores();
-      this.clearSettledOfficialViewedRestoreGuards();
     },
 
     isExtensionContextInvalidated(error) {
@@ -579,6 +284,17 @@
       }
 
       let pageAppearanceChanged = false;
+      let cachedReviewEvidenceChanged = false;
+      Object.entries(changes).forEach(([key, change]) => {
+        if (
+          this.adoptStoredLineReviewBaselineInFileSnapshot(
+            key,
+            change.newValue,
+          )
+        ) {
+          cachedReviewEvidenceChanged = true;
+        }
+      });
       this.controllersByRow.forEach((controller) => {
         let controllerAppearanceChanged = false;
         if (changes[controller.collapsedKey]) {
@@ -594,6 +310,13 @@
         controller.lines.forEach((line) => {
           if (changes[line.key]) {
             const nextValue = changes[line.key].newValue;
+            if (
+              this.adoptStoredLineReviewBaselineContext(line, nextValue)
+            ) {
+              // Keep the hidden-file snapshot aligned even when the stored
+              // review already matched and no visible appearance changed.
+              cachedReviewEvidenceChanged = true;
+            }
             const storedMatches = this.storedLineReviewMatches(
               line,
               nextValue,
@@ -644,7 +367,7 @@
           pageAppearanceChanged = true;
         }
       });
-      if (pageAppearanceChanged) {
+      if (pageAppearanceChanged || cachedReviewEvidenceChanged) {
         this.updateProgress();
       }
     },
@@ -695,6 +418,29 @@
         expectedFileDiffVisibility.changed ||
         hostDiffMutations.length > 0
       ) {
+        const activeHostContextExpansionIntents =
+          this.activeHostContextExpansionIntents();
+        let pendingHostContextExpansionIntents = [];
+        if (activeHostContextExpansionIntents.length > 0) {
+          const affectedFilePaths =
+            this.hostContextExpansionMutationFilePaths(
+              hostDiffMutations,
+              expectedFileDiffVisibility.fileElements,
+            );
+          pendingHostContextExpansionIntents =
+            activeHostContextExpansionIntents.filter(
+              (intent) =>
+                affectedFilePaths === null ||
+                affectedFilePaths.has(intent.filePath),
+            );
+        }
+        const hostContextExpansionPending =
+          pendingHostContextExpansionIntents.length > 0;
+        if (hostContextExpansionPending) {
+          pendingHostContextExpansionIntents.forEach((intent) =>
+            this.cancelHostContextExpansionSettlement(intent),
+          );
+        }
         const progressRemoved =
           !expectedFileDiffVisibility.changed &&
           this.removeProgressForFilesWithoutRenderedHunks();
@@ -721,7 +467,7 @@
         // Removing a diff cannot expose review state that needs restoring.
         // Avoid rediscovering every still-rendered file before the host can
         // paint its Viewed/collapse update; the queued refresh handles cleanup.
-        const restored = expectedHideOnly
+        const restored = expectedHideOnly || hostContextExpansionPending
           ? false
           : this.finishCleanCachedFileReveal(restoreRoot) ||
             this.preserveOfficialViewedRestoredState(restoreRoot) ||
@@ -734,7 +480,8 @@
         this.scheduleRefresh({
           immediate:
             !expectedHideOnly &&
-            (progressRemoved ||
+            (hostContextExpansionPending ||
+              progressRemoved ||
               (!canDeferRefresh &&
                 (expectedFileDiffVisibility.changed || restored))),
         });
@@ -754,6 +501,8 @@
         this.handleLineControlClick(event);
       this.boundLineControlPointerDown = (event) =>
         this.handleLineControlPointerDown(event);
+      this.boundHostContextExpansionClick = (event) =>
+        this.handleHostContextExpansionClick(event);
       this.boundOfficialViewedClick = (event) => {
         void this.handleOfficialViewedClick(event).catch((error) => {
           if (!this.stopForInvalidatedContext(error)) {
@@ -824,6 +573,11 @@
       );
       this.document.addEventListener(
         "click",
+        this.boundHostContextExpansionClick,
+        true,
+      );
+      this.document.addEventListener(
+        "click",
         this.boundLineControlClick,
         true,
       );
@@ -885,6 +639,7 @@
       this.refreshQueued = false;
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;
+      this.clearAllHostContextExpansionIntents();
       this.observer?.disconnect();
       this.observer = null;
       try {
@@ -915,6 +670,11 @@
       this.document.removeEventListener(
         "keydown",
         this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.removeEventListener(
+        "click",
+        this.boundHostContextExpansionClick,
         true,
       );
       this.document.removeEventListener(
@@ -965,4 +725,4 @@
       this.Core.clearIdentifierCache();
     },
   });
-})(globalThis);
+}

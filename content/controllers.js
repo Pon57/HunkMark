@@ -1,17 +1,13 @@
-(function attachHunkMarkControllers(root) {
-  "use strict";
+"use strict";
 
-  const App = root.HunkMarkContent?.App;
-  if (!App) {
-    return;
-  }
-
-  Object.assign(App.prototype, {
+if (globalThis.HunkMarkContent?.extendApp) {
+  globalThis.HunkMarkContent.extendApp({
     createController(
       hunk,
       {
         deferLineControls = false,
         hostLayout = null,
+        initialCollapsed = false,
         lazyLineControls = false,
       } = {},
     ) {
@@ -61,10 +57,16 @@
         ...hunk,
         actions,
         collapseButton,
-        collapsed: false,
+        collapsed: initialCollapsed,
         collapsedKey: `${hunk.key}:collapsed`,
         collapsePending: false,
         indeterminate: false,
+        hostContextExpansionContextAnchors:
+          this.hostContextExpansionContextAnchorsForRows(
+            hunk.fileElement,
+            hunk.groupRows,
+            hunk.lines,
+          ),
         input,
         label,
         lazyLineControls,
@@ -214,6 +216,14 @@
         peers: [],
         suppressPointerClick: false,
       };
+      if (this.reviewStorageKeys.has(lineController.key)) {
+        this.adoptStoredLineReviewBaselineContext(lineController, {
+          baselineContextFingerprint:
+            this.lineReviewBaselineContextByKey.get(lineController.key),
+          contextFingerprint:
+            this.lineReviewContextByKey.get(lineController.key),
+        });
+      }
       this.lineControllersByElement.set(line.element, lineController);
       return lineController;
     },
@@ -465,12 +475,90 @@
       });
     },
 
-    updateControllerRows(controller, nextRows) {
+    hostContextExpansionContextAnchorsForRows(
+      fileElement,
+      groupRows,
+      lines = [],
+    ) {
       if (
-        controller.groupRows.length === nextRows.length &&
-        controller.groupRows.every((row, index) => row === nextRows[index]) &&
-        this.controllerAppearanceMatchesRows(controller)
+        !fileElement?.matches?.(
+          this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+        )
       ) {
+        return null;
+      }
+      const changedLineKeysByRow = new Map();
+      lines.forEach((line) => {
+        const row = line.row ?? this.semanticRow(line.element);
+        if (!row || !this.Core.isLineReviewStorageKey(line.key)) {
+          return;
+        }
+        const keys = changedLineKeysByRow.get(row) ?? [];
+        keys.push(line.key);
+        changedLineKeysByRow.set(row, keys);
+      });
+      // Compare one interleaved sequence. Checking context rows and changed
+      // lines separately would miss an existing context row moving across a
+      // reviewed change while both independent sequences stayed ordered.
+      return Object.freeze(
+        groupRows.flatMap((row) => {
+          const changedLineKeys = changedLineKeysByRow.get(row);
+          if (changedLineKeys) {
+            return changedLineKeys.map((key) => `changed:${key}`);
+          }
+          const contextAnchor =
+            this.hostContextExpansionContextAnchorForRow(row);
+          return contextAnchor ? [contextAnchor] : [];
+        }),
+      );
+    },
+
+    hostContextExpansionContextAnchorForRow(row) {
+      if (
+        row.matches?.(this.constants.HUNK_ELEMENT_SELECTOR) ||
+        row.querySelector?.(this.constants.HUNK_ELEMENT_SELECTOR) ||
+        row.querySelector?.(
+          this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+        )
+      ) {
+        return "";
+      }
+      // Current GitHub React diffs render a blank context line as two empty
+      // code cells. Empty code still carries structural meaning: moving it
+      // across a changed line is replacement, not monotonic context insertion.
+      // Keep this evidence local to native expansion validation so existing
+      // persisted line-context fingerprints do not change format.
+      return this.contextLineDescriptors(row, { includeEmpty: true })
+        .map(
+          ({ side, text }) =>
+            `context:${side}:${this.Core.normalizeLineBreaks(text)}`,
+        )
+        .join("\n");
+    },
+
+    updateControllerRows(
+      controller,
+      nextRows,
+      { hostRevealedRowsCanExpand = true } = {},
+    ) {
+      const groupRowsMatch =
+        controller.groupRows.length === nextRows.length &&
+        controller.groupRows.every((row, index) => row === nextRows[index]);
+      const nextContextAnchors =
+        this.hostContextExpansionContextAnchorsForRows(
+          controller.fileElement,
+          nextRows,
+          controller.lines,
+        );
+      const contextAnchorsMatch =
+        this.sameHostContextExpansionSequence(
+          controller.hostContextExpansionContextAnchors,
+          nextContextAnchors,
+        );
+      if (!contextAnchorsMatch) {
+        controller.hostContextExpansionContextAnchors = nextContextAnchors;
+      }
+      if (groupRowsMatch && this.controllerAppearanceMatchesRows(controller)) {
         return;
       }
 
@@ -487,7 +575,7 @@
       });
 
       controller.groupRows = nextRows;
-      if (hostRevealedRows) {
+      if (hostRevealedRows && hostRevealedRowsCanExpand) {
         void this.setCollapsed(controller, false);
       } else {
         this.applyControllerAppearance(controller);
@@ -529,7 +617,9 @@
       if (controller.collapseButton.title !== collapseTitle) {
         controller.collapseButton.title = collapseTitle;
       }
-      controller.collapseButton.disabled = controller.collapsePending;
+      controller.collapseButton.disabled = Boolean(
+        controller.collapsePending || controller.input.disabled,
+      );
 
       const stickyLayoutChanged =
         controller.stickyHunkAppliedCollapsed !== controller.collapsed;
@@ -1046,13 +1136,17 @@
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((element) => element.remove());
+      this.document
+        .querySelectorAll(".hunkmark-collapsed")
+        .forEach((row) => row.classList.remove("hunkmark-collapsed"));
       this.finishAllFileRevealPrepaintRestores();
       this.fileDiffVisibilityPending.forEach((expectation, fileElement) =>
         this.cancelExpectedFileDiffVisibility(fileElement, expectation),
       );
       this.fileRevealRestorePending.clear();
       this.fileProgressStateByKey.clear();
-      this.filePathByElement = new WeakMap();
+      this.fileReviewSnapshotsByKey.clear();
+      this.fileIdentityByElement = new WeakMap();
       this.lineControlVisibilityObserver?.disconnect();
       this.lineControlVisibilityObserver = null;
       this.cleanupStickyHunks();
@@ -1062,4 +1156,4 @@
         ?.remove();
     },
   });
-})(globalThis);
+}

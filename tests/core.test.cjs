@@ -353,6 +353,29 @@ test("hunk signature changes with diff content", () => {
   assert.notEqual(first, second);
 });
 
+test("compares hunk semantic suffixes when GitHub renders both", () => {
+  const original = "@@ -181,7 +181,7 @@ async fn cleanup_test_db() {";
+  const lineOnly = "@@ -181,7 +181,7 @@";
+  const relocated = "@@ -181,7 +181,7 @@ async fn relocated() {";
+
+  assert.equal(
+    Core.hunkHeaderSemanticSuffix(original),
+    "async fn cleanup_test_db() {",
+  );
+  assert.equal(
+    Core.hunkHeadersSemanticallyCompatible(original, lineOnly),
+    true,
+  );
+  assert.equal(
+    Core.hunkHeadersSemanticallyCompatible(lineOnly, original),
+    true,
+  );
+  assert.equal(
+    Core.hunkHeadersSemanticallyCompatible(original, relocated),
+    false,
+  );
+});
+
 test("preserves security-significant invisible Unicode in review identities", async () => {
   const scope = Core.reviewStateScope(
     "github.com:a/r:pull:1",

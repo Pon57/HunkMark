@@ -15,10 +15,15 @@
     '[data-testid*="load-diff"]',
     '[data-testid*="load-more"]',
   ].join(", ");
+  const CURRENT_FILE_DIFF_REGION_SELECTOR = [
+    '[role="region"][id^="diff-"]',
+    '[role="region"][class*="Diff-module__diff"]',
+  ].join(", ");
 
   namespace.constants = Object.freeze({
     ACTIVE_DIFF_LOADING_SELECTOR,
     CONTROL_CLASS: "hunkmark-control",
+    CURRENT_FILE_DIFF_REGION_SELECTOR,
     FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
     FILE_CONTAINER_SELECTOR: [
       ".js-file",
@@ -44,6 +49,20 @@
       '[class*="diff-hunk"]',
       "[data-hunk]",
     ].join(", "),
+    HUNK_EXPANSION_CONTROL_SELECTOR: [
+      ".js-expand",
+      ".js-expand-full",
+      ".js-expand-all-difflines-button",
+      'button[class*="ExpandableHunkHeaderDiffLine-module__"]',
+      '[aria-label^="Expand up" i]',
+      '[aria-label^="Expand down" i]',
+      '[aria-label^="Expand all" i]',
+      '[aria-label^="Expand file from" i]',
+      '[aria-label^="Expand file up" i]',
+      '[aria-label^="Expand file down" i]',
+    ].join(", "),
+    HOST_CONTEXT_EXPANSION_SETTLE_MS: 250,
+    HOST_CONTEXT_EXPANSION_MAX_LIFETIME_MS: 30_000,
     LAZY_LINE_CONTROL_CHUNK_SIZE: 16,
     LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD: 500,
     OFFICIAL_FILE_VIEWED_SELECTOR: [
@@ -108,13 +127,16 @@
       this.officialViewedStorageIntentGenerationByKey = new Map();
       this.nextOfficialViewedIntentGeneration = 0;
       this.fileDiffVisibilityPending = new Map();
-      this.filePathByElement = new WeakMap();
+      this.fileIdentityByElement = new WeakMap();
       this.officialViewedRestoreGuards = new Map();
       this.fileRevealPrepaintRestores = new Map();
       this.officialViewedSyncPending = new WeakSet();
       this.officialViewedSyncSuppressed = new Set();
       this.fileRevealRestorePending = new Set();
       this.fileProgressStateByKey = new Map();
+      this.fileReviewSnapshotsByKey = new Map();
+      this.hostContextExpansionIntents = new Set();
+      this.lineReviewBaselineContextByKey = new Map();
       this.lineReviewContextByKey = new Map();
       this.reviewContextAccessedAtById = new Map();
       this.reviewStorageKeys = new Set();
@@ -165,6 +187,8 @@
       return this.localStorageArea().remove(keys);
     }
   };
+  namespace.extendApp = (methods) =>
+    Object.assign(namespace.App.prototype, methods);
 
   root.HunkMarkContent = namespace;
 })(globalThis);
