@@ -879,6 +879,25 @@ test("defers discovery when a manual Viewed click hides the diff", async () => {
   }
 });
 
+test("does not treat a disconnected reveal expectation as rendered", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    const fileElement = dom.window.document.querySelector(".js-file");
+    app.expectFileDiffVisibility(fileElement, true);
+    fileElement.remove();
+
+    const settled = app.consumeExpectedFileDiffVisibility();
+
+    assert.equal(settled.changed, true);
+    assert.equal(settled.revealed, false);
+    assert.deepEqual(Array.from(settled.fileElements), [fileElement]);
+    assert.equal(app.fileDiffVisibilityPending.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("hides a cold-cache Viewed removal until review state is restored", async () => {
   const { app, dom } = await startExtension(
     initiallyViewedCommitSelectionFixture(),
