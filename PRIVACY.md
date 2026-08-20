@@ -24,7 +24,7 @@ Raw URLs, file paths, hunk headers, changed-line or context text, account creden
 
 The extension does not send data to the developer, analytics providers, advertising services, or any other third party. It contains no analytics, telemetry, advertising, or remote code.
 
-When all hunks in a file are marked Viewed through the extension and GitHub exposes its own file-level Viewed control in the displayed commit range, the extension may activate that control. It does not activate the control in ranges where GitHub does not render it. Any resulting request is made by the GitHub page directly to GitHub under the user's existing session. The extension does not receive or transmit the user's GitHub credentials.
+When `Sync GitHub file Viewed` is enabled, all hunks in a file are marked Viewed through the extension, and GitHub exposes its own file-level Viewed control in the displayed commit range, the extension may activate that control. Disabling the setting prevents future automatic activation but does not clear an existing GitHub Viewed state. The extension does not activate the control in ranges where GitHub does not render it. Any resulting request is made by the GitHub page directly to GitHub under the user's existing session. The extension does not receive or transmit the user's GitHub credentials.
 
 ## Retention and deletion
 

@@ -15,7 +15,7 @@ A Chrome extension that adds hunk-level and line-level `Viewed` controls and hun
 - Track review progress per file and across the page
 - Link the two sides of a split diff or review them independently
 - Save state locally per pull request and displayed commit range
-- One-way sync to GitHub's file-level `Viewed` control only when the complete file diff is loaded
+- Optional one-way sync to GitHub's file-level `Viewed` control only when the complete file diff is loaded
 - Restore controls after GitHub lazy loading and client-side navigation
 
 ## Installation
@@ -39,7 +39,7 @@ After updating the repository, reload HunkMark from `chrome://extensions`.
 - Review state is stored only in `chrome.storage.local` and is never sent elsewhere.
 - A line keeps its state only while its content, changed block, and surrounding context remain stable. Edits, relocation to a different context, and invisible Unicode changes reset it to unviewed.
 - `Reset page` removes state only for the currently displayed commit range.
-- HunkMark never automatically clears GitHub's file-level `Viewed` state and respects manual changes made by the user.
+- The `Sync GitHub file Viewed` setting controls automatic one-way synchronization. Turning it off never clears GitHub's existing file-level `Viewed` state, and manual changes made by the user remain respected.
 
 See [PRIVACY.md](PRIVACY.md) for retention and data-handling details, and [ARCHITECTURE.md](ARCHITECTURE.md) for the state-restoration and synchronization design.
 

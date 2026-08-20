@@ -14,11 +14,13 @@ const {
   stopExtensions,
   startLockedExtension,
   captureWarnings,
+  changeCheckbox,
   lineControls,
   waitFor,
   startExtension,
   duplicateHunkFixture,
   commitSelectionFixture,
+  splitFixture,
   initiallyViewedCommitSelectionFixture,
   replacePageBody,
   dragFixture,
@@ -788,6 +790,130 @@ test("enables auto-collapse by default and persists its setting", async () => {
       assert.equal(controller.marked, true);
       assert.equal(controller.collapsed, false);
     });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("propagates GitHub Viewed sync enablement to completed open tabs", async () => {
+  const preferenceKey =
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`;
+  const sharedChrome = createChromeApi({ [preferenceKey]: false });
+  const first = await startExtension(splitFixture(), {}, {
+    chromeInstance: sharedChrome,
+  });
+  const second = await startExtension(splitFixture(), {}, {
+    chromeInstance: sharedChrome,
+  });
+  try {
+    const tabs = [first, second];
+    const officialClicks = [0, 0];
+    tabs.forEach(({ dom }, index) => {
+      const control = dom.window.document.querySelector(
+        'button[aria-label="Not Viewed"]',
+      );
+      control.addEventListener("click", () => {
+        officialClicks[index] += 1;
+        control.setAttribute("aria-label", "Viewed");
+        control.setAttribute("aria-pressed", "true");
+      });
+    });
+
+    await second.app.setHunkViewed(controllerAt(second.app), true);
+    await waitFor(() => {
+      assert.equal(
+        tabs.every(({ app }) => controllerAt(app).marked),
+        true,
+      );
+    });
+    assert.deepEqual(officialClicks, [0, 0]);
+
+    const firstInput = first.dom.window.document.querySelector(
+      'input[aria-label="Sync GitHub file Viewed"]',
+    );
+    changeCheckbox(first.dom, firstInput, true);
+    await waitFor(() => {
+      assert.equal(
+        tabs.every(({ app }) => app.syncOfficialViewedEnabled),
+        true,
+      );
+      assert.equal(
+        tabs.every(({ dom }) =>
+          dom.window.document.querySelector(
+            'input[aria-label="Sync GitHub file Viewed"]',
+          ).checked,
+        ),
+        true,
+      );
+      assert.deepEqual(officialClicks, [1, 1]);
+    });
+  } finally {
+    stopExtensions(first, second);
+  }
+});
+
+test("restores GitHub Viewed sync when its preference write fails", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const input = dom.window.document.querySelector(
+      'input[aria-label="Sync GitHub file Viewed"]',
+    );
+    const warnings = captureWarnings(dom);
+    chrome.failNextSet();
+
+    changeCheckbox(dom, input, false);
+    await waitFor(() => {
+      assert.equal(input.disabled, false);
+      assert.equal(input.checked, true);
+      assert.equal(app.syncOfficialViewedEnabled, true);
+      assert.equal(
+        app.officialViewedSyncPreferenceKey in chrome.snapshot(),
+        false,
+      );
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(
+      warnings[0][0],
+      /could not save GitHub Viewed synchronization/,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps GitHub Viewed sync enabled when immediate DOM sync fails", async () => {
+  const preferenceKey =
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`;
+  const { app, chrome, dom } = await startExtension(
+    splitFixture(),
+    { [preferenceKey]: false },
+  );
+  try {
+    await app.setHunkViewed(controllerAt(app), true);
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    officialControl.click = () => {
+      throw new Error("GitHub control failed");
+    };
+    const warnings = captureWarnings(dom);
+
+    await app.setOfficialViewedSync(true);
+
+    const input = dom.window.document.querySelector(
+      'input[aria-label="Sync GitHub file Viewed"]',
+    );
+    assert.equal(app.syncOfficialViewedEnabled, true);
+    assert.equal(input.checked, true);
+    assert.equal(input.disabled, false);
+    assert.equal(chrome.snapshot()[preferenceKey], true);
+    assert.equal(warnings.length, 1);
+    assert.match(
+      warnings[0][0],
+      /could not apply GitHub Viewed synchronization/,
+    );
   } finally {
     app.stop();
     dom.window.close();

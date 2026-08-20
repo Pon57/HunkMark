@@ -2737,6 +2737,109 @@ test("ignores DOM mutations unrelated to a diff", async () => {
   }
 });
 
+test("keeps settings behind an accessible gear menu", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    await waitFor(() => {
+      assert.ok(dom.window.document.getElementById("hunkmark-panel"));
+    });
+
+    const panel = dom.window.document.getElementById("hunkmark-panel");
+    const settingsButton = panel.querySelector(
+      'button[aria-label="HunkMark settings"]',
+    );
+    const settings = panel.querySelector("#hunkmark-panel-settings");
+
+    assert.ok(settingsButton);
+    assert.ok(settings);
+    const settingsIcon = settingsButton.querySelector(
+      "svg.hunkmark-settings-icon",
+    );
+    assert.ok(settingsIcon);
+    assert.equal(settingsIcon.namespaceURI, "http://www.w3.org/2000/svg");
+    assert.equal(settingsIcon.getAttribute("viewBox"), "0 0 16 16");
+    assert.equal(settingsIcon.getAttribute("aria-hidden"), "true");
+    assert.ok(settingsIcon.querySelector("path")?.getAttribute("d"));
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+    assert.equal(
+      settingsButton.getAttribute("aria-controls"),
+      settings.id,
+    );
+    assert.equal(settings.hidden, true);
+    assert.equal(settings.getAttribute("role"), "dialog");
+    assert.ok(
+      settings.querySelector(
+        'input[aria-label="Automatically collapse viewed hunks"]',
+      ),
+    );
+    assert.ok(
+      settings.querySelector('input[aria-label="Link split diff sides"]'),
+    );
+    assert.equal(
+      settings.querySelector(
+        'input[aria-label="Sync GitHub file Viewed"]',
+      ).checked,
+      true,
+    );
+    assert.deepEqual(
+      Array.from(
+        settings.querySelectorAll(".hunkmark-panel-toggle > span"),
+        (label) => label.textContent,
+      ),
+      [
+        "Auto-collapse hunks",
+        "Sync GitHub file Viewed",
+        "Link split sides",
+      ],
+    );
+    assert.equal(
+      settings.querySelector(".hunkmark-reset-button").textContent,
+      "Reset page",
+    );
+
+    settingsButton.click();
+    assert.equal(settings.hidden, false);
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "true");
+
+    const settingsInput = settings.querySelector(
+      'input[aria-label="Automatically collapse viewed hunks"]',
+    );
+    settingsInput.focus();
+    panel.querySelector(".hunkmark-panel-summary").click();
+    assert.equal(settings.hidden, true);
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+    assert.equal(dom.window.document.activeElement, settingsButton);
+
+    settingsButton.click();
+    const outsideButton = dom.window.document.createElement("button");
+    dom.window.document.body.append(outsideButton);
+    outsideButton.focus();
+    outsideButton.click();
+    assert.equal(settings.hidden, true);
+    assert.equal(dom.window.document.activeElement, outsideButton);
+
+    settingsButton.click();
+    dom.window.document.body.click();
+    assert.equal(settings.hidden, true);
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+
+    settingsButton.click();
+    const escape = new dom.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    dom.window.document.dispatchEvent(escape);
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(settings.hidden, true);
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+    assert.equal(dom.window.document.activeElement, settingsButton);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("uses the current React file container for panel clearance", async () => {
   const { app, dom } = await startExtension(modernGridFixture());
   try {

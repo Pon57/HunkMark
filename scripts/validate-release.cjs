@@ -124,7 +124,7 @@ assert.deepEqual(
 
 for (const [relative, dimensions] of [
   ["store-assets/screenshot-main.png", { width: 1280, height: 800 }],
-  ["store-assets/screenshot-filtered.png", { width: 1280, height: 800 }],
+  ["store-assets/screenshot-line-review.png", { width: 1280, height: 800 }],
   ["store-assets/promo-small.png", { width: 440, height: 280 }],
 ]) {
   assert.deepEqual(
@@ -140,7 +140,7 @@ const executableSource = executableFiles
 assert.doesNotMatch(executableSource, /\beval\s*\(/, "eval is not allowed");
 assert.doesNotMatch(executableSource, /\bnew\s+Function\s*\(/, "Dynamic code is not allowed");
 assert.doesNotMatch(
-  executableSource,
+  executableSource.replaceAll('"http://www.w3.org/2000/svg"', '""'),
   /https?:\/\//,
   "Executable code contains a remote URL",
 );
@@ -153,6 +153,15 @@ assert.doesNotMatch(
 const storeScreenshotSource = fs.readFileSync(
   path.join(root, "design/store-screenshot-capture.html"),
   "utf8",
+);
+const storeScreenshotScripts = Array.from(
+  storeScreenshotSource.matchAll(/<script src="\.\.\/([^"]+)"><\/script>/g),
+  (match) => match[1],
+);
+assert.deepEqual(
+  storeScreenshotScripts,
+  executableFiles.filter((file) => file !== "content.js"),
+  "Store screenshot capture must load declared modules in manifest order",
 );
 assert.doesNotMatch(
   storeScreenshotSource,

@@ -24,4 +24,4 @@ The four release icons are intentionally exported assets. Regenerate and inspect
 - `?state=progress` demonstrates hunk completion, automatic collapse, a partially reviewed hunk, and the progress panel.
 - `?state=lines` demonstrates line-level review and the partial-hunk state.
 
-The exported 1280 x 800 images are `../store-assets/screenshot-main.png` and `../store-assets/screenshot-filtered.png`.
+The exported 1280 x 800 images are `../store-assets/screenshot-main.png` and `../store-assets/screenshot-line-review.png`.

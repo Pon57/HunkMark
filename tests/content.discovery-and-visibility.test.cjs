@@ -816,6 +816,66 @@ test("links split diff sides and syncs GitHub's official Viewed control", async 
   }
 });
 
+test("keeps GitHub official Viewed sync off until explicitly enabled", async () => {
+  const preferenceKey =
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`;
+  const { app, chrome, dom } = await startExtension(
+    splitFixture(),
+    { [preferenceKey]: false },
+  );
+  try {
+    const officialControl = dom.window.document.querySelector(
+      'button[aria-label="Not Viewed"]',
+    );
+    let officialClicks = 0;
+    officialControl.addEventListener("click", () => {
+      officialClicks += 1;
+      officialControl.setAttribute("aria-label", "Viewed");
+      officialControl.setAttribute("aria-pressed", "true");
+    });
+    const syncInput = dom.window.document.querySelector(
+      'input[aria-label="Sync GitHub file Viewed"]',
+    );
+
+    assert.equal(app.syncOfficialViewedEnabled, false);
+    assert.equal(syncInput.checked, false);
+
+    const controls = Array.from(lineControls(dom));
+    controls[0].click();
+    await waitFor(() => {
+      assert.equal(
+        controls.every(
+          (control) => control.getAttribute("aria-pressed") === "true",
+        ),
+        true,
+      );
+    });
+    assert.equal(officialClicks, 0);
+    assert.equal(officialControl.getAttribute("aria-pressed"), "false");
+
+    changeCheckbox(dom, syncInput, true);
+    await waitFor(() => {
+      assert.equal(app.syncOfficialViewedEnabled, true);
+      assert.equal(syncInput.disabled, false);
+      assert.equal(chrome.snapshot()[preferenceKey], true);
+      assert.equal(officialClicks, 1);
+      assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+    });
+
+    changeCheckbox(dom, syncInput, false);
+    await waitFor(() => {
+      assert.equal(app.syncOfficialViewedEnabled, false);
+      assert.equal(syncInput.disabled, false);
+      assert.equal(chrome.snapshot()[preferenceKey], false);
+    });
+    assert.equal(officialClicks, 1);
+    assert.equal(officialControl.getAttribute("aria-pressed"), "true");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("does not redraw review controls for storage changes that preserve visible state", async () => {
   const { app, chrome, dom } = await startExtension(
     commitSelectionFixture(),

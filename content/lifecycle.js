@@ -270,7 +270,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       }
 
+      const officialViewedSyncChange =
+        changes[this.officialViewedSyncPreferenceKey];
+      const officialViewedSyncWasEnabled =
+        this.syncOfficialViewedEnabled;
+      if (officialViewedSyncChange) {
+        this.syncOfficialViewedEnabled =
+          officialViewedSyncChange.newValue !== false;
+        this.syncOfficialViewedPreferenceInput();
+      }
+
       this.applyOfficialSuppressionChanges(changes);
+      if (
+        officialViewedSyncChange &&
+        !officialViewedSyncWasEnabled &&
+        this.syncOfficialViewedEnabled
+      ) {
+        this.applyOfficialViewedSyncPreference();
+      }
 
       const reviewStateChanged = Object.keys(changes).some(
         (key) =>

@@ -75,6 +75,7 @@
     NAVIGATION_POLL_INTERVAL_MS: 250,
     UNRESOLVED_DIFF_SELECTOR,
     PANEL_ID: "hunkmark-panel",
+    PANEL_SETTINGS_ID: "hunkmark-panel-settings",
     PANEL_SPACER_ID: "hunkmark-panel-spacer",
     RECONNECT_NOTICE_ID: "hunkmark-reconnect-notice",
     REFRESH_DELAY_MS: 120,
@@ -105,6 +106,8 @@
         `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
       this.linkSplitPreferenceKey =
         `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:link-split-sides`;
+      this.officialViewedSyncPreferenceKey =
+        `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`;
 
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
@@ -147,10 +150,12 @@
       this.dragState = null;
       this.autoCollapseViewed = true;
       this.linkSplitSides = true;
+      this.syncOfficialViewedEnabled = true;
       this.preferencesLoaded = false;
       this.panelClearanceObserver = null;
       this.panelClearanceFileTarget = null;
       this.panelClearanceTarget = null;
+      this.panelEventController = null;
       this.refreshQueued = false;
       this.refreshRunning = false;
       this.refreshAgain = false;
