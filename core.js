@@ -45,7 +45,9 @@
     CONTEXT: `${REVIEW_STORAGE_NAMESPACE}:context`,
     FILE: `${REVIEW_STORAGE_NAMESPACE}:file`,
     HUNK: `${REVIEW_STORAGE_NAMESPACE}:hunk`,
+    HUNK_LAYOUT: `${REVIEW_STORAGE_NAMESPACE}:hunk-layout`,
     LINE: `${REVIEW_STORAGE_NAMESPACE}:line`,
+    LINE_LAYOUT: `${REVIEW_STORAGE_NAMESPACE}:line-layout`,
     LINE_BLOCK: `${REVIEW_STORAGE_NAMESPACE}:line-block`,
     LINE_CONTEXT: `${REVIEW_STORAGE_NAMESPACE}:line-context`,
     RANGE: `${REVIEW_STORAGE_NAMESPACE}:range`,
@@ -297,6 +299,29 @@
     return [header, ...changes].join("\n");
   }
 
+  function buildLayoutHunkIdentity({ headerText, blocks }) {
+    if (
+      !Array.isArray(blocks) ||
+      blocks.length === 0 ||
+      blocks.some((block) => !block)
+    ) {
+      return { completionSignature: null, occurrenceSignature: null };
+    }
+    const header = normalizeHunkHeader(headerText);
+    const joinBlocks = (values) =>
+      [header, ...values].join("\n\u0000hunk-block\u0000\n");
+    const occurrenceSignature = joinBlocks(
+      blocks.map((block) => normalizeLineBreaks(block.blockSignature)),
+    );
+    const completionSignature = blocks.every(
+      ({ beforeAnchor, afterAnchor }) =>
+        beforeAnchor !== null && afterAnchor !== null,
+    )
+      ? joinBlocks(blocks.map((block) => lineReviewBlockValue(block)))
+      : null;
+    return { completionSignature, occurrenceSignature };
+  }
+
   async function hashIdentifier(domain, value) {
     if (!IDENTIFIER_DOMAIN_SET.has(domain)) {
       throw new TypeError("A recognized identifier domain is required");
@@ -400,10 +425,11 @@
     filePath,
     signature,
     occurrence = 0,
+    domain = IDENTIFIER_DOMAINS.HUNK,
   ) {
     const ids = cachedReviewStorageIds(scope);
     const hunkHash = cachedIdentifier(
-      IDENTIFIER_DOMAINS.HUNK,
+      domain,
       `${filePath}\n${signature}`,
     );
     return ids && hunkHash
@@ -411,9 +437,16 @@
       : null;
   }
 
-  function lineIdentityValue(filePath, kind, lineText, identicalCount) {
+  function lineIdentityValue(
+    filePath,
+    kind,
+    lineText,
+    identicalCount,
+    layout = null,
+  ) {
     return [
       filePath,
+      ...(layout ? [`layout:${layout}`] : []),
       kind,
       normalizeLineBreaks(lineText),
       `identical-count:${identicalCount}`,
@@ -427,26 +460,64 @@
     lineText,
     occurrence = 0,
     identicalCount = 1,
+    layout = null,
+    domain = IDENTIFIER_DOMAINS.LINE,
   ) {
     const ids = cachedReviewStorageIds(scope);
     const lineHash = cachedIdentifier(
-      IDENTIFIER_DOMAINS.LINE,
-      lineIdentityValue(filePath, kind, lineText, identicalCount),
+      domain,
+      lineIdentityValue(filePath, kind, lineText, identicalCount, layout),
     );
     return ids && lineHash
       ? formatLineStorageKey(ids, lineHash, occurrence)
       : null;
   }
 
-  async function hunkStorageKey(scope, filePath, signature, occurrence = 0) {
+  async function hunkStorageKey(
+    scope,
+    filePath,
+    signature,
+    occurrence = 0,
+    domain = IDENTIFIER_DOMAINS.HUNK,
+  ) {
     const [{ contextId, rangeId }, hunkHash] = await Promise.all([
       reviewStorageIds(scope),
       hashIdentifier(
-        IDENTIFIER_DOMAINS.HUNK,
+        domain,
         `${filePath}\n${signature}`,
       ),
     ]);
     return formatHunkStorageKey({ contextId, rangeId }, hunkHash, occurrence);
+  }
+
+  async function layoutHunkStorageKey(
+    scope,
+    filePath,
+    signature,
+    occurrence = 0,
+  ) {
+    return hunkStorageKey(
+      scope,
+      filePath,
+      signature,
+      occurrence,
+      IDENTIFIER_DOMAINS.HUNK_LAYOUT,
+    );
+  }
+
+  function cachedLayoutHunkStorageKey(
+    scope,
+    filePath,
+    signature,
+    occurrence = 0,
+  ) {
+    return cachedHunkStorageKey(
+      scope,
+      filePath,
+      signature,
+      occurrence,
+      IDENTIFIER_DOMAINS.HUNK_LAYOUT,
+    );
   }
 
   async function lineStorageKey(
@@ -456,6 +527,8 @@
     lineText,
     occurrence = 0,
     identicalCount = 1,
+    layout = null,
+    domain = IDENTIFIER_DOMAINS.LINE,
   ) {
     const { contextId, rangeId } = await reviewStorageIds(scope);
     const lineIdentity = lineIdentityValue(
@@ -463,12 +536,55 @@
       kind,
       lineText,
       identicalCount,
+      layout,
     );
     const lineHash = await hashIdentifier(
-      IDENTIFIER_DOMAINS.LINE,
+      domain,
       lineIdentity,
     );
     return formatLineStorageKey({ contextId, rangeId }, lineHash, occurrence);
+  }
+
+  async function layoutLineStorageKey(
+    scope,
+    filePath,
+    layout,
+    kind,
+    lineText,
+    occurrence = 0,
+    identicalCount = 1,
+  ) {
+    return lineStorageKey(
+      scope,
+      filePath,
+      kind,
+      lineText,
+      occurrence,
+      identicalCount,
+      layout,
+      IDENTIFIER_DOMAINS.LINE_LAYOUT,
+    );
+  }
+
+  function cachedLayoutLineStorageKey(
+    scope,
+    filePath,
+    layout,
+    kind,
+    lineText,
+    occurrence = 0,
+    identicalCount = 1,
+  ) {
+    return cachedLineStorageKey(
+      scope,
+      filePath,
+      kind,
+      lineText,
+      occurrence,
+      identicalCount,
+      layout,
+      IDENTIFIER_DOMAINS.LINE_LAYOUT,
+    );
   }
 
   function lineReviewBlockValue({
@@ -670,7 +786,10 @@
     aggregateLineState,
     beginIdentifierCacheGeneration,
     buildHunkSignature,
+    buildLayoutHunkIdentity,
     cachedHunkStorageKey,
+    cachedLayoutLineStorageKey,
+    cachedLayoutHunkStorageKey,
     cachedLineReviewBlockFingerprint,
     cachedLineReviewContextFingerprint,
     cachedLineStorageKey,
@@ -689,6 +808,8 @@
     isReviewStorageKey,
     isHunkHeaderText,
     lineStorageKey,
+    layoutHunkStorageKey,
+    layoutLineStorageKey,
     lineReviewBlockFingerprint,
     lineReviewContextFingerprint,
     looksLikeFilePath,

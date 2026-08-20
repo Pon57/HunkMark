@@ -1054,23 +1054,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
           restoredFiles.add(hunk.fileElement);
         }
         let invalidatedLineReview = false;
+        const sharedCompletion = hunk.sharedCompletionKey
+          ? this.sharedHunkCompletionByKey.get(hunk.sharedCompletionKey)
+          : null;
         hunk.lines.forEach((line) => {
-          if (!this.reviewStorageKeys.has(line.key)) {
+          const lineKey = this.cachedLineReviewKey(line);
+          if (
+            sharedCompletion?.viewed !== true &&
+            !this.reviewStorageKeys.has(lineKey)
+          ) {
             return;
           }
-          if (this.cachedLineReviewMatches(line)) {
-            line.element.classList.add("hunkmark-line-viewed");
-          } else {
+          const state = this.cachedLineReviewState(
+            line,
+            sharedCompletion,
+            lineKey,
+          );
+          if (state.invalidated) {
             invalidatedLineReview = true;
+          } else if (sharedCompletion?.viewed === true || state.marked) {
+            line.element.classList.add("hunkmark-line-viewed");
           }
         });
         if (invalidatedLineReview) {
           return;
         }
-        if (
-          !guard.collapsedKeys.has(hunk.key) &&
-          !this.reviewStorageKeys.has(`${hunk.key}:collapsed`)
-        ) {
+        const collapsedKey = `${hunk.key}:collapsed`;
+        const persistedCollapsed = this.cachedCollapseSurvivesSharedClear(
+          collapsedKey,
+          sharedCompletion,
+        );
+        const sharedCollapsed = Boolean(
+          sharedCompletion?.viewed === true && sharedCompletion.collapsed,
+        );
+        const guardedCollapsed = Boolean(
+          this.sharedHunkCompletionClearTimestamp(sharedCompletion) === 0 &&
+            guard.collapsedKeys.has(hunk.key),
+        );
+        if (!sharedCollapsed && !persistedCollapsed && !guardedCollapsed) {
           return;
         }
         hunk.groupRows.forEach((row) => {
@@ -1149,17 +1170,25 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
 
         const candidates = candidatesByFile.get(hunk.fileElement) ?? [];
+        const sharedCompletion = hunk.sharedCompletionKey
+          ? this.sharedHunkCompletionByKey.get(hunk.sharedCompletionKey)
+          : null;
         candidates.push({
           hunk,
           progressKey,
           lineStates: hunk.lines.map((line) => {
-            const hasStoredLine = this.reviewStorageKeys.has(line.key);
-            const storedMatches = this.cachedLineReviewMatches(line);
+            const lineKey = this.cachedLineReviewKey(line);
+            const state = this.cachedLineReviewState(
+              line,
+              sharedCompletion,
+              lineKey,
+            );
             return {
-              invalidated: hasStoredLine && !storedMatches,
-              marked: storedMatches,
+              invalidated: state.invalidated,
+              marked: sharedCompletion?.viewed === true || state.marked,
             };
           }),
+          sharedCompletion,
         });
         candidatesByFile.set(hunk.fileElement, candidates);
       });
@@ -1179,12 +1208,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
             0,
           );
         const canRestoreEntireFile = candidates.every(
-          ({ hunk, lineStates }) =>
+          ({ hunk, lineStates, sharedCompletion }) =>
             (matchesCachedFile ||
+              sharedCompletion?.viewed === true ||
               this.reviewStorageKeys.has(hunk.key) ||
               this.reviewStorageKeys.has(`${hunk.key}:collapsed`) ||
               hunk.lines.some((line) =>
-                this.reviewStorageKeys.has(line.key),
+                this.reviewStorageKeys.has(this.cachedLineReviewKey(line)),
               )) &&
             lineStates.every((line) => !line.invalidated),
         );
@@ -1198,16 +1228,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
             (total, { hunk }) => total + hunk.lines.length,
             0,
           ) >= this.constants.LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD;
-        candidates.forEach(({ hunk, lineStates }) => {
-          const collapsed = this.reviewStorageKeys.has(
-            `${hunk.key}:collapsed`,
-          );
+        candidates.forEach(({ hunk, lineStates, sharedCompletion }) => {
+          const collapsedKey = `${hunk.key}:collapsed`;
+          const collapsed = sharedCompletion?.viewed === true
+            ? Boolean(sharedCompletion.collapsed)
+            : this.cachedCollapseSurvivesSharedClear(
+                collapsedKey,
+                sharedCompletion,
+              );
           restorationPlans.push({
             collapsed,
             deferLineControls: collapsed || lazyLineControls,
             hunk,
             lazyLineControls,
             lineStates,
+            sharedCompletion: sharedCompletion?.viewed === true,
           });
         });
       });
@@ -1230,6 +1265,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         controller.marked =
           controller.lines.length === 0 &&
           this.reviewStorageKeys.has(controller.key);
+        controller.sharedCompletion = plan.sharedCompletion;
         controller.collapsed = plan.collapsed;
         this.updateAggregateFromLines(controller);
         controller.input.disabled = false;

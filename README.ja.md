@@ -38,6 +38,7 @@ git clone https://github.com/Pon57/HunkMark.git
 
 - 確認状態は `chrome.storage.local` にだけ保存し、外部へ送信しません
 - 行の内容・変更ブロック・前後の文脈が変わっていない場合にのみ状態を引き継ぎ、編集・異なる文脈への移動・不可視 Unicode の変更がある場合は未確認に戻します
+- Unified / Split 間では部分的な行の確認状態を分けて保存し、変更行の並びと前後の文脈が曖昧なく一致する hunk 全体の Viewed と Collapse / Expand だけを共有します
 - `Reset page` は現在表示中のコミット範囲の状態だけを削除します
 - `Sync GitHub file Viewed` で公式 `Viewed` への自動同期を切り替えられます。オフにしても既存の公式 `Viewed` は自動解除せず、ユーザーが手動で解除した場合はその操作を尊重します
 

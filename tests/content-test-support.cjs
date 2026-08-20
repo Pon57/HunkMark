@@ -872,6 +872,74 @@ function splitFixture() {
     </body></html>`;
 }
 
+function layoutReviewHunkRows(options = {}) {
+  const {
+    additions = ["newAlpha"],
+    after = "after();",
+    before = "before();",
+    beforeRight = before,
+    deletions = ["oldAlpha", "oldBeta"],
+    headerText = "@@ -10,4 +10,3 @@ example()",
+    layout = "split",
+  } = options;
+  const header =
+    `<tr><td class="blob-code-hunk">${headerText}</td></tr>`;
+  if (layout === "unified") {
+    const changedRows = [
+      ...deletions.map(
+        (line, index) =>
+          `<tr><td class="blob-num">${11 + index}</td><td class="blob-code-deletion">-${line}</td></tr>`,
+      ),
+      ...additions.map(
+        (line, index) =>
+          `<tr><td class="blob-num">${11 + index}</td><td class="blob-code-addition">+${line}</td></tr>`,
+      ),
+    ].join("");
+    return `${header}
+      <tr><td class="blob-num">10</td><td class="blob-code-context">${before}</td></tr>
+      ${changedRows}
+      <tr><td class="blob-num">14</td><td class="blob-code-context">${after}</td></tr>`;
+  }
+
+  const rowCount = Math.max(deletions.length, additions.length);
+  const changedRows = Array.from({ length: rowCount }, (_, index) => {
+    const deletion = deletions[index];
+    const addition = additions[index];
+    return `<tr>
+      <td class="blob-num">${deletion ? 11 + index : ""}</td>
+      <td${deletion ? ' class="blob-code-deletion" data-diff-side="left"' : ""}>${deletion ? `-${deletion}` : ""}</td>
+      <td class="blob-num">${addition ? 11 + index : ""}</td>
+      <td${addition ? ' class="blob-code-addition" data-diff-side="right"' : ""}>${addition ? `+${addition}` : ""}</td>
+    </tr>`;
+  }).join("");
+  return `${header}
+    <tr>
+      <td class="blob-num">10</td><td class="blob-code-context" data-diff-side="left">${before}</td>
+      <td class="blob-num">10</td><td class="blob-code-context" data-diff-side="right">${beforeRight}</td>
+    </tr>
+    ${changedRows}
+    <tr>
+      <td class="blob-num">14</td><td class="blob-code-context" data-diff-side="left">${after}</td>
+      <td class="blob-num">13</td><td class="blob-code-context" data-diff-side="right">${after}</td>
+    </tr>`;
+}
+
+function layoutReviewFixture(options = {}) {
+  const hunkOptions = Array.isArray(options.hunks)
+    ? options.hunks.map((hunk) => ({ ...options, ...hunk, hunks: null }))
+    : [options];
+  const hunkRows = hunkOptions.map(layoutReviewHunkRows).join("");
+  return `<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/layout.js">
+        <div class="file-header"><span class="file-info">src/layout.js</span></div>
+        <table><tbody>
+          ${hunkRows}
+        </tbody></table>
+      </div>
+    </body></html>`;
+}
+
 function dragFixture() {
   return `<!doctype html>
     <html><body>
@@ -1344,6 +1412,7 @@ module.exports = {
   replaceMergeFixtureRows,
   replaceSemanticMergeFixtureRows,
   splitFixture,
+  layoutReviewFixture,
   dragFixture,
   modernGridFixture,
   currentReactContextExpansionFixture,

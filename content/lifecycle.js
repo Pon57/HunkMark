@@ -316,9 +316,33 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       this.controllersByRow.forEach((controller) => {
         let controllerAppearanceChanged = false;
+        const sharedCompletionSourcePropagation =
+          this.propagateSharedHunkCompletionSourceChanges(
+            controller,
+            changes,
+          );
+        if (sharedCompletionSourcePropagation) {
+          void sharedCompletionSourcePropagation.catch((error) => {
+            if (!this.stopForInvalidatedContext(error)) {
+              console.warn(
+                "HunkMark could not reconcile shared hunk completion aliases.",
+                error,
+              );
+            }
+          });
+        }
+        const sharedCompletionChange = controller.sharedCompletionKey
+          ? changes[controller.sharedCompletionKey]
+          : null;
+        const sharedCompletionValue = sharedCompletionChange
+          ? sharedCompletionChange.newValue
+          : this.sharedHunkCompletionByKey.get(
+              controller.sharedCompletionKey,
+            );
         if (changes[controller.collapsedKey]) {
-          const collapsed = Boolean(
+          const collapsed = this.storedCollapseSurvivesSharedClear(
             changes[controller.collapsedKey].newValue,
+            sharedCompletionValue,
           );
           controllerAppearanceChanged ||= controller.collapsed !== collapsed;
           controller.collapsed = collapsed;
@@ -336,15 +360,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
               // review already matched and no visible appearance changed.
               cachedReviewEvidenceChanged = true;
             }
-            const storedMatches = this.storedLineReviewMatches(
+            const storedState = this.storedLineReviewState(
               line,
               nextValue,
+              sharedCompletionValue,
             );
+            const storedMatches = storedState.marked;
             controllerAppearanceChanged ||= line.marked !== storedMatches;
             line.marked = storedMatches;
-            invalidatedLineReview ||= (
-              nextValue !== undefined && !storedMatches
-            );
+            invalidatedLineReview ||= storedState.invalidated;
             lineStorageChanged = true;
           }
         });
@@ -379,6 +403,31 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (invalidatedLineReview) {
           controllerAppearanceChanged ||= controller.collapsed;
           controller.collapsed = false;
+        }
+
+        if (sharedCompletionChange) {
+          const previousAppearance = {
+            collapsed: controller.collapsed,
+            indeterminate: controller.indeterminate,
+            lineMarks: controller.lines.map((line) => line.marked),
+            marked: controller.marked,
+            sharedCompletion: controller.sharedCompletion,
+          };
+          this.applySharedHunkCompletionState(
+            controller,
+            sharedCompletionChange.newValue,
+            { restoreLocal: true },
+          );
+          controllerAppearanceChanged ||=
+            controller.sharedCompletion !==
+              previousAppearance.sharedCompletion ||
+            controller.marked !== previousAppearance.marked ||
+            controller.indeterminate !== previousAppearance.indeterminate ||
+            controller.collapsed !== previousAppearance.collapsed ||
+            controller.lines.some(
+              (line, index) =>
+                line.marked !== previousAppearance.lineMarks[index],
+            );
         }
 
         if (controllerAppearanceChanged) {

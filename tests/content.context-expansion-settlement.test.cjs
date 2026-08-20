@@ -1116,7 +1116,7 @@ test("reenables review controls after a recovered context migration read", async
     const getLocalStorage = app.getLocalStorage.bind(app);
     let readFailed = false;
     app.getLocalStorage = async (keys) => {
-      if (!readFailed && Array.isArray(keys) && keys.length >= 5) {
+      if (!readFailed && Array.isArray(keys) && keys.length >= 9) {
         readFailed = true;
         throw new Error("context migration read failed");
       }

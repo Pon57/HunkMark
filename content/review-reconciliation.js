@@ -45,17 +45,39 @@ if (globalThis.HunkMarkContent?.extendApp) {
           ),
         ]),
       );
+      const openedSharedCompletionKeys = new Set(
+        newControllers.flatMap((controller) => {
+          const assessment = expansionAssessmentByController.get(controller);
+          controller.sharedCompletionSources =
+            this.contextExpansionSharedCompletionSources(
+              controller,
+              assessment,
+            );
+          controller.reviewKeys = Object.freeze([
+            ...new Set([
+              ...controller.reviewKeys,
+              ...this.sharedHunkCompletionSourceKeys(controller),
+            ]),
+          ]);
+          return assessment?.opensHunk
+            ? controller.sharedCompletionSources.map((source) => source.key)
+            : [];
+        }),
+      );
       const keys = [
-        ...new Set(
-          newControllers.flatMap((controller) => [
+        ...new Set([
+          ...newControllers.flatMap((controller) => [
             ...controller.reviewKeys,
             controller.officialSuppressionKey,
           ]),
-        ),
+          ...openedSharedCompletionKeys,
+        ]),
       ];
       let migrationError = null;
+      let migrationReadCompleted = false;
       await this.withReviewStorageLock(async () => {
         const stored = await this.getLocalStorage(keys);
+        migrationReadCompleted = true;
         const migrations = {};
         const migrationRemovals = new Set();
         const migrationTime = Date.now();
@@ -83,6 +105,50 @@ if (globalThis.HunkMarkContent?.extendApp) {
           const trustedReviewExpansion =
             trustedReviewExpansionIntents.length > 0;
           const hostExpansionOpensHunk = assessment.opensHunk;
+          let sharedCompletionValue = controller.sharedCompletionKey
+            ? stored[controller.sharedCompletionKey]
+            : null;
+          let sharedSourceInvalidatesCollapse = false;
+          let sourceLineClearedAtByKey = new Map();
+          if (controller.sharedCompletionKey) {
+            const sourceInvalidation =
+              this.sharedHunkCompletionSourceInvalidation(
+                controller,
+                controller.sharedCompletionSources.filter(
+                  (source) =>
+                    source.key !== controller.sharedCompletionKey,
+                ),
+                stored,
+                migrationTime,
+              );
+            if (sourceInvalidation) {
+              sourceLineClearedAtByKey =
+                sourceInvalidation.lineClearedAtByKey;
+              if (
+                sharedCompletionValue?.viewed === true ||
+                (sourceInvalidation.updatedAt > 0 &&
+                  this.reviewEntryTimestamp(sharedCompletionValue) <
+                    sourceInvalidation.updatedAt)
+              ) {
+                sharedCompletionValue =
+                  this.sharedHunkCompletionPartialValue(
+                    sourceInvalidation.updatedAt,
+                    sourceInvalidation.current,
+                  );
+                migrations[controller.sharedCompletionKey] =
+                  sharedCompletionValue;
+              }
+              const collapsedValue = stored[controller.collapsedKey];
+              sharedSourceInvalidatesCollapse = Boolean(
+                collapsedValue &&
+                  this.reviewEntryTimestamp(collapsedValue) <=
+                    sourceInvalidation.sourceUpdatedAt,
+              );
+              if (sharedSourceInvalidatesCollapse) {
+                migrationRemovals.add(controller.collapsedKey);
+              }
+            }
+          }
           const suppressionKey = controller.officialSuppressionKey;
           if (
             this.officialViewedIntentGenerationByKey.get(suppressionKey) ===
@@ -104,20 +170,45 @@ if (globalThis.HunkMarkContent?.extendApp) {
             previous.length > 0 &&
               previous.every((candidate) => candidate.collapsed),
           );
+          const storedCollapse = this.storedCollapseSurvivesSharedClear(
+            stored[controller.collapsedKey],
+            sharedCompletionValue,
+          );
           controller.collapsed = Boolean(
             !hostExpansionOpensHunk &&
-              (stored[controller.collapsedKey] ||
-                previousControllersStayedCollapsed),
+              !sharedSourceInvalidatesCollapse &&
+              (storedCollapse || previousControllersStayedCollapsed),
           );
           controller.marked = hunkStored;
           let invalidatedLineReview = false;
+          let migratedLegacyLineReview = false;
+          let localCompletionEvidenceTimestamp = 0;
           let preservedLineReviewForOtherContext = false;
           controller.lines.forEach((line) => {
-            const storedLineReview = stored[line.key];
+            // Keep this compatibility read for at least one full
+            // REVIEW_RETENTION_MS window after layout-specific keys ship.
+            // Extension updates may skip releases, so removing it earlier
+            // would strand still-retainable v3 review state.
+            const {
+              key: storedLineReviewKey,
+              legacy: legacyStoredLineReview,
+              legacyMatches,
+              value: storedLineReview,
+            } = this.storedLineReviewCandidate(line, stored);
             this.adoptStoredLineReviewBaselineContext(
               line,
               storedLineReview,
             );
+            const lineSharedClearAt = Math.max(
+              this.sharedHunkCompletionClearTimestamp(
+                sharedCompletionValue,
+              ),
+              sourceLineClearedAtByKey.get(line.key) ?? 0,
+            );
+            const lineSharedCompletionValue =
+              lineSharedClearAt > 0
+                ? this.sharedHunkCompletionClearValue(lineSharedClearAt)
+                : sharedCompletionValue;
             const previousLine = previousLineMarks.get(line.key);
             const previousBaseline = this.reviewContextAlias(
               line.contextFingerprint,
@@ -133,10 +224,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
               line.hostContextExpansionBaselineContextFingerprint =
                 previousBaseline;
             }
-            const storedMatches = this.storedLineReviewMatches(
+            const storedState = this.storedLineReviewState(
               line,
               storedLineReview,
+              lineSharedCompletionValue,
             );
+            const storedMatches = storedState.marked;
             const capturedLines = trustedReviewExpansionIntents.map(
               (intent) => intent.capture.linesByKey.get(line.key),
             );
@@ -158,17 +251,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
             const trustedExpansionMatches =
               trustedReviewExpansion &&
               ((previousLine?.marked === true &&
-                this.storedLineReviewMatches(
+                this.storedLineReviewState(
                   previousLine,
                   storedLineReview,
-                )) ||
+                  lineSharedCompletionValue,
+                ).marked) ||
                 capturedLines.some(
                   (candidate) =>
                     candidate &&
-                    this.storedLineReviewMatches(
+                    this.storedLineReviewState(
                       candidate,
                       storedLineReview,
-                    ),
+                      lineSharedCompletionValue,
+                    ).marked,
                 ));
             const storedBaselineContextFingerprint =
               this.storedLineReviewBaselineContext(storedLineReview);
@@ -189,16 +284,36 @@ if (globalThis.HunkMarkContent?.extendApp) {
             // optimistic mark did not commit and must not be resurrected
             // from a reused GitHub line element.
             line.marked = storedMatches || trustedExpansionMatches;
+            if (line.marked) {
+              localCompletionEvidenceTimestamp = Math.max(
+                localCompletionEvidenceTimestamp,
+                this.reviewEntryTimestamp(storedLineReview),
+              );
+            }
+            if (legacyMatches && !storedState.suppressed) {
+              migratedLegacyLineReview = true;
+              migrations[line.key] = this.lineReviewStorageValue(
+                line,
+                this.reviewEntryTimestamp(legacyStoredLineReview) ||
+                  migrationTime,
+                legacyStoredLineReview,
+              );
+              migrationRemovals.add(line.legacyKey);
+            }
+            if (storedState.suppressed && sourceLineClearedAtByKey.has(line.key)) {
+              migrationRemovals.add(
+                legacyMatches ? line.legacyKey : line.key,
+              );
+            }
             if (
-              storedLineReview !== undefined &&
-              !storedMatches &&
+              storedState.invalidated &&
               !trustedExpansionMatches
             ) {
               invalidatedLineReview = true;
               if (this.storedLineReviewHasContext(storedLineReview)) {
                 preservedLineReviewForOtherContext = true;
               } else {
-                migrationRemovals.add(line.key);
+                migrationRemovals.add(storedLineReviewKey);
               }
             }
             if (
@@ -221,7 +336,33 @@ if (globalThis.HunkMarkContent?.extendApp) {
             }
           });
           this.updateAggregateFromLines(controller);
-          if (invalidatedLineReview) {
+          let sharedCompletion =
+            this.applySharedHunkCompletionState(
+              controller,
+              sharedCompletionValue,
+              { forceExpanded: hostExpansionOpensHunk },
+            );
+          if (
+            !sharedCompletion &&
+            migratedLegacyLineReview &&
+            controller.marked &&
+            controller.sharedCompletionKey &&
+            !(
+              sharedCompletionValue?.viewed === false &&
+              this.reviewEntryTimestamp(sharedCompletionValue) >=
+                localCompletionEvidenceTimestamp
+            )
+          ) {
+            migrations[controller.sharedCompletionKey] =
+              this.sharedHunkCompletionStorageValue(
+                controller.collapsed,
+                migrationTime,
+                sharedCompletionValue,
+              );
+            controller.sharedCompletion = true;
+            sharedCompletion = true;
+          }
+          if (invalidatedLineReview && !sharedCompletion) {
             controller.collapsed = false;
             if (!preservedLineReviewForOtherContext) {
               migrationRemovals.add(controller.collapsedKey);
@@ -232,8 +373,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
             !preservedLineReviewForOtherContext
           ) {
             migrationRemovals.add(controller.collapsedKey);
-            previous.forEach((candidate) =>
-              migrationRemovals.add(candidate.collapsedKey),
+            previous.forEach((candidate) => {
+              migrationRemovals.add(candidate.collapsedKey);
+            });
+          }
+        });
+
+        openedSharedCompletionKeys.forEach((key) => {
+          const value = migrations[key] ?? stored[key];
+          if (value?.viewed === true && value.collapsed === true) {
+            migrations[key] = this.sharedHunkCompletionStorageValue(
+              false,
+              migrationTime,
+              value,
             );
           }
         });
@@ -251,6 +403,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
         migrationError = error;
       });
       if (migrationError) {
+        if (!migrationReadCompleted) {
+          const failedIntents = new Set(
+            newControllers.flatMap(
+              (controller) =>
+                expansionAssessmentByController.get(controller)
+                  ?.reviewIntents ?? [],
+            ),
+          );
+          failedIntents.forEach((intent) =>
+            this.clearHostContextExpansionIntent(intent),
+          );
+          newControllers.forEach((controller) => {
+            controller.lines.forEach((line) => {
+              line.baselineContextFingerprint = null;
+              line.hostContextExpansionBaselineContextFingerprint = null;
+            });
+          });
+        }
         const reconciled =
           await this.reconcileReviewControllersAfterFailure(
             newControllers,

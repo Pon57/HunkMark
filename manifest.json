@@ -24,6 +24,7 @@
         "content/app.js",
         "content/discovery.js",
         "content/review-context.js",
+        "content/shared-completion.js",
         "content/review-storage.js",
         "content/official-viewed.js",
         "content/controllers.js",
