@@ -12,6 +12,7 @@ const {
   controllerAt,
   changeCheckbox,
   lineControls,
+  stopExtensions,
   waitFor,
   assertFileRevealState,
   startExtension,
@@ -20,8 +21,399 @@ const {
   evolvingCommitFixture,
   replacePageBody,
   modernGridFixture,
+  layoutReviewFixture,
   contextualLineFixture,
 } = require("./content-test-support.cjs");
+
+function lineByText(app, text) {
+  return Array.from(app.controllersByRow.values())
+    .flatMap((controller) => controller.lines)
+    .find((line) => line.text === text);
+}
+
+async function startLayoutPair() {
+  const chrome = createChromeApi();
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const split = await startExtension(layoutReviewFixture(), {}, options);
+  const unified = await startExtension(
+    layoutReviewFixture({ layout: "unified" }),
+    {},
+    options,
+  );
+  return { chrome, options, split, unified };
+}
+
+async function withDateNow(dom, now, callback) {
+  const dateNow = dom.window.Date.now;
+  dom.window.Date.now = () => now;
+  try {
+    return await callback();
+  } finally {
+    dom.window.Date.now = dateNow;
+  }
+}
+
+test("keeps partial lines local and shares completed hunk state", async () => {
+  const { chrome, options, split, unified } = await startLayoutPair();
+  let reloaded = null;
+  try {
+    const splitController = controllerAt(split.app);
+    const unifiedController = controllerAt(unified.app);
+    const splitDeletion = lineByText(split.app, "-oldAlpha");
+    const splitUnpairedDeletion = lineByText(split.app, "-oldBeta");
+    const sharedCompletionKey = splitController.sharedCompletionKey;
+
+    assert.notEqual(
+      splitDeletion.contextFingerprint,
+      unifiedController.lines[0].contextFingerprint,
+    );
+    assert.equal(sharedCompletionKey, unifiedController.sharedCompletionKey);
+    assert.ok(sharedCompletionKey);
+
+    splitDeletion.control.click();
+    await waitFor(() => {
+      assert.equal(splitController.indeterminate, true);
+      assert.equal(
+        unifiedController.lines.every((line) => !line.marked),
+        true,
+      );
+    });
+
+    await split.app.setLineViewed(splitUnpairedDeletion, true);
+    await waitFor(() => {
+      assert.equal(splitController.marked, true);
+      assert.equal(unifiedController.marked, true);
+      assert.equal(unifiedController.collapsed, true);
+      assert.equal(chrome.snapshot()[sharedCompletionKey]?.viewed, true);
+    });
+
+    await unified.app.setCollapsed(unifiedController, false);
+    await waitFor(() => {
+      assert.equal(unifiedController.collapsed, false);
+      assert.equal(splitController.collapsed, false);
+    });
+
+    let authoritativeClearAt = 0;
+    let stalePartialAt = 0;
+    chrome.api.storage.onChanged.removeListener(
+      unified.app.boundStorageChanged,
+    );
+    try {
+      await split.app.setHunkViewed(splitController, false);
+      const authoritativeClear =
+        chrome.snapshot()[sharedCompletionKey];
+      authoritativeClearAt =
+        unified.app.sharedHunkCompletionClearTimestamp(authoritativeClear);
+      assert.ok(authoritativeClearAt > 0);
+      assert.equal(unifiedController.marked, true);
+      await withDateNow(
+        unified.dom,
+        authoritativeClearAt - 1000,
+        () => unified.app.setLineViewed(unifiedController.lines[0], false),
+      );
+      const stalePartial = chrome.snapshot()[sharedCompletionKey];
+      stalePartialAt = unified.app.reviewEntryTimestamp(stalePartial);
+      assert.equal(stalePartial?.partial, true);
+      assert.ok(stalePartialAt > authoritativeClearAt);
+      assert.equal(
+        unified.app.sharedHunkCompletionClearTimestamp(stalePartial),
+        authoritativeClearAt,
+      );
+    } finally {
+      chrome.api.storage.onChanged.addListener(
+        unified.app.boundStorageChanged,
+      );
+    }
+    await waitFor(() => {
+      assert.equal(
+        splitController.lines.every((line) => !line.marked),
+        true,
+      );
+    });
+    await withDateNow(split.dom, stalePartialAt, () =>
+      split.app.setHunkViewed(splitController, true),
+    );
+    const completionAt = split.app.reviewEntryTimestamp(
+      chrome.snapshot()[sharedCompletionKey],
+    );
+    assert.ok(completionAt > stalePartialAt);
+    await withDateNow(unified.dom, completionAt, () =>
+      unified.app.setHunkViewed(unifiedController, false),
+    );
+    await waitFor(() => {
+      assert.equal(
+        [splitController, unifiedController].every((controller) =>
+          controller.lines.every((line) => !line.marked),
+        ),
+        true,
+      );
+      assert.equal(chrome.snapshot()[sharedCompletionKey]?.viewed, false);
+      assert.ok(chrome.snapshot()[splitDeletion.key]);
+    });
+    const firstClearAt = unified.app.sharedHunkCompletionClearTimestamp(
+      chrome.snapshot()[sharedCompletionKey],
+    );
+    assert.ok(firstClearAt > completionAt);
+    await unified.app.setHunkViewed(unifiedController, true);
+    await waitFor(() => {
+      const completion = chrome.snapshot()[sharedCompletionKey];
+      assert.equal(completion?.viewed, true);
+      assert.equal(
+        unified.app.sharedHunkCompletionClearTimestamp(completion),
+        firstClearAt,
+      );
+    });
+    await unified.app.setLineViewed(unifiedController.lines[0], false);
+    await waitFor(() => {
+      const partial = chrome.snapshot()[sharedCompletionKey];
+      assert.equal(partial?.partial, true);
+      assert.equal(
+        unified.app.sharedHunkCompletionClearTimestamp(partial),
+        firstClearAt,
+      );
+      assert.equal(
+        splitController.lines.every((line) => !line.marked),
+        true,
+      );
+      assert.equal(unifiedController.indeterminate, true);
+    });
+    await split.app.setCollapsed(splitController, true);
+    reloaded = await startExtension(layoutReviewFixture(), {}, options);
+    assert.equal(
+      controllerAt(reloaded.app).lines.every((line) => !line.marked),
+      true,
+    );
+    assert.equal(controllerAt(reloaded.app).collapsed, true);
+  } finally {
+    stopExtensions(
+      split,
+      unified,
+      ...(reloaded ? [reloaded] : []),
+    );
+  }
+});
+
+test("migrates legacy v3 lines only from their matching layout", async () => {
+  const seed = await startExtension(layoutReviewFixture());
+  const viewedAt = Date.now() - 1000;
+  const seedController = controllerAt(seed.app);
+  const seedLines = seedController.lines;
+  const seedCollapsedKey = seedController.collapsedKey;
+  const initial = Object.fromEntries(
+    seedLines.map((line) => [
+      line.legacyKey,
+      { contextFingerprint: line.contextFingerprint, viewedAt },
+    ]),
+  );
+  stopExtensions(seed);
+
+  const directChrome = createChromeApi(initial);
+  const direct = await startExtension(
+    layoutReviewFixture(),
+    {},
+    { chromeInstance: directChrome },
+  );
+  try {
+    const directController = controllerAt(direct.app);
+    assert.equal(directController.marked, true);
+    assert.equal(
+      directChrome.snapshot()[directController.sharedCompletionKey]?.viewed,
+      true,
+    );
+  } finally {
+    stopExtensions(direct);
+  }
+
+  const mismatchChrome = createChromeApi({
+    ...initial,
+    [seedCollapsedKey]: { collapsed: true, updatedAt: viewedAt },
+  });
+  const mismatch = await startExtension(
+    layoutReviewFixture({
+      after: "changedAfter();",
+      before: "changedBefore();",
+      beforeRight: "changedBefore();",
+    }),
+    {},
+    { chromeInstance: mismatchChrome },
+  );
+  try {
+    const mismatchController = controllerAt(mismatch.app);
+    assert.equal(mismatchController.collapsedKey, seedCollapsedKey);
+    assert.equal(mismatchController.marked, false);
+    assert.equal(mismatchController.collapsed, false);
+    seedLines.forEach((line) => {
+      assert.equal(line.legacyKey in mismatchChrome.snapshot(), true);
+    });
+    assert.equal(seedCollapsedKey in mismatchChrome.snapshot(), true);
+    mismatch.app.startOfficialViewedRestoreGuard(
+      mismatchController.officialSuppressionKey,
+      mismatchController.filePath,
+    );
+    assert.equal(mismatch.app.preserveOfficialViewedRestoredState(), true);
+    assert.equal(
+      mismatchController.groupRows.some(
+        (row) =>
+          row !== mismatchController.hunkRow &&
+          row.classList.contains("hunkmark-collapsed"),
+      ),
+      false,
+    );
+  } finally {
+    stopExtensions(mismatch);
+  }
+
+  const chrome = createChromeApi(initial);
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const unified = await startExtension(
+    layoutReviewFixture({ layout: "unified" }),
+    {},
+    options,
+  );
+  let split = null;
+  try {
+    assert.equal(controllerAt(unified.app).marked, false);
+    await unified.app.setLineViewed(
+      lineByText(unified.app, "-oldAlpha"),
+      true,
+    );
+    const sharedCompletionKey =
+      controllerAt(unified.app).sharedCompletionKey;
+    assert.equal(chrome.snapshot()[sharedCompletionKey]?.partial, true);
+    seedLines.forEach((line) => {
+      assert.equal(line.legacyKey in chrome.snapshot(), true);
+    });
+
+    split = await startExtension(layoutReviewFixture(), {}, options);
+    await waitFor(() => {
+      const splitController = controllerAt(split.app);
+      assert.equal(splitController.marked, true);
+      splitController.lines.forEach((line) => {
+        assert.ok(chrome.snapshot()[line.key]);
+        assert.equal(line.legacyKey in chrome.snapshot(), false);
+      });
+      assert.equal(
+        chrome.snapshot()[splitController.sharedCompletionKey]?.partial,
+        true,
+      );
+      assert.equal(controllerAt(unified.app).marked, false);
+      assert.equal(controllerAt(unified.app).indeterminate, true);
+    });
+  } finally {
+    stopExtensions(unified, ...(split ? [split] : []));
+  }
+});
+
+test("derives shared completion identity only for equivalent hunks", async () => {
+  const evidenceFor = async (options = {}) => {
+    const extension = await startExtension(layoutReviewFixture(options));
+    const controller = controllerAt(extension.app);
+    const evidence = {
+      completionKey: controller.sharedCompletionKey,
+      layout: controller.lines[0].layout,
+      lineKey: controller.lines[0].key,
+    };
+    stopExtensions(extension);
+    return evidence;
+  };
+  const duplicates = {
+    additions: ["same"],
+    deletions: ["same", "same"],
+  };
+  const evidence = await Promise.all([
+    evidenceFor(),
+    evidenceFor({ layout: "unified" }),
+    evidenceFor({ before: "fartherBefore();" }),
+    evidenceFor({ before: "fartherBefore();", layout: "unified" }),
+    evidenceFor({ beforeRight: "differentBefore();" }),
+    evidenceFor({ additions: ["only"], deletions: [] }),
+    evidenceFor({ additions: ["only"], deletions: [], layout: "unified" }),
+    evidenceFor(duplicates),
+    evidenceFor({ ...duplicates, layout: "unified" }),
+    evidenceFor({
+      additions: ["same"],
+      deletions: ["same", "same", "same"],
+      layout: "unified",
+    }),
+  ]);
+  const [
+    split,
+    unified,
+    expandedSplit,
+    expandedUnified,
+    ambiguous,
+    pureSplit,
+    pureUnified,
+    duplicateSplit,
+    duplicateUnified,
+    changedCount,
+  ] = evidence;
+
+  assert.equal(split.completionKey, unified.completionKey);
+  assert.equal(expandedSplit.completionKey, expandedUnified.completionKey);
+  assert.notEqual(split.completionKey, expandedSplit.completionKey);
+  assert.equal(ambiguous.completionKey, null);
+  assert.equal(pureSplit.layout, "split");
+  assert.equal(pureUnified.layout, "unified");
+  assert.notEqual(pureSplit.lineKey, pureUnified.lineKey);
+  assert.equal(pureSplit.completionKey, pureUnified.completionKey);
+  assert.equal(duplicateSplit.completionKey, duplicateUnified.completionKey);
+  assert.notEqual(duplicateSplit.completionKey, changedCount.completionKey);
+
+  const chrome = createChromeApi();
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const duplicateSplitLayout = await startExtension(
+    layoutReviewFixture({
+      hunks: [
+        { beforeRight: "differentBefore();" },
+        { headerText: "@@ -30,4 +30,3 @@ example()" },
+      ],
+      layout: "split",
+    }),
+    {},
+    options,
+  );
+  const duplicateUnifiedLayout = await startExtension(
+    layoutReviewFixture({
+      hunks: [
+        {},
+        { headerText: "@@ -30,4 +30,3 @@ example()" },
+      ],
+      layout: "unified",
+    }),
+    {},
+    options,
+  );
+  try {
+    const splitHunks = Array.from(
+      duplicateSplitLayout.app.controllersByRow.values(),
+    );
+    const unifiedHunks = Array.from(
+      duplicateUnifiedLayout.app.controllersByRow.values(),
+    );
+    assert.equal(splitHunks[0].sharedCompletionKey, null);
+    assert.equal(
+      splitHunks[1].sharedCompletionKey,
+      unifiedHunks[1].sharedCompletionKey,
+    );
+    assert.notEqual(
+      splitHunks[1].sharedCompletionKey,
+      unifiedHunks[0].sharedCompletionKey,
+    );
+    await duplicateSplitLayout.app.setHunkViewed(splitHunks[1], true);
+    await waitFor(() => {
+      assert.deepEqual(
+        unifiedHunks.map((controller) => controller.marked),
+        [false, true],
+      );
+    });
+  } finally {
+    stopExtensions(duplicateSplitLayout, duplicateUnifiedLayout);
+  }
+});
 
 test("restores collapsed hunks before paint after GitHub removes its diff body", async () => {
   const { app, dom } = await startExtension(commitSelectionFixture());

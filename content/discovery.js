@@ -630,6 +630,20 @@ if (globalThis.HunkMarkContent?.extendApp) {
         .join("\n");
     },
 
+    layoutReviewAnchorForContextRow(row) {
+      const texts = [
+        ...new Set(
+          this.contextLineDescriptors(row)
+            .map(({ text }) => this.Core.normalizeLineBreaks(text))
+            .filter((text) => text.length > 0),
+        ),
+      ];
+      if (texts.length === 0) {
+        return "";
+      }
+      return texts.length === 1 ? `context:${texts[0]}` : null;
+    },
+
     lineReviewContextOptions(
       groupRows,
       lineDescriptors,
@@ -654,6 +668,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
         return "";
       };
+      const layoutContextAnchor = (start, step) => {
+        for (
+          let index = start;
+          index >= 0 && index < groupRows.length;
+          index += step
+        ) {
+          const anchor = this.layoutReviewAnchorForContextRow(
+            groupRows[index],
+          );
+          if (anchor === null || anchor.length > 0) {
+            return anchor;
+          }
+        }
+        return "";
+      };
       const contextOptionsByLine = new Map();
 
       for (let blockStart = 0; blockStart < groupRows.length; blockStart += 1) {
@@ -671,12 +700,33 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const blockLines = groupRows
           .slice(blockStart, blockEnd + 1)
           .flatMap((row) => changedByRow.get(row) ?? []);
+        const layoutBlockLines = blockLines.slice().sort((left, right) => {
+          const kindOrder = { deletion: 0, addition: 1 };
+          return (
+            (kindOrder[left.kind] ?? 2) -
+            (kindOrder[right.kind] ?? 2)
+          );
+        });
         const blockSignature = blockLines
           .map(
             (descriptor) =>
               `${descriptor.kind}:${descriptor.side}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
           )
           .join("\n");
+        const layoutBeforeAnchor = layoutContextAnchor(blockStart - 1, -1);
+        const layoutAfterAnchor = layoutContextAnchor(blockEnd + 1, 1);
+        const layoutBlockSignature = layoutBlockLines
+          .map(
+            (descriptor) =>
+              `${descriptor.kind}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
+          )
+          .join("\n");
+        const layoutBlock = {
+          headerText,
+          beforeAnchor: layoutBeforeAnchor,
+          afterAnchor: layoutAfterAnchor,
+          blockSignature: layoutBlockSignature,
+        };
         const block = {
           headerText,
           beforeAnchor: contextAnchor(blockStart - 1, -1),
@@ -689,6 +739,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             {
               block,
               blockLineIndex,
+              layoutBlock,
             },
           );
         });
@@ -696,6 +747,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
 
       return lineDescriptors.map((line) => contextOptionsByLine.get(line));
+    },
+
+    reviewLayoutForHunk(lineDescriptors) {
+      return lineDescriptors.some((line) => {
+        const row = line.row;
+        const cells = Array.from(row.children).filter((child) =>
+          child.matches('td, [role="gridcell"]'),
+        );
+        return cells.length >= 4;
+      })
+        ? "split"
+        : "unified";
     },
 
     collectDiscoveredHunkInputs(searchRoot = this.document) {
@@ -740,6 +803,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             fileRows.map((row, index) => [row, index]),
           );
           const hunkOccurrenceCounts = new Map();
+          const layoutHunkOccurrenceCounts = new Map();
           const lineOccurrenceCounts = new Map();
 
           const preparedEntries = entries.map((entry, index) => {
@@ -752,6 +816,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             );
             const headerText = this.stableHunkHeaderText(entry.marker);
             const lineDescriptors = this.changedLineDescriptors(groupRows);
+            const reviewLayout = this.reviewLayoutForHunk(lineDescriptors);
             const lineIdentityTokens = lineDescriptors.map(
               (line) =>
                 `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
@@ -761,6 +826,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
               lineDescriptors,
               headerText,
             );
+            const layoutBlocks = [
+              ...new Set(
+                lineContextOptions.map((options) => options?.layoutBlock),
+              ),
+            ];
+            const {
+              completionSignature: layoutSignature,
+              occurrenceSignature: layoutOccurrenceSignature,
+            } = this.Core.buildLayoutHunkIdentity({
+              blocks: layoutBlocks,
+              headerText,
+            });
             return {
               ...entry,
               groupRows,
@@ -768,6 +845,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
               lineDescriptors,
               lineIdentityTokens,
               lineContextOptions,
+              layoutOccurrenceSignature,
+              layoutSignature,
+              reviewLayout,
             };
           });
           const identicalLineCounts = new Map();
@@ -788,6 +868,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
               lineDescriptors,
               lineIdentityTokens,
               lineContextOptions,
+              layoutOccurrenceSignature,
+              layoutSignature,
+              reviewLayout,
             } = entry;
             const signature = this.Core.buildHunkSignature({
               headerText,
@@ -797,6 +880,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
             const occurrence =
               hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
             hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
+            const layoutHunkOccurrenceToken = layoutOccurrenceSignature
+              ? `${filePath}\u0000${layoutOccurrenceSignature}`
+              : null;
+            const layoutOccurrence = layoutHunkOccurrenceToken
+              ? layoutHunkOccurrenceCounts.get(layoutHunkOccurrenceToken) ?? 0
+              : 0;
+            if (layoutHunkOccurrenceToken) {
+              layoutHunkOccurrenceCounts.set(
+                layoutHunkOccurrenceToken,
+                layoutOccurrence + 1,
+              );
+            }
             const lineInputs = lineDescriptors.map((line, index) => {
               const lineIdentityToken = lineIdentityTokens[index];
               const lineOccurrence =
@@ -808,6 +903,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
               return {
                 contextOptions: lineContextOptions[index],
                 identicalCount: identicalLineCounts.get(lineIdentityToken),
+                layout: reviewLayout,
                 line,
                 lineOccurrence,
               };
@@ -822,6 +918,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
               hunkRow: entry.hunkRow,
               lineInputs,
               occurrence,
+              layoutOccurrence,
+              layoutSignature,
               signature,
             });
           }
@@ -846,11 +944,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const blockFingerprint = await blockFingerprintFor(
           input.contextOptions,
         );
-        const [contextFingerprint, key] = await Promise.all([
+        const { layout } = input;
+        const [contextFingerprint, key, legacyKey] = await Promise.all([
           this.Core.lineReviewContextFingerprint({
             blockFingerprint,
             blockLineIndex: input.contextOptions.blockLineIndex,
           }),
+          this.Core.layoutLineStorageKey(
+            this.currentReviewScope,
+            filePath,
+            layout,
+            input.line.kind,
+            input.line.text,
+            input.lineOccurrence,
+            input.identicalCount,
+          ),
           this.Core.lineStorageKey(
             this.currentReviewScope,
             filePath,
@@ -864,6 +972,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
           ...input.line,
           contextFingerprint,
           key,
+          layout,
+          legacyKey,
         };
       };
       const hunksByFile = await Promise.all(
@@ -884,6 +994,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
                 hunk.signature,
                 hunk.occurrence,
               ),
+              sharedCompletionKey: hunk.layoutSignature
+                ? await this.Core.layoutHunkStorageKey(
+                    this.currentReviewScope,
+                    filePath,
+                    hunk.layoutSignature,
+                    hunk.layoutOccurrence,
+                  )
+                : null,
               lines: await Promise.all(
                 hunk.lineInputs.map((input) =>
                   hydrateLine(input, filePath),
@@ -950,13 +1068,25 @@ if (globalThis.HunkMarkContent?.extendApp) {
               input.lineOccurrence,
               input.identicalCount,
             );
-            if (!contextFingerprint || !lineKey) {
+            const { layout } = input;
+            const layoutLineKey = this.Core.cachedLayoutLineStorageKey(
+              this.currentReviewScope,
+              filePath,
+              layout,
+              input.line.kind,
+              input.line.text,
+              input.lineOccurrence,
+              input.identicalCount,
+            );
+            if (!contextFingerprint || !lineKey || !layoutLineKey) {
               return null;
             }
             lines.push({
               ...input.line,
               contextFingerprint,
-              key: lineKey,
+              key: layoutLineKey,
+              layout,
+              legacyKey: lineKey,
             });
           }
           hunks.push({
@@ -967,6 +1097,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
             hunkCell: hunk.hunkCell,
             hunkRow: hunk.hunkRow,
             key,
+            sharedCompletionKey: hunk.layoutSignature
+              ? this.Core.cachedLayoutHunkStorageKey(
+                  this.currentReviewScope,
+                  filePath,
+                  hunk.layoutSignature,
+                  hunk.layoutOccurrence,
+                )
+              : null,
             lines,
             officialSuppressionKey,
           });

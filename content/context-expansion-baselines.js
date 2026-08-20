@@ -41,6 +41,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
             ),
           headerText: controller.headerText,
           key: controller.key,
+          sharedCompletionSources: this.mergeSharedHunkCompletionSources([
+            {
+              key: controller.sharedCompletionKey,
+              lineKeys: controller.lines.map((line) => line.key),
+            },
+            ...(controller.sharedCompletionSources ?? []),
+          ]),
           lines: Object.freeze(
             controller.lines.map((line) =>
               Object.freeze({
@@ -127,8 +134,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         independentlyAnchored:
           this.hostContextExpansionContextGroupIsIndependentlyAnchored(
             hunk.contextAnchors,
-          ),
+        ),
         lines: hunk.lines,
+        sharedCompletionSources: hunk.sharedCompletionSources,
       }));
       if (
         groups.some(
@@ -147,10 +155,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
         .forEach((line) => lineReviewSnapshot.set(line.key, line));
       return {
         cachedHunkGroups: groups.map(
-          ({ contextAnchors, headerText, independentlyAnchored }) => ({
+          ({
             contextAnchors,
             headerText,
             independentlyAnchored,
+            sharedCompletionSources,
+          }) => ({
+            contextAnchors,
+            headerText,
+            independentlyAnchored,
+            sharedCompletionSources,
           }),
         ),
         fileContextAnchors: groups.flatMap((group) => group.contextAnchors),
@@ -307,8 +321,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
             })
           );
         });
+        if (!exactCachedFile) {
+          return;
+        }
+        fileHunks.forEach((hunk, hunkIndex) => {
+          const cached = snapshot.hunks[hunkIndex];
+          hunk.sharedCompletionSources = cached.sharedCompletionSources;
+        });
         if (
-          !exactCachedFile ||
           !snapshot.hunks.some((hunk) =>
             hunk.lines.some(
               (line) => line.baselineContextFingerprint !== null,

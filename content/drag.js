@@ -94,6 +94,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.dragState.originalControllers.set(candidate.controller, {
             collapsed: candidate.controller.collapsed,
             marked: candidate.controller.marked,
+            sharedCompletion: candidate.controller.sharedCompletion,
           });
         }
         if (!this.dragState.originalMarks.has(candidate)) {
@@ -121,6 +122,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       state.originalControllers.forEach((original, controller) => {
         controller.collapsed = original.collapsed;
+        controller.sharedCompletion = original.sharedCompletion;
         this.updateAggregateFromLines(controller);
         this.applyControllerAppearance(controller);
       });
@@ -128,7 +130,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     buildLineDragReviewMutation(state) {
-      const viewedAt = Date.now();
+      const viewedAt = this.reviewTimestampAfterSharedState(
+        state.controllers,
+      );
       const values = {};
       const removals = new Set();
 
@@ -139,8 +143,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
             viewedAt,
             { dragged: true },
           );
+          if (this.cachedLegacyLineReviewMatches(lineController)) {
+            removals.add(lineController.legacyKey);
+          }
         } else {
           removals.add(lineController.key);
+          if (this.cachedLegacyLineReviewMatches(lineController)) {
+            removals.add(lineController.legacyKey);
+          }
         }
       });
       state.controllers.forEach((controller) => {
@@ -150,8 +160,30 @@ if (globalThis.HunkMarkContent?.extendApp) {
           original?.marked ?? controller.marked,
         );
         controller.collapsePending = Boolean(collapseTransition);
+        controller.sharedCompletion = Boolean(
+          controller.marked && controller.sharedCompletionKey,
+        );
         this.applyControllerAppearance(controller);
         removals.add(controller.key);
+        if (original?.sharedCompletion && !controller.marked) {
+          controller.lines.forEach((line) => {
+            if (line.marked) {
+              values[line.key] = this.lineReviewStorageValue(
+                line,
+                viewedAt,
+                { dragged: true },
+              );
+            }
+          });
+        }
+        this.updateSharedHunkCompletionMutation(controller, {
+          lines: Array.from(state.touched).filter(
+            (line) => line.controller === controller,
+          ),
+          removals,
+          updatedAt: viewedAt,
+          values,
+        });
         if (collapseTransition === "collapse") {
           values[controller.collapsedKey] = {
             autoCollapsed: true,

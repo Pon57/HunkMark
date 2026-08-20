@@ -113,15 +113,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
-    cachedLineReviewMatches(lineController) {
-      if (!this.reviewStorageKeys.has(lineController.key)) {
+    cachedLineReviewMatchesForKey(lineController, key) {
+      if (!key || !this.reviewStorageKeys.has(key)) {
         return false;
       }
       const storedContext = this.lineReviewContextByKey.get(
-        lineController.key,
+        key,
       );
       const storedBaseline = this.lineReviewBaselineContextByKey.get(
-        lineController.key,
+        key,
       );
       return this.reviewContextsMatch(
         lineController?.contextFingerprint,
@@ -131,6 +131,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
           : storedBaseline,
         storedBaseline,
       );
+    },
+
+    cachedLineReviewMatches(lineController) {
+      return this.cachedLineReviewMatchesForKey(
+        lineController,
+        lineController?.key,
+      );
+    },
+
+    cachedLegacyLineReviewMatches(lineController) {
+      return this.cachedLineReviewMatchesForKey(
+        lineController,
+        lineController?.legacyKey,
+      );
+    },
+
+    cachedLineReviewKey(lineController) {
+      return this.reviewStorageKeys.has(lineController?.key)
+        ? lineController.key
+        : lineController?.legacyKey;
+    },
+
+    storedLineReviewCandidate(line, stored) {
+      const current = stored[line.key];
+      const legacy = line.legacyKey ? stored[line.legacyKey] : undefined;
+      const usesLegacy = current === undefined && legacy !== undefined;
+      const legacyMatches = Boolean(
+        usesLegacy && this.storedLineReviewMatches(line, legacy),
+      );
+      return {
+        key: usesLegacy ? line.legacyKey : line.key,
+        legacy,
+        legacyMatches,
+        // A mismatching legacy value is not review state for this DOM, but it
+        // remains evidence that collapse must fail closed without deleting
+        // compatibility state that may still match another context.
+        value: usesLegacy ? legacy : current,
+      };
     },
 
     hostContextExpansionBaselineContext(line) {

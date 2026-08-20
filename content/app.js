@@ -141,8 +141,10 @@
       this.hostContextExpansionIntents = new Set();
       this.lineReviewBaselineContextByKey = new Map();
       this.lineReviewContextByKey = new Map();
+      this.reviewTimestampByKey = new Map();
       this.reviewContextAccessedAtById = new Map();
       this.reviewStorageKeys = new Set();
+      this.sharedHunkCompletionByKey = new Map();
 
       this.currentScope = null;
       this.currentReviewScope = null;

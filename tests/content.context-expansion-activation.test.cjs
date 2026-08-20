@@ -1,10 +1,14 @@
 const {
   test,
   assert,
+  JSDOM,
   path,
   root,
+  createChromeApi,
+  createExclusiveLockManager,
   delayReviewStorageSet,
   controllersFor,
+  controllerAt,
   contextExpansionIntentFor,
   stopExtensions,
   startLockedExtension,
@@ -13,6 +17,7 @@ const {
   waitFor,
   startExtension,
   duplicateHunkFixture,
+  layoutReviewFixture,
   mergeableHunkFixture,
   replaceMergeFixtureRows,
   currentReactContextExpansionFixture,
@@ -25,6 +30,81 @@ const {
   currentReactBlankContextEvidenceFixture,
   insertCurrentReactBlankContextAfterSecondLine,
 } = require("./content-test-support.cjs");
+
+function layoutExpandAllFixture(options = {}) {
+  const fixtureDom = new JSDOM(layoutReviewFixture(options));
+  try {
+    const { document } = fixtureDom.window;
+    const fileElement = document.querySelector(".js-file");
+    fileElement.setAttribute("role", "region");
+    fileElement.classList.add("Diff-module__diff__layout");
+    const expandAll = document.createElement("button");
+    expandAll.className = "js-expand-all-difflines-button";
+    expandAll.setAttribute(
+      "aria-label",
+      "Expand all lines: src/layout.js",
+    );
+    document.querySelector(".file-header").append(expandAll);
+    return fixtureDom.serialize();
+  } finally {
+    fixtureDom.window.close();
+  }
+}
+
+function layoutExpandedTable(document, options = {}) {
+  const { mergeHunks = false, ...fixtureOptions } = options;
+  const fixtureDom = new JSDOM(layoutReviewFixture(fixtureOptions));
+  try {
+    const sourceTable = fixtureDom.window.document.querySelector("table");
+    if (mergeHunks) {
+      Array.from(sourceTable.querySelectorAll(".blob-code-hunk"))
+        .slice(1)
+        .forEach((cell) => cell.closest("tr").remove());
+    }
+    const firstChangedRow = sourceTable.querySelector(
+      ".blob-code-deletion, .blob-code-addition",
+    ).closest("tr");
+    firstChangedRow.insertAdjacentHTML(
+      "beforebegin",
+      '<tr><td class="blob-num">10</td><td class="blob-code-context">inserted near changes</td></tr>',
+    );
+    return document.importNode(sourceTable, true);
+  } finally {
+    fixtureDom.window.close();
+  }
+}
+
+function currentReactContextEvidenceWithFourthHunkFixture() {
+  const fixtureDom = new JSDOM(currentReactContextEvidenceFixture());
+  try {
+    fixtureDom.window.document
+      .querySelector('[aria-label="Diff for: src/react-overlap.js"] tbody')
+      .insertAdjacentHTML(
+        "beforeend",
+        `
+          <tr class="diff-line-row"><td role="gridcell" class="diff-hunk-cell">@@ -30 +30 @@ fourth()</td></tr>
+          <tr class="diff-line-row" data-line-type="context"><td role="gridcell" class="diff-text-cell right-side-diff-cell"><code class="diff-text" data-diff-side="right">before fourth</code></td></tr>
+          <tr class="diff-line-row" data-line-type="addition"><td role="gridcell" class="diff-text-cell right-side-diff-cell" data-line-anchor="diff-overlap-R30"><code class="addition" data-diff-side="right">+fourth</code></td></tr>
+          <tr class="diff-line-row" data-line-type="context"><td role="gridcell" class="diff-text-cell right-side-diff-cell"><code class="diff-text" data-diff-side="right">after fourth</code></td></tr>`,
+      );
+    return fixtureDom.serialize();
+  } finally {
+    fixtureDom.window.close();
+  }
+}
+
+function currentReactPartialMergeWithFourthTable(document) {
+  const table = currentReactCachedExpandAllTable(document);
+  table.querySelector("tbody").insertAdjacentHTML(
+    "beforeend",
+    `
+      <tr class="diff-line-row"><td role="gridcell" class="diff-hunk-cell">@@ -30 +30 @@ fourth()</td></tr>
+      <tr class="diff-line-row" data-line-type="context"><td role="gridcell" class="diff-text-cell right-side-diff-cell"><code class="diff-text" data-diff-side="right">before fourth</code></td></tr>
+      <tr class="diff-line-row" data-line-type="addition"><td role="gridcell" class="diff-text-cell right-side-diff-cell" data-line-anchor="diff-overlap-R30"><code class="addition" data-diff-side="right">+fourth</code></td></tr>
+      <tr class="diff-line-row" data-line-type="context"><td role="gridcell" class="diff-text-cell right-side-diff-cell"><code class="diff-text" data-diff-side="right">after fourth</code></td></tr>`,
+  );
+  return table;
+}
 
 async function hideRenderedDiff(app, fileElement) {
   const table = fileElement.querySelector('table[role="grid"]');
@@ -101,8 +181,21 @@ test("expands a viewed hunk when GitHub reveals surrounding context", async () =
   }
 });
 
-test("preserves viewed lines when GitHub merges expanded hunks", async () => {
-  const { app, chrome, dom } = await startExtension(mergeableHunkFixture());
+test("preserves completion identities when GitHub merges and later splits hunks", async () => {
+  const chrome = createChromeApi();
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const expanded = await startExtension(
+    mergeableHunkFixture(),
+    {},
+    options,
+  );
+  const contracted = await startExtension(
+    mergeableHunkFixture(),
+    {},
+    options,
+  );
+  const { app, dom } = expanded;
   try {
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 2);
@@ -111,22 +204,13 @@ test("preserves viewed lines when GitHub merges expanded hunks", async () => {
     const lineKeys = before.flatMap((controller) =>
       controller.lines.map((line) => line.key),
     );
-    const collapsedKeys = before.map((controller) => controller.collapsedKey);
+    const sharedCompletionKeys = before.map(
+      (controller) => controller.sharedCompletionKey,
+    );
 
-    before.forEach((controller) => {
-      controller.input.checked = true;
-      controller.input.dispatchEvent(
-        new dom.window.Event("change", { bubbles: true }),
-      );
-    });
-    await waitFor(() => {
-      assert.equal(before.every((controller) => controller.marked), true);
-      assert.equal(before.every((controller) => controller.collapsed), true);
-      assert.equal(
-        collapsedKeys.every((key) => Boolean(chrome.snapshot()[key])),
-        true,
-      );
-    });
+    for (const controller of before) {
+      await app.setHunkViewed(controller, true);
+    }
 
     replaceMergeFixtureRows(dom.window.document, true);
 
@@ -134,45 +218,78 @@ test("preserves viewed lines when GitHub merges expanded hunks", async () => {
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 1);
       [merged] = Array.from(app.controllersByRow.values());
-      assert.equal(merged.hunkRow.isConnected, true);
       assert.equal(merged.marked, true);
-      assert.equal(merged.indeterminate, false);
       assert.equal(merged.collapsed, false);
-      assert.equal(
-        merged.collapseButton.getAttribute("aria-label"),
-        "Collapse this diff hunk",
-      );
       assert.deepEqual(
         Array.from(merged.lines, (line) => line.key),
         lineKeys,
       );
       assert.equal(
-        dom.window.document
-          .querySelector("[data-test-context]")
-          .classList.contains("hunkmark-collapsed"),
-        false,
-      );
-      assert.equal(merged.collapsedKey in chrome.snapshot(), false);
-      assert.equal(
-        collapsedKeys.some((key) => key in chrome.snapshot()),
-        false,
+        sharedCompletionKeys.every(
+          (key) =>
+            chrome.snapshot()[key]?.viewed === true &&
+            chrome.snapshot()[key]?.collapsed === false,
+        ),
+        true,
       );
     });
-    assert.match(
-      dom.window.document.querySelector(".hunkmark-panel-summary").textContent,
-      /Hunks 1 \/ 1 · Lines 2 \/ 2/,
-    );
+    const previousMerged = merged;
+    replaceMergeFixtureRows(dom.window.document, true);
+    await waitFor(() => {
+      [merged] = Array.from(app.controllersByRow.values());
+      assert.notEqual(merged, previousMerged);
+      assert.equal(merged.marked, true);
+      assert.equal(merged.collapsed, false);
+    });
 
-    merged.input.checked = false;
-    merged.input.dispatchEvent(
-      new dom.window.Event("change", { bubbles: true }),
-    );
+    await app.setHunkViewed(merged, true);
+    await app.setCollapsed(merged, true);
+    const mergedCompletionKey = merged.sharedCompletionKey;
+    const contractedFirst = Array.from(
+      contracted.app.controllersByRow.values(),
+    )[0];
+    await contracted.app.setLineViewed(contractedFirst.lines[0], false);
     await waitFor(() => {
       assert.equal(merged.marked, false);
+      assert.equal(merged.indeterminate, true);
+      assert.equal(merged.collapsed, false);
+      assert.equal(lineKeys[0] in chrome.snapshot(), false);
+      assert.equal(lineKeys[1] in chrome.snapshot(), true);
       assert.equal(
-        lineKeys.some((key) => key in chrome.snapshot()),
-        false,
+        chrome.snapshot()[sharedCompletionKeys[0]]?.partial,
+        true,
       );
+      assert.equal(chrome.snapshot()[sharedCompletionKeys[1]]?.viewed, true);
+      assert.equal(chrome.snapshot()[mergedCompletionKey]?.partial, true);
+      assert.equal(merged.collapsedKey in chrome.snapshot(), false);
+    });
+
+    const invalidatedMerged = merged;
+    replaceMergeFixtureRows(dom.window.document, true);
+    await waitFor(() => {
+      [merged] = Array.from(app.controllersByRow.values());
+      assert.notEqual(merged, invalidatedMerged);
+      assert.deepEqual(
+        Array.from(merged.lines, (line) => line.marked),
+        [false, true],
+      );
+      assert.equal(merged.collapsed, false);
+    });
+
+    await app.setHunkViewed(merged, true);
+    await app.setCollapsed(merged, true);
+    await contracted.app.setHunkViewed(contractedFirst, false);
+    await waitFor(() => {
+      const snapshot = chrome.snapshot();
+      assert.deepEqual(
+        Array.from(merged.lines, (line) => line.marked),
+        [false, true],
+      );
+      assert.equal(merged.collapsed, false);
+      assert.equal(snapshot[sharedCompletionKeys[0]]?.viewed, false);
+      assert.notEqual(snapshot[sharedCompletionKeys[0]]?.partial, true);
+      assert.equal(snapshot[mergedCompletionKey]?.partial, true);
+      assert.equal(merged.collapsedKey in snapshot, false);
     });
 
     replaceMergeFixtureRows(dom.window.document, false);
@@ -180,12 +297,17 @@ test("preserves viewed lines when GitHub merges expanded hunks", async () => {
       const split = Array.from(app.controllersByRow.values());
       assert.equal(split.length, 2);
       assert.equal(split.every((controller) => controller.hunkRow.isConnected), true);
-      assert.equal(split.every((controller) => !controller.marked), true);
-      assert.equal(split.every((controller) => !controller.collapsed), true);
+      assert.deepEqual(
+        split.map((controller) => controller.marked),
+        [false, true],
+      );
+      assert.deepEqual(
+        split.map((controller) => controller.collapsed),
+        [false, true],
+      );
     });
   } finally {
-    app.stop();
-    dom.window.close();
+    stopExtensions(expanded, contracted);
   }
 });
 
@@ -335,16 +457,29 @@ test("preserves both sides of GitHub's current split diff expansion", async () =
 
 test("preserves reviewed lines when React Expand all starts from a collapsed file", async () => {
   const { app, chrome, dom } = await startExtension(
-    currentReactContextEvidenceFixture(),
+    currentReactContextEvidenceWithFourthHunkFixture(),
   );
   try {
-    const [first, second] = controllersFor(app);
-    [first, second].forEach((controller) =>
+    const [first, second, , fourth] = controllersFor(app);
+    const previousSharedCompletionKeys = [
+      first.sharedCompletionKey,
+      second.sharedCompletionKey,
+      fourth.sharedCompletionKey,
+    ];
+    assert.equal(previousSharedCompletionKeys.every(Boolean), true);
+    [first, second, fourth].forEach((controller) =>
       changeCheckbox(dom, controller.input),
     );
     await waitFor(() => {
       assert.ok(chrome.snapshot()[first.lines[0].key]);
       assert.ok(chrome.snapshot()[second.lines[0].key]);
+      assert.ok(chrome.snapshot()[fourth.lines[0].key]);
+      assert.equal(
+        previousSharedCompletionKeys.every((key) =>
+          Boolean(chrome.snapshot()[key]),
+        ),
+        true,
+      );
     });
 
     const fileElement = first.fileElement;
@@ -398,7 +533,7 @@ test("preserves reviewed lines when React Expand all starts from a collapsed fil
       contextExpansionIntentFor(app, "src/react-overlap.js"),
       intent,
     );
-    const expandedTable = currentReactCachedExpandAllTable(
+    const expandedTable = currentReactPartialMergeWithFourthTable(
       dom.window.document,
     );
     fileToggle.setAttribute("aria-label", "Expand file");
@@ -406,13 +541,26 @@ test("preserves reviewed lines when React Expand all starts from a collapsed fil
     fileElement.append(expandedTable);
 
     await waitFor(() => {
-      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(app.controllersByRow.size, 2);
       assert.deepEqual(
         Array.from(controllersFor(app)[0].lines, (line) => line.marked),
         [true, true, false],
       );
+      assert.equal(controllersFor(app)[1].marked, true);
+      assert.equal(
+        controllersFor(app)[1].sharedCompletionKey,
+        fourth.sharedCompletionKey,
+      );
     });
-    const [merged] = controllersFor(app);
+    let [merged] = controllersFor(app);
+    assert.equal(
+      previousSharedCompletionKeys.every(
+        (key) =>
+          chrome.snapshot()[key]?.viewed === true &&
+          chrome.snapshot()[key]?.collapsed === false,
+      ),
+      true,
+    );
     assert.notEqual(
       merged.lines[0].contextFingerprint,
       previousFingerprints[0],
@@ -421,8 +569,188 @@ test("preserves reviewed lines when React Expand all starts from a collapsed fil
       merged.lines[1].contextFingerprint,
       previousFingerprints[1],
     );
+    fileToggle.setAttribute("aria-label", "Collapse file");
+    app.handleFileVisibilityClick({ target: fileToggle });
+    expandedTable.remove();
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+    });
+    fileToggle.setAttribute("aria-label", "Expand file");
+    app.handleFileVisibilityClick({ target: fileToggle });
+    fileElement.append(expandedTable);
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 2);
+      const [restored] = controllersFor(app);
+      assert.ok(restored);
+      assert.notEqual(restored, merged);
+      merged = restored;
+    });
+    await app.setHunkViewed(merged, true);
+    await app.setHunkViewed(merged, false);
+    await waitFor(() => {
+      assert.equal(
+        previousSharedCompletionKeys.slice(0, 2).every(
+          (key) => chrome.snapshot()[key]?.viewed === false,
+        ),
+        true,
+      );
+      assert.equal(
+        chrome.snapshot()[fourth.sharedCompletionKey]?.viewed,
+        true,
+      );
+      assert.equal(controllersFor(app)[1].marked, true);
+    });
   } finally {
     stopExtensions({ app, dom });
+  }
+});
+
+test("reconciles independent source updates while another layout expands", async () => {
+  const chrome = createChromeApi();
+  const locks = createExclusiveLockManager();
+  const options = { chromeInstance: chrome, lockManager: locks };
+  const hunks = ["First", "Second"].map((name, index) => ({
+    additions: [`new${name}`],
+    after: `after ${name.toLowerCase()}`,
+    before: `before ${name.toLowerCase()}`,
+    deletions: [`old${name}`],
+    headerText: `@@ -${10 + index * 10} +${10 + index * 10} @@ ${name.toLowerCase()}()`,
+  }));
+  const unified = await startExtension(
+    layoutExpandAllFixture({ hunks, layout: "unified" }),
+    {},
+    options,
+  );
+  const split = await startExtension(
+    layoutReviewFixture({ hunks }),
+    {},
+    options,
+  );
+  let failSecondaryWrite = null;
+  try {
+    const unifiedBefore = controllersFor(unified.app);
+    const splitControllers = controllersFor(split.app);
+    const sourceCompletionKeys = unifiedBefore.map(
+      (controller) => controller.sharedCompletionKey,
+    );
+    assert.deepEqual(
+      splitControllers.map((controller) => controller.sharedCompletionKey),
+      sourceCompletionKeys,
+    );
+
+    const fileElement = unifiedBefore[0].fileElement;
+    const expandAll = fileElement.querySelector(
+      '[aria-label="Expand all lines: src/layout.js"]',
+    );
+    fileElement.querySelector("table").remove();
+    await waitFor(() => {
+      assert.equal(unified.app.controllersByRow.size, 0);
+    });
+    activateTrustedExpansion(unified.app, expandAll);
+    assert.ok(contextExpansionIntentFor(unified.app, "src/layout.js"));
+
+    for (const controller of splitControllers) {
+      await split.app.setHunkViewed(controller, true);
+    }
+    completeExpandAllControl(expandAll, "src/layout.js");
+    fileElement.append(
+      layoutExpandedTable(unified.dom.window.document, {
+        hunks,
+        layout: "unified",
+        mergeHunks: true,
+      }),
+    );
+
+    let expandedController;
+    await waitFor(() => {
+      assert.equal(unified.app.controllersByRow.size, 1);
+      expandedController = controllerAt(unified.app);
+    });
+
+    const expandedCompletionKey = expandedController.sharedCompletionKey;
+    await unified.app.setHunkViewed(expandedController, true);
+    await unified.app.setCollapsed(expandedController, true);
+    const firstSource = expandedController.sharedCompletionSources.find(
+      (source) => source.key === sourceCompletionKeys[0],
+    );
+    assert.ok(firstSource);
+    const firstSourceLineKeys = new Set(firstSource.lineKeys);
+    const expectedMergedMarks = Array.from(
+      expandedController.lines,
+      (line) => !firstSourceLineKeys.has(line.key),
+    );
+
+    const warnings = captureWarnings(unified.dom);
+    let failureInjected = false;
+    failSecondaryWrite = (changes) => {
+      const sourceClear = changes[sourceCompletionKeys[0]]?.newValue;
+      if (
+        !failureInjected &&
+        sourceClear?.viewed === false &&
+        sourceClear.partial !== true
+      ) {
+        failureInjected = true;
+        chrome.failNextSet("canonical alias clear failed");
+      }
+    };
+    chrome.api.storage.onChanged.addListener(failSecondaryWrite);
+    await split.app.setHunkViewed(splitControllers[0], false);
+    chrome.api.storage.onChanged.removeListener(failSecondaryWrite);
+    failSecondaryWrite = null;
+    await waitFor(() => {
+      assert.equal(failureInjected, true);
+      assert.equal(
+        warnings.some(([message]) =>
+          String(message).includes(
+            "could not reconcile shared hunk completion aliases",
+          ),
+        ),
+        true,
+      );
+      assert.equal(chrome.snapshot()[expandedCompletionKey]?.viewed, true);
+      assert.deepEqual(
+        Array.from(expandedController.lines, (line) => line.marked),
+        expectedMergedMarks,
+      );
+      assert.equal(expandedController.collapsed, false);
+    });
+
+    await split.app.setLineViewed(splitControllers[1].lines[0], false);
+    await waitFor(() => {
+      assert.deepEqual(
+        Array.from(expandedController.lines, (line) => line.marked),
+        expectedMergedMarks,
+      );
+      assert.equal(expandedController.collapsed, false);
+      assert.equal(chrome.snapshot()[expandedCompletionKey]?.partial, true);
+      assert.equal(
+        splitControllers.every((controller) => !controller.marked),
+        true,
+      );
+    });
+
+    const previousExpanded = expandedController;
+    fileElement.querySelector("table").replaceWith(
+      layoutExpandedTable(unified.dom.window.document, {
+        hunks,
+        layout: "unified",
+        mergeHunks: true,
+      }),
+    );
+    await waitFor(() => {
+      expandedController = controllerAt(unified.app);
+      assert.notEqual(expandedController, previousExpanded);
+      assert.deepEqual(
+        Array.from(expandedController.lines, (line) => line.marked),
+        expectedMergedMarks,
+      );
+      assert.equal(expandedController.collapsed, false);
+    });
+  } finally {
+    if (failSecondaryWrite) {
+      chrome.api.storage.onChanged.removeListener(failSecondaryWrite);
+    }
+    stopExtensions(unified, split);
   }
 });
 

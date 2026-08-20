@@ -75,6 +75,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
         materializedLazyLines: lazyLineControls ? new Set() : null,
         observedLazyLines: new Set(),
         returnButton,
+        sharedCompletion: false,
+        sharedCompletionSources: this.mergeSharedHunkCompletionSources([
+          {
+            key: hunk.sharedCompletionKey,
+            lineKeys: hunk.lines.map((line) => line.key),
+          },
+          ...(hunk.sharedCompletionSources ?? []),
+        ]),
         stickyHunkAppliedCollapsed: false,
         stickyHunkRowObserved: false,
         destroyed: false,
@@ -107,8 +115,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       controller.reviewKeys = Object.freeze([
         controller.key,
         controller.collapsedKey,
+        ...this.sharedHunkCompletionSourceKeys(controller),
         ...controller.lines.map((line) => line.key),
-      ]);
+        ...controller.lines.map((line) => line.legacyKey),
+      ].filter(Boolean));
       this.connectSplitLinePeers(controller);
 
       const { lineLayouts, safeHostHunkActionInset } =
@@ -675,24 +685,48 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    controllerLocalReviewRemovalKeys(controller) {
+      return [
+        controller.key,
+        controller.collapsedKey,
+        ...controller.lines.map((line) => line.key),
+        ...controller.lines
+          .filter((line) => this.cachedLegacyLineReviewMatches(line))
+          .map((line) => line.legacyKey),
+      ].filter(Boolean);
+    },
+
     applyStoredReviewState(controller, stored) {
-      controller.collapsed = Boolean(stored[controller.collapsedKey]);
+      const sharedCompletionValue = controller.sharedCompletionKey
+        ? stored[controller.sharedCompletionKey]
+        : null;
+      controller.collapsed = this.storedCollapseSurvivesSharedClear(
+        stored[controller.collapsedKey],
+        sharedCompletionValue,
+      );
       controller.marked =
         controller.lines.length === 0 && Boolean(stored[controller.key]);
       controller.indeterminate = false;
       let invalidatedLineReview = false;
       controller.lines.forEach((line) => {
-        const storedLineReview = stored[line.key];
-        line.marked = this.storedLineReviewMatches(
+        const storedLineReview =
+          stored[line.key] ?? stored[line.legacyKey];
+        const state = this.storedLineReviewState(
           line,
           storedLineReview,
+          sharedCompletionValue,
         );
-        invalidatedLineReview ||= (
-          storedLineReview !== undefined && !line.marked
-        );
+        line.marked = state.marked;
+        invalidatedLineReview ||= state.invalidated;
       });
       this.updateAggregateFromLines(controller);
-      if (invalidatedLineReview) {
+      if (
+        !this.applySharedHunkCompletionState(
+          controller,
+          sharedCompletionValue,
+        ) &&
+        invalidatedLineReview
+      ) {
         controller.collapsed = false;
       }
       this.applyControllerAppearance(controller);
@@ -808,15 +842,45 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       let collapseStateKnown = true;
       try {
-        if (collapsed) {
-          await this.setReviewStorage({
-            [controller.collapsedKey]: {
-              collapsed: true,
-              updatedAt: Date.now(),
-            },
-          });
+        const updatedAt = this.reviewTimestampAfterSharedState(
+          new Set([controller]),
+        );
+        const values = {};
+        const removals = [];
+        const localCompletionStored =
+          controller.lines.length === 0
+            ? this.reviewStorageKeys.has(controller.key)
+            : controller.lines.every((line) =>
+                this.cachedLineReviewMatches(line),
+              );
+        if (
+          collapsed &&
+          (!controller.sharedCompletion || localCompletionStored)
+        ) {
+          values[controller.collapsedKey] = {
+            collapsed: true,
+            updatedAt,
+          };
         } else {
-          await this.removeReviewStorage(controller.collapsedKey);
+          removals.push(controller.collapsedKey);
+        }
+        if (
+          controller.marked &&
+          controller.sharedCompletionSources.length > 0
+        ) {
+          this.addSharedHunkCompletionValues(
+            controller,
+            values,
+            updatedAt,
+          );
+          controller.sharedCompletion = Boolean(
+            controller.sharedCompletionKey,
+          );
+        }
+        if (removals.length === 0) {
+          await this.setReviewStorage(values, this.currentReviewScope, updatedAt);
+        } else {
+          await this.mutateReviewStorage({ values, removals, now: updatedAt });
         }
       } catch (error) {
         collapseStateKnown =
@@ -851,7 +915,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
     ) {
       const navigationGeneration = this.hunkStickyNavigationGeneration;
       const wasViewed = controller.marked;
+      const wasSharedCompletion = controller.sharedCompletion;
       controller.marked = viewed;
+      controller.sharedCompletion = Boolean(
+        viewed && controller.sharedCompletionKey,
+      );
       controller.indeterminate = false;
       controller.lines.forEach((line) => {
         line.marked = viewed;
@@ -881,15 +949,22 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.beginOfficialViewedReviewPersistence([controller]);
       let reviewStateKnown = true;
       try {
+        const sharedUpdatedAt = this.reviewTimestampAfterSharedState(
+          new Set([controller]),
+        );
         let reviewMutation;
         if (viewed) {
-          const viewedAt = Date.now();
+          const viewedAt = sharedUpdatedAt;
           const values = {};
+          const removals = [];
           if (controller.lines.length === 0) {
             values[controller.key] = { viewedAt };
           }
           controller.lines.forEach((line) => {
             values[line.key] = this.lineReviewStorageValue(line, viewedAt);
+            if (this.cachedLegacyLineReviewMatches(line)) {
+              removals.push(line.legacyKey);
+            }
           });
           if (collapseTransition === "collapse") {
             values[controller.collapsedKey] = {
@@ -898,14 +973,30 @@ if (globalThis.HunkMarkContent?.extendApp) {
               updatedAt: viewedAt,
             };
           }
+          this.addSharedHunkCompletionValues(
+            controller,
+            values,
+            viewedAt,
+          );
           reviewMutation = {
             values,
+            removals,
             scope: this.currentReviewScope,
             now: viewedAt,
           };
         } else {
+          const clearedAt = sharedUpdatedAt;
+          const values = {};
+          this.addSharedHunkCompletionClearValues(
+            controller,
+            values,
+            clearedAt,
+          );
           reviewMutation = {
-            removals: controller.reviewKeys,
+            values,
+            removals: this.controllerLocalReviewRemovalKeys(controller),
+            scope: this.currentReviewScope,
+            now: clearedAt,
           };
         }
         await this.mutateReviewStorageAndReleaseOfficialViewed(
@@ -913,6 +1004,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           reviewMutation,
         );
       } catch (error) {
+        controller.sharedCompletion = wasSharedCompletion;
         reviewStateKnown =
           await this.reconcileReviewControllersAfterFailure(
             [controller],
@@ -957,6 +1049,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           affectedController,
           {
             marked: affectedController.marked,
+            sharedCompletion: affectedController.sharedCompletion,
           },
         ]),
       );
@@ -967,6 +1060,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       let focusReturnTarget = null;
       affectedControllers.forEach((affectedController) => {
         this.updateAggregateFromLines(affectedController);
+        affectedController.sharedCompletion = Boolean(
+          affectedController.marked &&
+            affectedController.sharedCompletionKey,
+        );
         const previous = previousControllers.get(affectedController);
         previous.collapseTransition = this.applyViewedCollapseTransition(
           affectedController,
@@ -1002,11 +1099,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.beginOfficialViewedReviewPersistence(affectedControllers);
       let reviewStateKnown = true;
       try {
-        const viewedAt = Date.now();
+        const viewedAt = this.reviewTimestampAfterSharedState(
+          affectedControllers,
+        );
         const values = {};
         const removals = new Set();
         if (!viewed) {
-          affectedLines.forEach((line) => removals.add(line.key));
+          affectedLines.forEach((line) => {
+            removals.add(line.key);
+            if (this.cachedLegacyLineReviewMatches(line)) {
+              removals.add(line.legacyKey);
+            }
+          });
           affectedControllers.forEach((affectedController) => {
             removals.add(affectedController.key);
           });
@@ -1014,6 +1118,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           affectedLines.forEach((line) => {
             values[line.key] =
               this.lineReviewStorageValue(line, viewedAt);
+            if (this.cachedLegacyLineReviewMatches(line)) {
+              removals.add(line.legacyKey);
+            }
           });
           affectedControllers.forEach((affectedController) => {
             removals.add(affectedController.key);
@@ -1021,6 +1128,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
         affectedControllers.forEach((affectedController) => {
           const previous = previousControllers.get(affectedController);
+          if (
+            previous.sharedCompletion &&
+            !affectedController.marked
+          ) {
+            affectedController.lines.forEach((line) => {
+              if (line.marked) {
+                values[line.key] =
+                  this.lineReviewStorageValue(line, viewedAt);
+              }
+            });
+          }
+          this.updateSharedHunkCompletionMutation(affectedController, {
+            lines: affectedLines,
+            removals,
+            updatedAt: viewedAt,
+            values,
+          });
           if (previous.collapseTransition === "collapse") {
             values[affectedController.collapsedKey] = {
               autoCollapsed: true,

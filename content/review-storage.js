@@ -2,7 +2,25 @@
 
 if (globalThis.HunkMarkContent?.extendApp) {
   globalThis.HunkMarkContent.extendApp({
-    rememberLineReviewContext(key, value) {
+    rememberReviewStorageValue(key, value) {
+      if (this.Core.isReviewStorageKey(key)) {
+        const timestamp = this.reviewEntryTimestamp(value);
+        if (timestamp > 0) {
+          this.reviewTimestampByKey.set(key, timestamp);
+        } else {
+          this.reviewTimestampByKey.delete(key);
+        }
+      }
+      if (
+        typeof key === "string" &&
+        key.startsWith(`${this.Core.REVIEW_STORAGE_NAMESPACE}:mark:`)
+      ) {
+        if (typeof value?.viewed === "boolean") {
+          this.sharedHunkCompletionByKey.set(key, value);
+        } else {
+          this.sharedHunkCompletionByKey.delete(key);
+        }
+      }
       if (
         typeof key !== "string" ||
         !key.startsWith(`${this.Core.REVIEW_STORAGE_NAMESPACE}:line:`)
@@ -143,6 +161,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       scope = this.currentReviewScope,
       now = Date.now(),
     } = {}) {
+      ({ now, values } =
+        await this.sharedHunkCompletionMutationWithStoredState(values, now));
       const storedKeys = Object.keys(values);
       const invalidLineKey = storedKeys.find(
         (key) =>
@@ -252,7 +272,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           if (this.isTrackedReviewStorageKey(key)) {
             this.reviewStorageKeys.add(key);
           }
-          this.rememberLineReviewContext(key, value);
+          this.rememberReviewStorageValue(key, value);
           this.rememberReviewContextAccess(key, value);
         });
       }
@@ -275,7 +295,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       await this.removeLocalStorage(list);
       list.forEach((key) => {
         this.reviewStorageKeys.delete(key);
-        this.rememberLineReviewContext(key, undefined);
+        this.rememberReviewStorageValue(key, undefined);
         this.rememberReviewContextAccess(key, undefined);
       });
     },
@@ -314,7 +334,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
         }
-        this.rememberLineReviewContext(key, value);
+        this.rememberReviewStorageValue(key, value);
       });
       if (shouldRecordAccess) {
         this.reviewContextAccessedAtById.set(contextId, now);
@@ -414,7 +434,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (!this.isTrackedReviewStorageKey(key)) {
           return;
         }
-        this.rememberLineReviewContext(key, change.newValue);
+        this.rememberReviewStorageValue(key, change.newValue);
         if (change.newValue === undefined) {
           this.reviewStorageKeys.delete(key);
         } else {
@@ -470,13 +490,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
     ) {
       const stored = await this.getLocalStorage(null);
       this.reviewStorageKeys.clear();
+      this.sharedHunkCompletionByKey.clear();
       this.lineReviewBaselineContextByKey.clear();
       this.lineReviewContextByKey.clear();
+      this.reviewTimestampByKey.clear();
       Object.entries(stored).forEach(([key, value]) => {
         if (this.isTrackedReviewStorageKey(key)) {
           this.reviewStorageKeys.add(key);
         }
-        this.rememberLineReviewContext(key, value);
+        this.rememberReviewStorageValue(key, value);
       });
       const currentContextId = currentContext
         ? await this.Core.reviewContextId(currentContext)

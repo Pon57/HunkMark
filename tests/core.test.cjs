@@ -77,11 +77,20 @@ test("formats asynchronous and cached review keys identically", async () => {
     Core.ALL_COMMITS_REVIEW_VARIANT,
   );
   Core.clearIdentifierCache();
-  const [hunkKey, lineKey, suppressionKey] = await Promise.all([
+  const [hunkKey, lineKey, layoutLineKey, suppressionKey] = await Promise.all([
     Core.hunkStorageKey(scope, "src/a.js", "@@\n+new", 2),
     Core.lineStorageKey(
       scope,
       "src/a.js",
+      "addition",
+      "+new",
+      3,
+      4,
+    ),
+    Core.layoutLineStorageKey(
+      scope,
+      "src/a.js",
+      "split",
       "addition",
       "+new",
       3,
@@ -104,6 +113,18 @@ test("formats asynchronous and cached review keys identically", async () => {
       4,
     ),
     lineKey,
+  );
+  assert.equal(
+    Core.cachedLayoutLineStorageKey(
+      scope,
+      "src/a.js",
+      "split",
+      "addition",
+      "+new",
+      3,
+      4,
+    ),
+    layoutLineKey,
   );
   assert.equal(
     Core.cachedOfficialSyncSuppressionKey(scope, "src/a.js"),

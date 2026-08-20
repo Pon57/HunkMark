@@ -38,6 +38,7 @@ After updating the repository, reload HunkMark from `chrome://extensions`.
 
 - Review state is stored only in `chrome.storage.local` and is never sent elsewhere.
 - A line keeps its state only while its content, changed block, and surrounding context remain stable. Edits, relocation to a different context, and invisible Unicode changes reset it to unviewed.
+- Partial line state remains separate between Unified and Split layouts. Completing a whole hunk shares its Viewed and Collapse / Expand state when both layouts have the same unambiguous changed-line sequence and surrounding context.
 - `Reset page` removes state only for the currently displayed commit range.
 - The `Sync GitHub file Viewed` setting controls automatic one-way synchronization. Turning it off never clears GitHub's existing file-level `Viewed` state, and manual changes made by the user remain respected.
 

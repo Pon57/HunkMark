@@ -481,7 +481,7 @@ test("bounds hashing and defers line controls for a collapsed large block", asyn
     );
     assert.equal(
       digestInputSizes.filter((size) => size > 10_000).length,
-      2,
+      3,
     );
     assert.equal(
       digestInputSizes.reduce((total, size) => total + size, 0) < 500_000,
