@@ -405,9 +405,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.document.addEventListener(
         "click",
         (event) => {
-          if (!settings.hidden && !panel.contains(event.target)) {
-            setSettingsOpen(false);
+          if (
+            settings.hidden ||
+            settings.contains(event.target) ||
+            settingsButton.contains(event.target)
+          ) {
+            return;
           }
+          setSettingsOpen(false, {
+            restoreFocus: settings.contains(this.document.activeElement),
+          });
         },
         { signal },
       );

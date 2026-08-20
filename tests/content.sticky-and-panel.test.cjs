@@ -2801,6 +2801,24 @@ test("keeps settings behind an accessible gear menu", async () => {
     assert.equal(settings.hidden, false);
     assert.equal(settingsButton.getAttribute("aria-expanded"), "true");
 
+    const settingsInput = settings.querySelector(
+      'input[aria-label="Automatically collapse viewed hunks"]',
+    );
+    settingsInput.focus();
+    panel.querySelector(".hunkmark-panel-summary").click();
+    assert.equal(settings.hidden, true);
+    assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+    assert.equal(dom.window.document.activeElement, settingsButton);
+
+    settingsButton.click();
+    const outsideButton = dom.window.document.createElement("button");
+    dom.window.document.body.append(outsideButton);
+    outsideButton.focus();
+    outsideButton.click();
+    assert.equal(settings.hidden, true);
+    assert.equal(dom.window.document.activeElement, outsideButton);
+
+    settingsButton.click();
     dom.window.document.body.click();
     assert.equal(settings.hidden, true);
     assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
