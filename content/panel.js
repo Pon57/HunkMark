@@ -402,18 +402,35 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.panelEventController?.abort();
       this.panelEventController = new this.window.AbortController();
       const { signal } = this.panelEventController;
+      const isOutsideSettings = (target) =>
+        !settings.contains(target) && !settingsButton.contains(target);
+      let focusWasInSettingsBeforeOutsidePointer = false;
+      this.document.addEventListener(
+        "pointerdown",
+        (event) => {
+          focusWasInSettingsBeforeOutsidePointer =
+            !settings.hidden &&
+            isOutsideSettings(event.target) &&
+            settings.contains(this.document.activeElement);
+        },
+        { capture: true, signal },
+      );
       this.document.addEventListener(
         "click",
         (event) => {
-          if (
-            settings.hidden ||
-            settings.contains(event.target) ||
-            settingsButton.contains(event.target)
-          ) {
+          const focusWasInSettings =
+            focusWasInSettingsBeforeOutsidePointer;
+          focusWasInSettingsBeforeOutsidePointer = false;
+          if (settings.hidden || !isOutsideSettings(event.target)) {
             return;
           }
+          const activeElement = this.document.activeElement;
           setSettingsOpen(false, {
-            restoreFocus: settings.contains(this.document.activeElement),
+            restoreFocus:
+              settings.contains(activeElement) ||
+              (focusWasInSettings &&
+                (activeElement === this.document.body ||
+                  activeElement === this.document.documentElement)),
           });
         },
         { signal },
