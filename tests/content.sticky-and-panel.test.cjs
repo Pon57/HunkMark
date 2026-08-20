@@ -2811,14 +2811,23 @@ test("keeps settings behind an accessible gear menu", async () => {
           cancelable: true,
         }),
       );
-    settingsInput.focus();
     const summary = panel.querySelector(".hunkmark-panel-summary");
-    dispatchPointerDown(summary);
     dom.window.document.body.tabIndex = -1;
+
+    settingsButton.focus();
+    dispatchPointerDown(summary);
     dom.window.document.body.focus();
     summary.click();
     assert.equal(settings.hidden, true);
     assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
+    assert.equal(dom.window.document.activeElement, settingsButton);
+
+    settingsButton.click();
+    settingsInput.focus();
+    dispatchPointerDown(summary);
+    dom.window.document.body.focus();
+    summary.click();
+    assert.equal(settings.hidden, true);
     assert.equal(dom.window.document.activeElement, settingsButton);
 
     settingsButton.click();

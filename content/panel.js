@@ -404,23 +404,25 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const { signal } = this.panelEventController;
       const isOutsideSettings = (target) =>
         !settings.contains(target) && !settingsButton.contains(target);
-      let focusWasInSettingsBeforeOutsidePointer = false;
+      let focusWasInSettingsUiBeforeOutsidePointer = false;
       this.document.addEventListener(
         "pointerdown",
         (event) => {
-          focusWasInSettingsBeforeOutsidePointer =
+          const activeElement = this.document.activeElement;
+          focusWasInSettingsUiBeforeOutsidePointer =
             !settings.hidden &&
             isOutsideSettings(event.target) &&
-            settings.contains(this.document.activeElement);
+            (settings.contains(activeElement) ||
+              settingsButton.contains(activeElement));
         },
         { capture: true, signal },
       );
       this.document.addEventListener(
         "click",
         (event) => {
-          const focusWasInSettings =
-            focusWasInSettingsBeforeOutsidePointer;
-          focusWasInSettingsBeforeOutsidePointer = false;
+          const focusWasInSettingsUi =
+            focusWasInSettingsUiBeforeOutsidePointer;
+          focusWasInSettingsUiBeforeOutsidePointer = false;
           if (settings.hidden || !isOutsideSettings(event.target)) {
             return;
           }
@@ -428,7 +430,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           setSettingsOpen(false, {
             restoreFocus:
               settings.contains(activeElement) ||
-              (focusWasInSettings &&
+              (focusWasInSettingsUi &&
                 (activeElement === this.document.body ||
                   activeElement === this.document.documentElement)),
           });
