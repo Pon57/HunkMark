@@ -63,7 +63,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           });
           settled.changed = true;
           settled.fileElements.add(fileElement);
-          settled.revealed ||= expectation.visible;
+          // A detached container proves only that GitHub replaced or removed
+          // it. Do not turn the expected state into observed reveal evidence;
+          // a connected replacement/prepaint root will provide that evidence.
           return;
         }
         const visible =
