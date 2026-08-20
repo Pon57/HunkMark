@@ -2804,15 +2804,37 @@ test("keeps settings behind an accessible gear menu", async () => {
     const settingsInput = settings.querySelector(
       'input[aria-label="Automatically collapse viewed hunks"]',
     );
-    settingsInput.focus();
-    panel.querySelector(".hunkmark-panel-summary").click();
+    const dispatchPointerDown = (target) =>
+      target.dispatchEvent(
+        new dom.window.MouseEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    const summary = panel.querySelector(".hunkmark-panel-summary");
+    dom.window.document.body.tabIndex = -1;
+
+    settingsButton.focus();
+    dispatchPointerDown(summary);
+    dom.window.document.body.focus();
+    summary.click();
     assert.equal(settings.hidden, true);
     assert.equal(settingsButton.getAttribute("aria-expanded"), "false");
     assert.equal(dom.window.document.activeElement, settingsButton);
 
     settingsButton.click();
+    settingsInput.focus();
+    dispatchPointerDown(summary);
+    dom.window.document.body.focus();
+    summary.click();
+    assert.equal(settings.hidden, true);
+    assert.equal(dom.window.document.activeElement, settingsButton);
+
+    settingsButton.click();
     const outsideButton = dom.window.document.createElement("button");
     dom.window.document.body.append(outsideButton);
+    settingsInput.focus();
+    dispatchPointerDown(outsideButton);
     outsideButton.focus();
     outsideButton.click();
     assert.equal(settings.hidden, true);
