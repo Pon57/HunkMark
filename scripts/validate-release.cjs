@@ -124,7 +124,7 @@ assert.deepEqual(
 
 for (const [relative, dimensions] of [
   ["store-assets/screenshot-main.png", { width: 1280, height: 800 }],
-  ["store-assets/screenshot-filtered.png", { width: 1280, height: 800 }],
+  ["store-assets/screenshot-line-review.png", { width: 1280, height: 800 }],
   ["store-assets/promo-small.png", { width: 440, height: 280 }],
 ]) {
   assert.deepEqual(
