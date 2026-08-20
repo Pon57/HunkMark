@@ -596,6 +596,65 @@ body.hunkmark-line-dragging {
   z-index: 90;
 }
 
+.hunkmark-settings-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fgColor-muted, var(--color-fg-muted, #656d76));
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 26px;
+  justify-content: center;
+  margin: -2px;
+  padding: 0;
+  width: 26px;
+}
+
+.hunkmark-settings-button:hover,
+.hunkmark-settings-button[aria-expanded="true"] {
+  background: var(--bgColor-muted, var(--color-canvas-subtle, #f6f8fa));
+  color: var(--fgColor-default, var(--color-fg-default, #1f2328));
+}
+
+.hunkmark-settings-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus-outlineColor, var(--color-accent-fg, #0969da));
+  outline: none;
+}
+
+.hunkmark-settings-icon {
+  display: block;
+  fill: currentColor;
+  height: 16px;
+  width: 16px;
+}
+
+.hunkmark-settings-menu {
+  align-items: stretch;
+  background: var(--bgColor-default, var(--color-canvas-default, #fff));
+  border: 1px solid var(--borderColor-default, var(--color-border-default, #d0d7de));
+  border-radius: 9px;
+  bottom: calc(100% + 8px);
+  box-shadow: var(--shadow-floating-small, 0 8px 24px #1f232833);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 210px;
+  padding: 11px;
+  position: absolute;
+  right: 0;
+}
+
+.hunkmark-settings-menu[hidden] {
+  display: none;
+}
+
+.hunkmark-settings-heading {
+  font-size: 12px;
+  line-height: 18px;
+}
+
 #hunkmark-panel-spacer {
   clear: both;
   display: block;
@@ -653,6 +712,10 @@ body.hunkmark-line-dragging {
   white-space: nowrap;
 }
 
+.hunkmark-settings-menu .hunkmark-panel-toggle {
+  width: 100%;
+}
+
 .hunkmark-reset-button {
   background: var(--button-default-bgColor-rest, var(--color-btn-bg, #f6f8fa));
   border: 1px solid var(--button-default-borderColor-rest, var(--color-btn-border, #d0d7de));
@@ -663,6 +726,10 @@ body.hunkmark-line-dragging {
   font-weight: 600;
   line-height: 22px;
   padding: 0 8px;
+}
+
+.hunkmark-settings-menu .hunkmark-reset-button {
+  width: 100%;
 }
 
 .hunkmark-reset-button:hover {
@@ -681,6 +748,15 @@ body.hunkmark-line-dragging {
     flex-wrap: wrap;
     left: 8px;
     right: 8px;
+  }
+
+  #hunkmark-panel {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+  }
+
+  .hunkmark-settings-menu {
+    max-width: calc(100vw - 16px);
   }
 }
 

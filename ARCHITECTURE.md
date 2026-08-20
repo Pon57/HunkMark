@@ -59,7 +59,7 @@ Native controls and rendered diff rows are host evidence. `FileReviewSnapshot` i
 ### UI, lifecycle, and storage invariants
 
 - UI updates are optimistic, but storage failures restore the previous in-memory and DOM state.
-- GitHub's official Viewed state is enabled only when GitHub exposes a file-level Viewed control, no unresolved diff-loading marker is present, every rendered hunk maps to a live controller, and a user interaction completes all of those hunks. Eligibility is detected from rendered state rather than inferred from the commit-range URL. It is never automatically disabled.
+- When `Sync GitHub file Viewed` is enabled, GitHub's official Viewed state is enabled only when GitHub exposes a file-level Viewed control, no unresolved diff-loading marker is present, every rendered hunk maps to a live controller, and a user interaction completes all of those hunks. Eligibility is detected from rendered state rather than inferred from the commit-range URL. Disabling the preference does not clear an existing official Viewed state; enabling it re-evaluates complete rendered files in every open tab through the shared preference update. It is never automatically disabled.
 - Only an explicit user click that removes GitHub's Viewed state suppresses automatic re-selection until the user changes HunkMark state again. A host-side reset after new commits does not discard unchanged local line state or create suppression.
 - `Reset page` removes state only for the displayed commit range. Other commit selections retain their state.
 - Extension-owned and diff-unrelated DOM mutations do not schedule a diff rediscovery. Outside a recognized pull-request diff route, DOM mutations are not inspected for diff changes.

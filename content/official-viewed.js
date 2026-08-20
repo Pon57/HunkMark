@@ -1483,7 +1483,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     syncOfficialFileViewed(fileElement, controllers) {
-      if (controllers.length === 0) {
+      if (!this.syncOfficialViewedEnabled || controllers.length === 0) {
         return;
       }
 
