@@ -315,6 +315,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       });
       this.controllersByRow.forEach((controller) => {
+        if (this.reviewAppearancePersistencePending(controller)) {
+          return;
+        }
         let controllerAppearanceChanged = false;
         const sharedCompletionSourcePropagation =
           this.propagateSharedHunkCompletionSourceChanges(
@@ -707,6 +710,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.refreshQueued = false;
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;
+      this.reviewAppearancePersistenceCountByController.clear();
       this.clearAllHostContextExpansionIntents();
       this.observer?.disconnect();
       this.observer = null;

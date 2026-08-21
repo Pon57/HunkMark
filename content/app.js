@@ -144,6 +144,7 @@
       this.reviewTimestampByKey = new Map();
       this.reviewContextAccessedAtById = new Map();
       this.reviewStorageKeys = new Set();
+      this.reviewAppearancePersistenceCountByController = new Map();
       this.sharedHunkCompletionByKey = new Map();
 
       this.currentScope = null;

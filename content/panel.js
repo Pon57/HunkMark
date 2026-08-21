@@ -651,17 +651,32 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    directFileElementForProgressBadge(badge) {
+      return (
+        badge.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
+        badge.closest(this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR)
+      );
+    },
+
     removeProgressForFilesWithoutRenderedHunks() {
       const controllers = Array.from(this.controllersByRow.values());
+      const controllerFileElements = [
+        ...new Set(controllers.map((controller) => controller.fileElement)),
+      ].filter(Boolean);
+      const controllerFileElementSet = new Set(controllerFileElements);
       let removed = false;
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((badge) => {
+          const directFileElement =
+            this.directFileElementForProgressBadge(badge);
           const fileElement =
-            controllers.find((controller) =>
-              controller.fileElement?.contains(badge),
-            )?.fileElement ??
-            badge.closest(this.constants.FILE_CONTAINER_SELECTOR) ??
+            (controllerFileElementSet.has(directFileElement)
+              ? directFileElement
+              : controllerFileElements.find((candidate) =>
+                  candidate.contains(badge),
+                )) ??
+            directFileElement ??
             badge.closest("article, details, section, [role=region]");
           if (
             fileElement &&
@@ -687,6 +702,126 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    emptyFileProgress() {
+      return {
+        collapsed: 0,
+        controllers: [],
+        lines: 0,
+        viewed: 0,
+        viewedLines: 0,
+      };
+    },
+
+    addControllerToProgress(
+      file,
+      controller,
+      controllerViewedLines = this.countViewedLines(controller),
+    ) {
+      file.controllers.push(controller);
+      file.collapsed += Number(controller.collapsed);
+      file.lines += controller.lines.length;
+      file.viewed += Number(controller.marked);
+      file.viewedLines += controllerViewedLines;
+      return controllerViewedLines;
+    },
+
+    renderCollectedFileProgress(fileElement, file) {
+      const { controllers } = file;
+      const lineText =
+        file.lines > 0 ? ` · Lines ${file.viewedLines}/${file.lines}` : "";
+      const nextText = `Hunks ${file.viewed}/${controllers.length}${lineText}`;
+      const progressKey = this.fileProgressStateKey(controllers[0].filePath);
+      this.fileReviewSnapshotsByKey.set(
+        progressKey,
+        this.captureFileReviewSnapshot(controllers, controllers[0].filePath),
+      );
+      const state = {
+        collapsed: file.collapsed,
+        complete: file.viewed === controllers.length,
+        hunks: controllers.length,
+        lines: file.lines,
+        text: nextText,
+        viewed: file.viewed,
+        viewedLines: file.viewedLines,
+      };
+      this.fileProgressStateByKey.set(progressKey, state);
+      this.renderFileProgress(fileElement, state);
+    },
+
+    renderOverallProgress({
+      hunkCount,
+      lineCount,
+      viewedHunkCount,
+      viewedLineCount,
+    }, { refreshClearance = false } = {}) {
+      if (hunkCount === 0) {
+        this.removePanel();
+        return;
+      }
+
+      const panel = refreshClearance
+        ? this.ensurePanel()
+        : this.document.getElementById(this.constants.PANEL_ID) ??
+          this.ensurePanel();
+      const summary = panel.querySelector(".hunkmark-panel-summary");
+      const lineText =
+        lineCount > 0 ? ` · Lines ${viewedLineCount} / ${lineCount}` : "";
+      const nextText =
+        `Hunks ${viewedHunkCount} / ${hunkCount}${lineText}`;
+      if (summary.textContent !== nextText) {
+        summary.textContent = nextText;
+      }
+    },
+
+    updateProgressForControllers(controllers) {
+      const affectedFileElements = new Set(
+        Array.from(controllers, (controller) => controller.fileElement),
+      );
+      if (affectedFileElements.size === 0) {
+        return;
+      }
+
+      const byFile = new Map();
+      let hunkCount = 0;
+      let lineCount = 0;
+      let viewedHunkCount = 0;
+      let viewedLineCount = 0;
+      this.controllersByRow.forEach((controller) => {
+        if (!controller.hunkRow.isConnected) {
+          return;
+        }
+        hunkCount += 1;
+        viewedHunkCount += Number(controller.marked);
+        lineCount += controller.lines.length;
+        const controllerViewedLines = this.countViewedLines(controller);
+        viewedLineCount += controllerViewedLines;
+
+        if (!affectedFileElements.has(controller.fileElement)) {
+          return;
+        }
+        let file = byFile.get(controller.fileElement);
+        if (!file) {
+          file = this.emptyFileProgress();
+          byFile.set(controller.fileElement, file);
+        }
+        this.addControllerToProgress(file, controller, controllerViewedLines);
+      });
+
+      if (byFile.size !== affectedFileElements.size) {
+        this.updateProgress();
+        return;
+      }
+      byFile.forEach((file, fileElement) =>
+        this.renderCollectedFileProgress(fileElement, file),
+      );
+      this.renderOverallProgress({
+        hunkCount,
+        lineCount,
+        viewedHunkCount,
+        viewedLineCount,
+      });
+    },
+
     updateProgress() {
       const byFile = new Map();
       let hunkCount = 0;
@@ -707,81 +842,36 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
         let file = byFile.get(controller.fileElement);
         if (!file) {
-          file = {
-            collapsed: 0,
-            controllers: [],
-            lines: 0,
-            viewed: 0,
-            viewedLines: 0,
-          };
+          file = this.emptyFileProgress();
           byFile.set(controller.fileElement, file);
         }
-        file.controllers.push(controller);
-        file.collapsed += Number(controller.collapsed);
-        file.lines += controller.lines.length;
-        file.viewed += Number(controller.marked);
-        file.viewedLines += controllerViewedLines;
+        this.addControllerToProgress(file, controller, controllerViewedLines);
       });
 
       const fileElements = Array.from(byFile.keys());
+      const fileElementSet = new Set(fileElements);
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((badge) => {
-          const owner = fileElements.find((file) =>
-            file.contains(badge),
-          );
+          const directFileElement =
+            this.directFileElementForProgressBadge(badge);
+          const owner = fileElementSet.has(directFileElement)
+            ? directFileElement
+            : fileElements.find((file) => file.contains(badge));
           if (!owner) {
             badge.remove();
           }
         });
 
       byFile.forEach((file, fileElement) => {
-        const { controllers } = file;
-        const lineText =
-          file.lines > 0
-            ? ` · Lines ${file.viewedLines}/${file.lines}`
-            : "";
-        const nextText =
-          `Hunks ${file.viewed}/${controllers.length}${lineText}`;
-        const progressKey = this.fileProgressStateKey(
-          controllers[0].filePath,
-        );
-        this.fileReviewSnapshotsByKey.set(
-          progressKey,
-          this.captureFileReviewSnapshot(
-            controllers,
-            controllers[0].filePath,
-          ),
-        );
-        const state = {
-          collapsed: file.collapsed,
-          complete: file.viewed === controllers.length,
-          hunks: controllers.length,
-          lines: file.lines,
-          text: nextText,
-          viewed: file.viewed,
-          viewedLines: file.viewedLines,
-        };
-        this.fileProgressStateByKey.set(progressKey, state);
-        this.renderFileProgress(fileElement, state);
+        this.renderCollectedFileProgress(fileElement, file);
       });
-
-      if (hunkCount === 0) {
-        this.removePanel();
-        return;
-      }
-
-      const panel = this.ensurePanel();
-      const summary = panel.querySelector(".hunkmark-panel-summary");
-      const lineText =
-        lineCount > 0
-          ? ` · Lines ${viewedLineCount} / ${lineCount}`
-          : "";
-      const nextText =
-        `Hunks ${viewedHunkCount} / ${hunkCount}${lineText}`;
-      if (summary.textContent !== nextText) {
-        summary.textContent = nextText;
-      }
+      this.renderOverallProgress({
+        hunkCount,
+        lineCount,
+        viewedHunkCount,
+        viewedLineCount,
+      }, { refreshClearance: true });
     },
   });
 }

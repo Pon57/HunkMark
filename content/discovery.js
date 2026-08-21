@@ -49,6 +49,137 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    knownLineControllerForMutationTarget(node) {
+      const element =
+        node?.nodeType === this.window.Node.ELEMENT_NODE
+          ? node
+          : node?.parentElement;
+      if (!(element instanceof this.window.Element)) {
+        return null;
+      }
+
+      const row = this.semanticRow(element);
+      let current = element;
+      while (current) {
+        const lineController = this.lineControllersByElement.get(current);
+        if (lineController) {
+          return lineController;
+        }
+        if (current === row) {
+          break;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    },
+
+    mutationPreservesKnownLineIdentity(mutation) {
+      const targetLine = this.knownLineControllerForMutationTarget(
+        mutation.target,
+      );
+      const row = targetLine?.row;
+      if (
+        !targetLine ||
+        targetLine.controller.destroyed ||
+        !targetLine.element.isConnected ||
+        !row?.isConnected
+      ) {
+        return false;
+      }
+
+      const expectedLines = targetLine.controller.lines.filter(
+        (line) => line.row === row && line.element.isConnected,
+      );
+      if (
+        expectedLines.some(
+          (line) =>
+            line.control &&
+            (!line.control.isConnected ||
+              !line.element.contains(line.control)),
+        )
+      ) {
+        return false;
+      }
+      const currentLines = this.changedLineDescriptors([row]);
+      if (
+        expectedLines.length === 0 ||
+        currentLines.length !== expectedLines.length
+      ) {
+        return false;
+      }
+
+      const expectedLineSet = new Set(expectedLines);
+      return currentLines.every((line) => {
+        const previous = this.lineControllersByElement.get(line.element);
+        return (
+          expectedLineSet.has(previous) &&
+          previous.kind === line.kind &&
+          previous.side === line.side &&
+          previous.text === line.text
+        );
+      });
+    },
+
+    mutationPreservesUntrackedDiffCellIdentity(mutation) {
+      const target =
+        mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target?.parentElement;
+      if (!(target instanceof this.window.Element)) {
+        return false;
+      }
+
+      const cell = target.matches(".diff-text-cell")
+        ? target
+        : target.closest(".diff-text-cell");
+      if (
+        !cell?.isConnected ||
+        !cell.closest(this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR) ||
+        this.knownLineControllerForMutationTarget(target)
+      ) {
+        return false;
+      }
+
+      const identityContentSelector = "[data-code-text], code, pre";
+      const identityContent = Array.from(
+        cell.querySelectorAll(identityContentSelector),
+      );
+      if (
+        identityContent.length === 0 ||
+        target.matches(identityContentSelector) ||
+        target.closest(identityContentSelector)
+      ) {
+        return false;
+      }
+
+      const structuralSelector = [
+        identityContentSelector,
+        this.constants.FILE_CONTAINER_SELECTOR,
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+        this.constants.ROW_CANDIDATE_SELECTOR,
+        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
+        this.constants.UNRESOLVED_DIFF_SELECTOR,
+      ].join(", ");
+      const changedNodes = [
+        ...mutation.addedNodes,
+        ...mutation.removedNodes,
+      ];
+      return (
+        changedNodes.length > 0 &&
+        changedNodes.every((node) => {
+          if (node.nodeType !== this.window.Node.ELEMENT_NODE) {
+            return true;
+          }
+          return (
+            !node.matches(structuralSelector) &&
+            !node.querySelector(structuralSelector)
+          );
+        })
+      );
+    },
+
     mutationAffectsDiff(mutation) {
       const elementForNode = (node) => {
         const element =
@@ -58,6 +189,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return element instanceof this.window.Element ? element : null;
       };
       const target = elementForNode(mutation.target);
+      if (target && this.mutationPreservesKnownLineIdentity(mutation)) {
+        // Host code cells can acquire auxiliary descendants that change row
+        // geometry without changing HunkMark's line identity or hunk topology.
+        // Sticky origins are invalidated before diff mutations are filtered.
+        return false;
+      }
+      if (
+        target &&
+        this.mutationPreservesUntrackedDiffCellIdentity(mutation)
+      ) {
+        // Unreviewable diff cells can acquire auxiliary descendants too. Keep
+        // those geometry changes visible to sticky layout handling, but do not
+        // rediscover while identity content and diff structure remain untouched.
+        return false;
+      }
       if (
         target &&
         (target.matches(this.constants.FILE_CONTAINER_SELECTOR) ||

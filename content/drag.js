@@ -2,30 +2,49 @@
 
 if (globalThis.HunkMarkContent?.extendApp) {
   globalThis.HunkMarkContent.extendApp({
-    startLineDrag(lineController, viewed, pointerId) {
-      if (this.dragState) {
-        void this.finishLineDrag(true);
+    compareDragLines(left, right) {
+      if (left.element === right.element) {
+        return 0;
       }
+      return left.element.compareDocumentPosition(right.element) &
+        this.window.Node.DOCUMENT_POSITION_FOLLOWING
+        ? -1
+        : 1;
+    },
 
+    dragLinesAreInDocumentOrder(lines) {
+      for (let index = 1; index < lines.length; index += 1) {
+        if (this.compareDragLines(lines[index - 1], lines[index]) > 0) {
+          return false;
+        }
+      }
+      return true;
+    },
+
+    dragControllerIsRangeVisible(controller) {
+      return (
+        !controller.collapsed &&
+        controller.hunkRow.isConnected &&
+        !controller.hunkRow.closest(
+          '[hidden], [aria-hidden="true"], details:not([open])',
+        )
+      );
+    },
+
+    orderedLinesForDrag(lineController) {
       let orderedLines = Array.from(this.controllersByRow.values())
         .filter(
           (controller) =>
             controller === lineController.controller ||
-            (!controller.collapsed &&
-              controller.hunkRow.isConnected &&
-              controller.hunkRow.getClientRects().length > 0),
+            this.dragControllerIsRangeVisible(controller),
         )
         .flatMap((controller) => controller.lines)
-        .filter((candidate) => candidate.element.isConnected)
-        .sort((left, right) => {
-          if (left.element === right.element) {
-            return 0;
-          }
-          return left.element.compareDocumentPosition(right.element) &
-            this.window.Node.DOCUMENT_POSITION_FOLLOWING
-            ? -1
-            : 1;
-        });
+        .filter((candidate) => candidate.element.isConnected);
+      if (!this.dragLinesAreInDocumentOrder(orderedLines)) {
+        orderedLines.sort((left, right) =>
+          this.compareDragLines(left, right),
+        );
+      }
       if (
         lineController.controller.split &&
         lineController.side !== "unified"
@@ -37,17 +56,52 @@ if (globalThis.HunkMarkContent?.extendApp) {
             (this.linkSplitSides && candidate.peers.length === 0),
         );
       }
+      return orderedLines;
+    },
+
+    prepareLineDragRange() {
+      const state = this.dragState;
+      if (!state || state.rangePrepared) {
+        return;
+      }
+      const orderedLines = this.orderedLinesForDrag(state.anchorLine);
+      const indexByLine = new Map(
+        orderedLines.map((candidate, index) => [candidate, index]),
+      );
+      const anchorIndex = indexByLine.get(state.anchorLine) ?? -1;
+      Object.assign(state, {
+        anchorIndex,
+        endpointIndex: anchorIndex,
+        indexByLine,
+        orderedLines,
+        rangePrepared: true,
+      });
+    },
+
+    startLineDrag(lineController, viewed, pointerId) {
+      if (this.dragState) {
+        void this.finishLineDrag(true);
+      }
+
       this.dragState = {
-        anchorIndex: orderedLines.indexOf(lineController),
+        anchorIndex: 0,
+        anchorLine: lineController,
         controllers: new Set(),
+        endpointIndex: 0,
+        indexByLine: new Map([[lineController, 0]]),
         originalControllers: new Map(),
         originalMarks: new Map(),
-        orderedLines,
+        orderedLines: [lineController],
         pointerId,
+        rangePrepared: false,
         targetViewed: viewed,
         touched: new Set(),
       };
-      this.document.body.classList.add("hunkmark-line-dragging");
+      const control = lineController.control;
+      if (control) {
+        control.classList.add("hunkmark-line-dragging");
+        control.setPointerCapture?.(pointerId);
+      }
       this.updateLineDragRange(lineController);
     },
 
@@ -55,7 +109,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!this.dragState) {
         return;
       }
-      const endIndex = this.dragState.orderedLines.indexOf(lineController);
+      let endIndex = this.dragState.indexByLine.get(lineController) ?? -1;
+      if (endIndex >= 0 && endIndex === this.dragState.endpointIndex) {
+        return;
+      }
+      this.prepareLineDragRange();
+      endIndex = this.dragState.indexByLine.get(lineController) ?? -1;
+      if (endIndex >= 0 && endIndex === this.dragState.endpointIndex) {
+        return;
+      }
+      this.dragState.endpointIndex = endIndex;
       let rangeLines = [lineController];
       if (this.dragState.anchorIndex < 0 || endIndex < 0) {
         this.updateLineDragRange(lineController);
@@ -113,7 +176,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.updateAggregateFromLines(controller);
         this.applyControllerAppearance(controller);
       });
-      this.updateProgress();
+      this.updateProgressForControllers(changedControllers);
     },
 
     restoreDraggedLines(state) {
@@ -126,7 +189,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.updateAggregateFromLines(controller);
         this.applyControllerAppearance(controller);
       });
-      this.updateProgress();
+      this.updateProgressForControllers(state.controllers);
     },
 
     buildLineDragReviewMutation(state) {
@@ -209,10 +272,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return;
       }
       this.dragState = null;
-      this.document.body.classList.remove("hunkmark-line-dragging");
+      const anchorControl = state.anchorLine.control;
+      if (anchorControl) {
+        anchorControl.classList.remove("hunkmark-line-dragging");
+        if (anchorControl.hasPointerCapture?.(state.pointerId)) {
+          anchorControl.releasePointerCapture(state.pointerId);
+        }
+      }
       state.touched.forEach((lineController) => {
         lineController.element.classList.remove("hunkmark-line-drag-touched");
       });
+      if (persist) {
+        this.beginReviewAppearancePersistence(state.controllers);
+      }
       const officialViewedPendingKeys = persist
         ? this.beginOfficialViewedReviewPersistence(state.controllers)
         : [];
@@ -250,7 +322,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           state.controllers.forEach((controller) =>
             this.applyControllerAppearance(controller),
           );
-          this.updateProgress();
+          this.updateProgressForControllers(state.controllers);
         } else {
           this.restoreDraggedLines(state);
         }
@@ -267,6 +339,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           console.warn("HunkMark could not save dragged line marks.", error);
         }
       } finally {
+        if (persist) {
+          this.endReviewAppearancePersistence(state.controllers);
+        }
         this.endOfficialViewedReviewPersistence(
           officialViewedPendingKeys,
         );
@@ -320,6 +395,17 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     dragEndpointAtY(clientY) {
+      const state = this.dragState;
+      if (!state) {
+        return null;
+      }
+      if (!state.rangePrepared) {
+        const anchorRect = state.anchorLine.element.getBoundingClientRect();
+        if (clientY >= anchorRect.top && clientY <= anchorRect.bottom) {
+          return state.anchorLine;
+        }
+      }
+      this.prepareLineDragRange();
       if (!this.dragState || this.dragState.anchorIndex < 0) {
         return null;
       }
@@ -330,24 +416,32 @@ if (globalThis.HunkMarkContent?.extendApp) {
       let endIndex = anchorIndex;
 
       if (clientY < anchorRect.top) {
-        for (let index = anchorIndex - 1; index >= 0; index -= 1) {
-          const rect = orderedLines[index].element.getBoundingClientRect();
-          if (clientY > rect.bottom) {
-            break;
+        let low = 0;
+        let high = anchorIndex - 1;
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2);
+          const rect =
+            orderedLines[middle].element.getBoundingClientRect();
+          if (clientY <= rect.bottom) {
+            endIndex = middle;
+            high = middle - 1;
+          } else {
+            low = middle + 1;
           }
-          endIndex = index;
         }
       } else if (clientY > anchorRect.bottom) {
-        for (
-          let index = anchorIndex + 1;
-          index < orderedLines.length;
-          index += 1
-        ) {
-          const rect = orderedLines[index].element.getBoundingClientRect();
-          if (clientY < rect.top) {
-            break;
+        let low = anchorIndex + 1;
+        let high = orderedLines.length - 1;
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2);
+          const rect =
+            orderedLines[middle].element.getBoundingClientRect();
+          if (clientY >= rect.top) {
+            endIndex = middle;
+            low = middle + 1;
+          } else {
+            high = middle - 1;
           }
-          endIndex = index;
         }
       }
 
