@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.1.0](https://github.com/Pon57/HunkMark/compare/v3.0.0...v3.1.0) - 2026-08-20
+
+### Bug Fixes
+- fix: preserve review state across concurrent tabs by @Pon57 in https://github.com/Pon57/HunkMark/pull/15
+- Fix official Viewed reconciliation across concurrent updates by @Pon57 in https://github.com/Pon57/HunkMark/pull/17
+- Restore review metadata during failed storage mutations by @Pon57 in https://github.com/Pon57/HunkMark/pull/18
+- Fix review-state flicker when GitHub reveals diffs by @Pon57 in https://github.com/Pon57/HunkMark/pull/20
+- Fix Load Diff reveal restoration loops by @Pon57 in https://github.com/Pon57/HunkMark/pull/26
+- fix: preserve review state across context expansion by @Pon57 in https://github.com/Pon57/HunkMark/pull/27
+- fix: fall back from blank file visibility labels by @Pon57 in https://github.com/Pon57/HunkMark/pull/29
+- Fix settings menu focus restoration by @Pon57 in https://github.com/Pon57/HunkMark/pull/31
+### Enhancements
+- Reduce line-control DOM overhead by @Pon57 in https://github.com/Pon57/HunkMark/pull/19
+- Reduce work when revealing large diffs by @Pon57 in https://github.com/Pon57/HunkMark/pull/21
+- feat: add sticky hunk headers by @Pon57 in https://github.com/Pon57/HunkMark/pull/25
+- perf: avoid full-page restore for detached reveals by @Pon57 in https://github.com/Pon57/HunkMark/pull/28
+- Add compact settings menu and GitHub Viewed sync toggle by @Pon57 in https://github.com/Pon57/HunkMark/pull/30
+### General Changes
+- feat: share completed hunk state across diff layouts by @Pon57 in https://github.com/Pon57/HunkMark/pull/32
+### Dependency Updates
+- chore(deps-dev): bump undici from 7.28.0 to 7.29.0 by @dependabot[bot] in https://github.com/Pon57/HunkMark/pull/24
+- chore(deps): update dependency jsdom to v30 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/23
+
 ## [v3.0.0](https://github.com/Pon57/HunkMark/compare/v2.0.0...v3.0.0) - 2026-07-24
 
 ### Breaking Changes
