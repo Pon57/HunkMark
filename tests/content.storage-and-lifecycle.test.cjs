@@ -1892,7 +1892,11 @@ test("skips non-structural file UI only while tracked identity matches", async (
     await new Promise((resolve) => setTimeout(resolve, 180));
 
     const preview = dom.window.document.createElement("div");
-    preview.innerHTML = "<pre><code>const draft = true;</code></pre>";
+    preview.innerHTML = `
+      <pre><code>const draft = true;</code></pre>
+      <a href="#diff-user-content">Linked preview</a>
+      <table><tbody><tr><td>Table preview</td></tr></tbody></table>
+      <div role="row"><span role="cell">Grid preview</span></div>`;
     auxiliaryUi.append(preview);
     await new Promise((resolve) => setTimeout(resolve, 180));
 
@@ -1916,6 +1920,17 @@ test("skips non-structural file UI only while tracked identity matches", async (
     assert.equal(app.refreshRunning, false);
 
     app.resolveFilePath = resolveFilePath;
+    const diffRow = dom.window.document.createElement("tr");
+    diffRow.className = "diff-line-row";
+    diffRow.setAttribute("data-line-type", "context");
+    diffRow.innerHTML =
+      '<td class="diff-text-cell"><code>new context</code></td>';
+    const diffBody = fileGrid.querySelector("tbody");
+    assert.ok(diffBody);
+    diffBody.append(diffRow);
+    await waitFor(() => assert.equal(refreshes, 1));
+
+    refreshes = 0;
     fileGrid.setAttribute("aria-label", "Diff for: src/renamed.js");
     fileBody.prepend(dom.window.document.createElement("aside"));
     await waitFor(() => assert.equal(refreshes, 1));

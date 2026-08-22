@@ -32,7 +32,7 @@
       '[data-testid*="file-name"]',
       "clipboard-copy[value]",
       '[role="grid"][aria-label^="Diff for: "]',
-      'a[href^="#diff-"]',
+      'h3 a[href^="#diff-"]',
     ].join(", "),
     FILE_CONTAINER_SELECTOR: [
       ".js-file",

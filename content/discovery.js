@@ -158,7 +158,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
-        this.constants.ROW_CANDIDATE_SELECTOR,
         this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
         this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
@@ -236,7 +235,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
-        this.constants.ROW_CANDIDATE_SELECTOR,
         this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
         this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
