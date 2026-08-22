@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.1.1](https://github.com/Pon57/HunkMark/compare/v3.1.0...v3.1.1) - 2026-08-22
+
+### Enhancements
+- perf: reduce large diff interaction overhead by @Pon57 in https://github.com/Pon57/HunkMark/pull/33
+### General Changes
+- docs: simplify store screenshots by @Pon57 in https://github.com/Pon57/HunkMark/pull/35
+
 ## [v3.1.0](https://github.com/Pon57/HunkMark/compare/v3.0.0...v3.1.0) - 2026-08-20
 
 ### Bug Fixes
