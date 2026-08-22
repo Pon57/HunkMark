@@ -107,7 +107,11 @@ test("resolves current GitHub file paths without presentation marks", async () =
         <button>Load Diff</button>
       </div>
       <div role="region" id="diff-marked" class="Diff-module__diff__marked">
-        <h3><a href="#diff-marked"><code>\u200edir/\u200eodd.js\u200e\u200e</code></a></h3>
+        <div class="Diff-module__diffHeaderWrapper__marked">
+          <div class="DiffFileHeader-module__diff-file-header__marked">
+            <h3><a href="#diff-marked"><code>\u200edir/\u200eodd.js\u200e\u200e</code></a></h3>
+          </div>
+        </div>
       </div>
     </body></html>`;
   const { app, dom } = await startExtension(html);
@@ -258,7 +262,7 @@ test("distinguishes stable presentation text from a reused React file", async ()
 
 test("tracks presentation identity after a pending Load Diff path", async () => {
   const { app, dom } = await startExtension(
-    "<!doctype html><html><body><section id=outer><div id=nested></div></section></body></html>",
+    "<!doctype html><html><body><section id=outer><div id=nested role=region class=Diff-module__diff__nested></div></section></body></html>",
   );
   try {
     const outer = dom.window.document.getElementById("outer");
@@ -271,7 +275,12 @@ test("tracks presentation identity after a pending Load Diff path", async () => 
       "src/pending-old.js",
     );
 
-    nested.innerHTML = '<h3><a href="#diff-b"><code>src/b.js</code></a></h3>';
+    nested.innerHTML = `
+      <div class="Diff-module__diffHeaderWrapper__nested">
+        <div class="DiffFileHeader-module__diff-file-header__nested">
+          <h3><a href="#diff-b"><code>src/b.js</code></a></h3>
+        </div>
+      </div>`;
     assert.equal(
       app.resolveFilePath(nested, 0),
       "src/pending-old.js",

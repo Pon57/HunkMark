@@ -582,7 +582,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return null;
       }
 
-      const fileNameLink = fileElement.querySelector('a[href^="#diff-"]');
+      const fileNameLink = this.filePathLink(fileElement);
       const fileInfo = [
         fileElement.querySelector(".file-header .file-info"),
         fileElement.querySelector(
