@@ -1002,19 +1002,21 @@ function currentReactContextExpansionFixture() {
             </div>
           </div>
         </div>
-        <table role="grid" aria-label="Diff for: ${path}"><tbody>
-          <tr class="diff-line-row">
-            <td role="gridcell" class="diff-hunk-cell">
-              <button class="Button ExpandableHunkHeaderDiffLine-module__expand-button-line__${suffix}" aria-label="Expand file from line 2 to line 9">Expand</button>
-              @@ -10 +10 @@
-            </td>
-          </tr>
-          <tr class="diff-line-row" data-line-type="addition">
-            <td role="gridcell" class="diff-text-cell right-side-diff-cell" data-line-anchor="diff-${suffix}R10">
-              <code class="addition" data-diff-side="right">+${suffix}</code>
-            </td>
-          </tr>
-        </tbody></table>
+        <div class="border position-relative rounded-bottom-2">
+          <table role="grid" aria-label="Diff for: ${path}"><tbody>
+            <tr class="diff-line-row">
+              <td role="gridcell" class="diff-hunk-cell">
+                <button class="Button ExpandableHunkHeaderDiffLine-module__expand-button-line__${suffix}" aria-label="Expand file from line 2 to line 9">Expand</button>
+                @@ -10 +10 @@
+              </td>
+            </tr>
+            <tr class="diff-line-row" data-line-type="addition">
+              <td role="gridcell" class="diff-text-cell right-side-diff-cell" data-line-anchor="diff-${suffix}R10">
+                <code class="addition" data-diff-side="right">+${suffix}</code>
+              </td>
+            </tr>
+          </tbody></table>
+        </div>
       </div>
     </div>`;
   return `<!doctype html>

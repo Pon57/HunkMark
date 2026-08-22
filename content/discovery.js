@@ -180,6 +180,77 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    mutationPreservesFileAuxiliaryIdentity(mutation) {
+      const target =
+        mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target?.parentElement;
+      if (!(target instanceof this.window.Element)) {
+        return false;
+      }
+
+      const fileRegion = target.matches(
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+      )
+        ? target
+        : target.closest(
+            this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+          );
+      if (!fileRegion?.isConnected) {
+        return false;
+      }
+      const knownFilePath = this.knownFilePath(fileRegion);
+      if (
+        !knownFilePath ||
+        this.resolveFilePath(fileRegion, 0) !== knownFilePath
+      ) {
+        return false;
+      }
+
+      const identityTargetSelector = [
+        ".diff-text-cell",
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+        this.constants.ROW_CANDIDATE_SELECTOR,
+        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
+        this.constants.UNRESOLVED_DIFF_SELECTOR,
+      ].join(", ");
+      if (
+        target.matches(identityTargetSelector) ||
+        target.closest(identityTargetSelector)
+      ) {
+        return false;
+      }
+
+      const structuralSelector = [
+        "[data-hunkmark-ui]",
+        ".hunkmark-file-progress",
+        this.constants.FILE_CONTAINER_SELECTOR,
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+        this.constants.ROW_CANDIDATE_SELECTOR,
+        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
+        this.constants.UNRESOLVED_DIFF_SELECTOR,
+      ].join(", ");
+      const changedNodes = [
+        ...mutation.addedNodes,
+        ...mutation.removedNodes,
+      ];
+      return (
+        changedNodes.length > 0 &&
+        changedNodes.every((node) => {
+          if (node.nodeType !== this.window.Node.ELEMENT_NODE) {
+            return true;
+          }
+          return (
+            !node.matches(structuralSelector) &&
+            !node.querySelector(structuralSelector)
+          );
+        })
+      );
+    },
+
     mutationAffectsDiff(mutation) {
       const elementForNode = (node) => {
         const element =
@@ -202,6 +273,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         // Unreviewable diff cells can acquire auxiliary descendants too. Keep
         // those geometry changes visible to sticky layout handling, but do not
         // rediscover while identity content and diff structure remain untouched.
+        return false;
+      }
+      if (
+        target &&
+        this.mutationPreservesFileAuxiliaryIdentity(mutation)
+      ) {
+        // Current GitHub file comments and other auxiliary file UI are mounted
+        // beside the diff table. Their parent still contains every diff row, so
+        // file-region ancestry alone must not trigger whole-page rediscovery.
         return false;
       }
       if (

@@ -1840,6 +1840,70 @@ test("preserves untracked context identity across auxiliary descendants", async 
   }
 });
 
+test("preserves current React file identity across file comments", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const originalControllers = controllersFor(app);
+    const fileRegion = dom.window.document
+      .querySelector('[aria-label="Diff for: src/react-one.js"]')
+      .closest('[role="region"]');
+    const fileBody = fileRegion.querySelector(
+      ".border.position-relative.rounded-bottom-2",
+    );
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+    const originalInvalidate =
+      app.invalidateVisibleStickyHunkOrigins.bind(app);
+    let stickyInvalidations = 0;
+    app.invalidateVisibleStickyHunkOrigins = () => {
+      stickyInvalidations += 1;
+      return originalInvalidate();
+    };
+
+    const fileComment = dom.window.document.createElement("div");
+    fileComment.className =
+      "border rounded-2 Diff-module__diffAddFileThread__test";
+    fileComment.innerHTML = `
+      <h4>Add comment on file</h4>
+      <textarea aria-label="Markdown value"></textarea>`;
+    fileBody.prepend(fileComment);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const preview = dom.window.document.createElement("div");
+    preview.innerHTML = "<pre><code>const draft = true;</code></pre>";
+    fileComment.append(preview);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    fileComment.remove();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(refreshes, 0);
+    assert.equal(stickyInvalidations >= 3, true);
+    assert.deepEqual(controllersFor(app), originalControllers);
+    assert.equal(
+      originalControllers.every(
+        (controller) =>
+          controller.hunkRow.isConnected &&
+          controller.lines.every(
+            (line) => !line.control || line.control.isConnected,
+          ),
+      ),
+      true,
+    );
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
