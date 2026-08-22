@@ -939,7 +939,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.stickyHunkOriginFocusTarget(controller);
       controller.collapsePending = Boolean(collapseTransition);
       this.applyControllerAppearance(controller);
-      this.updateProgress();
+      this.updateProgressForControllers([controller]);
       const returnScrollPosition = returnTarget
         ? this.stickyHunkScrollPosition()
         : null;
@@ -1085,7 +1085,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
         this.applyControllerAppearance(affectedController);
       });
-      this.updateProgress();
+      this.updateProgressForControllers(affectedControllers);
       const returnScrollPosition = returnTarget
         ? this.stickyHunkScrollPosition()
         : null;
@@ -1095,6 +1095,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           line.control.disabled = true;
         }
       });
+      this.beginReviewAppearancePersistence(affectedControllers);
       const officialViewedPendingKeys =
         this.beginOfficialViewedReviewPersistence(affectedControllers);
       let reviewStateKnown = true;
@@ -1165,13 +1166,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
           },
         );
       } catch (error) {
-        reviewStateKnown =
-          await this.reconcileReviewControllersAfterFailure(
-            affectedControllers,
-            error,
-            "HunkMark could not save a line mark.",
-          );
+          reviewStateKnown =
+            await this.reconcileReviewControllersAfterFailure(
+              affectedControllers,
+              error,
+              "HunkMark could not save a line mark.",
+            );
       } finally {
+        this.endReviewAppearancePersistence(affectedControllers);
         this.endOfficialViewedReviewPersistence(
           officialViewedPendingKeys,
         );

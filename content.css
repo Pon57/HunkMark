@@ -527,9 +527,8 @@
   box-shadow: inset 0 0 0 2px var(--borderColor-accent-emphasis, var(--color-accent-emphasis, #0969da));
 }
 
-body.hunkmark-line-dragging {
+.hunkmark-line-control.hunkmark-line-dragging {
   cursor: row-resize !important;
-  user-select: none !important;
 }
 
 .hunkmark-collapsed {

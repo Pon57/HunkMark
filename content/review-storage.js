@@ -131,6 +131,39 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    beginReviewAppearancePersistence(controllers) {
+      Array.from(controllers).forEach((controller) => {
+        this.reviewAppearancePersistenceCountByController.set(
+          controller,
+          (this.reviewAppearancePersistenceCountByController.get(controller) ??
+            0) + 1,
+        );
+      });
+    },
+
+    endReviewAppearancePersistence(controllers) {
+      Array.from(controllers).forEach((controller) => {
+        const remaining =
+          (this.reviewAppearancePersistenceCountByController.get(controller) ??
+            0) - 1;
+        if (remaining > 0) {
+          this.reviewAppearancePersistenceCountByController.set(
+            controller,
+            remaining,
+          );
+        } else {
+          this.reviewAppearancePersistenceCountByController.delete(controller);
+        }
+      });
+    },
+
+    reviewAppearancePersistencePending(controller) {
+      return (
+        (this.reviewAppearancePersistenceCountByController.get(controller) ??
+          0) > 0
+      );
+    },
+
     async setReviewStorage(
       values,
       scope = this.currentReviewScope,

@@ -25,6 +25,9 @@ const {
   replacePageBody,
   dragFixture,
   modernGridFixture,
+  currentReactContextExpansionFixture,
+  currentReactContextEvidenceFixture,
+  currentReactSplitContextExpansionFixture,
   contextualLineFixture,
 } = require("./content-test-support.cjs");
 
@@ -707,6 +710,16 @@ test("shrinks a dragged line range before persisting it", async () => {
         { top: index * 20, bottom: index * 20 + 20 },
       ];
     });
+    let capturedPointerId = null;
+    controller.lines[0].control.setPointerCapture = (pointerId) => {
+      capturedPointerId = pointerId;
+    };
+    controller.lines[0].control.hasPointerCapture = (pointerId) =>
+      capturedPointerId === pointerId;
+    controller.lines[0].control.releasePointerCapture = (pointerId) => {
+      assert.equal(pointerId, capturedPointerId);
+      capturedPointerId = null;
+    };
 
     const pointerDown = new dom.window.Event("pointerdown", {
       bubbles: true,
@@ -719,18 +732,72 @@ test("shrinks a dragged line range before persisting it", async () => {
     });
     controller.lines[0].control.dispatchEvent(pointerDown);
     assert.equal(pointerDown.defaultPrevented, true);
+    assert.equal(capturedPointerId, 7);
+    assert.equal(
+      controller.lines[0].control.classList.contains(
+        "hunkmark-line-dragging",
+      ),
+      true,
+    );
+    assert.equal(
+      dom.window.document.body.classList.contains("hunkmark-line-dragging"),
+      false,
+    );
+    assert.equal(app.dragState.rangePrepared, false);
+    assert.equal(app.dragState.indexByLine.size, 1);
+    assert.equal(app.dragState.endpointIndex, 0);
+    let progressUpdates = 0;
+    const updateProgressForControllers =
+      app.updateProgressForControllers.bind(app);
+    app.updateProgressForControllers = (controllers) => {
+      progressUpdates += 1;
+      return updateProgressForControllers(controllers);
+    };
+    dom.window.scrollBy = () => {};
+    const pointerMove = new dom.window.Event("pointermove", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperties(pointerMove, {
+      clientY: { value: 0 },
+      pointerId: { value: 7 },
+    });
+    app.lineDragPointerMove(pointerMove);
+    assert.equal(pointerMove.defaultPrevented, true);
+    assert.equal(app.dragState.rangePrepared, false);
+    assert.equal(progressUpdates, 0);
+    app.touchLineRange(controller.lines[0]);
+    assert.equal(app.dragState.rangePrepared, false);
+    assert.equal(app.dragState.indexByLine.size, 1);
+    assert.equal(progressUpdates, 0);
+    app.dragState.orderedLines.indexOf = () => {
+      throw new Error("drag range lookup must use the cached line index");
+    };
     app.touchLineRange(controller.lines[2]);
+    assert.equal(app.dragState.rangePrepared, true);
+    assert.equal(app.dragState.indexByLine.size, 3);
+    assert.equal(progressUpdates, 1);
     assert.deepEqual(
       Array.from(controller.lines, (line) => line.marked),
       [true, true, true],
     );
+    app.touchLineRange(controller.lines[2]);
+    assert.equal(progressUpdates, 1);
 
     app.touchLineRange(controller.lines[1]);
+    assert.equal(progressUpdates, 2);
     assert.deepEqual(
       Array.from(controller.lines, (line) => line.marked),
       [true, true, false],
     );
     await app.finishLineDrag(true);
+    assert.equal(
+      controller.lines[0].control.classList.contains(
+        "hunkmark-line-dragging",
+      ),
+      false,
+    );
+    assert.equal(capturedPointerId, null);
 
     assert.equal(
       Object.keys(chrome.snapshot()).filter((key) => key.includes(":line:"))
@@ -744,7 +811,11 @@ test("shrinks a dragged line range before persisting it", async () => {
     dom.window.scrollTo = (options) => scrollCalls.push(options);
     app.stickyHunkNaturalDocumentTop = () => 600;
     controller.lines[2].control.focus();
+    app.orderedLinesForDrag = () => {
+      throw new Error("a single-line click must not prepare a drag range");
+    };
     app.startLineDrag(controller.lines[2], true, 8);
+    assert.equal(app.dragState.rangePrepared, false);
     await app.finishLineDrag(true);
     await waitFor(() => {
       assert.equal(scrollCalls.length, 1);
@@ -756,6 +827,207 @@ test("shrinks a dragged line range before persisting it", async () => {
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("updates interaction progress only for affected files", async () => {
+  const { app, dom } = await startExtension(`<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/first.js">
+        <div class="file-header"><span class="file-info">src/first.js</span></div>
+        <table><tbody>
+          <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+          <tr><td class="blob-num">1</td><td class="blob-code-addition">+first</td></tr>
+        </tbody></table>
+      </div>
+      <div class="js-file" data-file-path="src/second.js">
+        <div class="file-header"><span class="file-info">src/second.js</span></div>
+        <table><tbody>
+          <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+          <tr><td class="blob-num">1</td><td class="blob-code-addition">+second</td></tr>
+        </tbody></table>
+      </div>
+    </body></html>`);
+  try {
+    await waitFor(() => assert.equal(app.controllersByRow.size, 2));
+    const controllers = Array.from(app.controllersByRow.values()).sort((a, b) =>
+      a.filePath.localeCompare(b.filePath),
+    );
+    const [first, second] = controllers;
+    const secondProgress = second.fileElement.querySelector(
+      ".hunkmark-file-progress",
+    );
+    assert.equal(secondProgress.textContent, "Hunks 0/1 · Lines 0/1");
+
+    const renderedFiles = [];
+    let panelEnsures = 0;
+    const renderFileProgress = app.renderFileProgress.bind(app);
+    const ensurePanel = app.ensurePanel.bind(app);
+    app.renderFileProgress = (fileElement, state) => {
+      renderedFiles.push(fileElement.dataset.filePath);
+      return renderFileProgress(fileElement, state);
+    };
+    app.ensurePanel = () => {
+      panelEnsures += 1;
+      return ensurePanel();
+    };
+    first.lines[0].marked = true;
+    app.updateAggregateFromLines(first);
+    app.updateProgressForControllers([first]);
+
+    assert.deepEqual(renderedFiles, ["src/first.js"]);
+    assert.equal(panelEnsures, 0);
+    assert.equal(secondProgress.textContent, "Hunks 0/1 · Lines 0/1");
+    assert.equal(
+      dom.window.document.querySelector(".hunkmark-panel-summary").textContent,
+      "Hunks 1 / 2 · Lines 1 / 2",
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("finds drag endpoints logarithmically with stable row boundaries", async () => {
+  const { app, dom } = await startExtension(dragFixture());
+  try {
+    let rectReads = 0;
+    const lines = Array.from({ length: 128 }, (_, index) => ({
+      element: {
+        compareDocumentPosition(other) {
+          return index < other.documentIndex
+            ? dom.window.Node.DOCUMENT_POSITION_FOLLOWING
+            : dom.window.Node.DOCUMENT_POSITION_PRECEDING;
+        },
+        documentIndex: index,
+        getBoundingClientRect() {
+          rectReads += 1;
+          return { bottom: index * 30 + 20, top: index * 30 };
+        },
+      },
+    }));
+    assert.equal(app.dragLinesAreInDocumentOrder(lines), true);
+    const moved = lines.slice();
+    [moved[63], moved[64]] = [moved[64], moved[63]];
+    assert.equal(app.dragLinesAreInDocumentOrder(moved), false);
+
+    app.dragState = {
+      anchorIndex: 64,
+      anchorLine: lines[64],
+      orderedLines: lines,
+      rangePrepared: true,
+    };
+    const endpointAt = (clientY, expectedIndex) => {
+      rectReads = 0;
+      assert.equal(app.dragEndpointAtY(clientY), lines[expectedIndex]);
+      assert.equal(rectReads <= 9, true);
+    };
+    endpointAt(64 * 30 + 10, 64);
+    endpointAt(63 * 30 + 25, 64);
+    endpointAt(63 * 30 + 20, 63);
+    endpointAt(-1, 0);
+    endpointAt(64 * 30 + 25, 64);
+    endpointAt(65 * 30, 65);
+    endpointAt(128 * 30, 127);
+  } finally {
+    app.dragState = null;
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("builds drag order without forcing hunk layout", async () => {
+  const { app, dom } = await startExtension(`<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/drag-order.js">
+        <div class="file-header"><span class="file-info">src/drag-order.js</span></div>
+        <table><tbody>
+          <tr><td class="blob-code-hunk">@@ -1 +1 @@</td></tr>
+          <tr><td class="blob-num">1</td><td class="blob-code-addition">+first</td></tr>
+          <tr><td class="blob-code-hunk">@@ -3 +3 @@</td></tr>
+          <tr><td class="blob-num">3</td><td class="blob-code-addition">+second</td></tr>
+        </tbody></table>
+      </div>
+    </body></html>`);
+  try {
+    await waitFor(() => assert.equal(app.controllersByRow.size, 2));
+    const controllers = Array.from(app.controllersByRow.values());
+    controllers.forEach((controller) => {
+      controller.hunkRow.getClientRects = () => {
+        throw new Error("drag ordering must not force hunk layout");
+      };
+    });
+
+    assert.deepEqual(
+      Array.from(app.orderedLinesForDrag(controllers[0].lines[0])),
+      [controllers[0].lines[0], controllers[1].lines[0]],
+    );
+    controllers[1].hunkRow.setAttribute("aria-hidden", "true");
+    assert.deepEqual(
+      Array.from(app.orderedLinesForDrag(controllers[0].lines[0])),
+      [controllers[0].lines[0]],
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps optimistic line clears stable across multi-step persistence", async (t) => {
+  const autoCollapsePreferenceKey =
+    `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
+  const scenarios = [
+    {
+      clear: (app, controller) =>
+        app.setLineViewed(controller.lines[0], false),
+      name: "direct line mutation",
+    },
+    {
+      clear: async (app, controller) => {
+        app.startLineDrag(controller.lines[0], false, 73);
+        await app.finishLineDrag(true);
+      },
+      name: "single-line pointer mutation",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(splitFixture(), {
+        [autoCollapsePreferenceKey]: false,
+      });
+      try {
+        const controller = controllerAt(app);
+        await app.setHunkViewed(controller, true);
+        assert.equal(controller.lines.every((line) => line.marked), true);
+
+        const appearances = [];
+        const applyControllerAppearance =
+          app.applyControllerAppearance.bind(app);
+        app.applyControllerAppearance = (candidate) => {
+          if (candidate === controller) {
+            appearances.push(candidate.lines.map((line) => line.marked));
+          }
+          return applyControllerAppearance(candidate);
+        };
+
+        await scenario.clear(app, controller);
+
+        assert.equal(appearances.length > 0, true);
+        assert.equal(
+          appearances.every((marks) => marks.every((marked) => !marked)),
+          true,
+        );
+        assert.equal(controller.lines.every((line) => !line.marked), true);
+        assert.equal(
+          app.reviewAppearancePersistenceCountByController.size,
+          0,
+        );
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
   }
 });
 
@@ -1423,6 +1695,225 @@ test("does not inspect DOM mutations while outside a pull request diff", async (
     assert.equal(stickyLayoutUpdates, 0);
     assert.equal(app.hunkStickyLayoutFrameId, null);
     assert.equal(app.currentScope, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("preserves known changed-line identity across auxiliary descendants", async () => {
+  const { app, dom } = await startExtension(
+    currentReactSplitContextExpansionFixture(),
+  );
+  try {
+    const [controller] = controllersFor(app);
+    const line = controller.lines.find(
+      (candidate) => candidate.side === "right",
+    );
+    assert.equal(app.knownLineControllerForMutationTarget(line.element), line);
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+    const originalInvalidate =
+      app.invalidateVisibleStickyHunkOrigins.bind(app);
+    let stickyInvalidations = 0;
+    app.invalidateVisibleStickyHunkOrigins = () => {
+      stickyInvalidations += 1;
+      return originalInvalidate();
+    };
+
+    const auxiliaryContent = dom.window.document.createElement("div");
+    auxiliaryContent.dataset.hostAuxiliary = "true";
+    auxiliaryContent.innerHTML = `
+      <div role="toolbar"></div>
+      <pre><code>auxiliary sample</code></pre>`;
+    line.element.append(auxiliaryContent);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const auxiliaryAction = dom.window.document.createElement("button");
+    auxiliaryAction.textContent = "Action";
+    auxiliaryContent.querySelector('[role="toolbar"]').append(auxiliaryAction);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    auxiliaryContent.remove();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(refreshes, 0);
+    assert.equal(stickyInvalidations >= 3, true);
+    assert.equal(app.controllersByRow.get(controller.hunkRow), controller);
+    assert.equal(line.text, "+newValue");
+    assert.equal(line.control.isConnected, true);
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("refreshes when a known changed-line identity changes", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const originalController = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+
+    originalController.lines[0].element.querySelector("code").textContent =
+      "+changed";
+
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      const refreshedController = controllersFor(app).find(
+        (candidate) => candidate.filePath === "src/react-one.js",
+      );
+      assert.notEqual(refreshedController, originalController);
+      assert.equal(refreshedController.lines[0].text, "+changed");
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("preserves untracked context identity across auxiliary descendants", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextEvidenceFixture(),
+  );
+  try {
+    const originalControllers = controllersFor(app);
+    const contextRow = Array.from(
+      dom.window.document.querySelectorAll(
+        'tr.diff-line-row[data-line-type="context"]',
+      ),
+    ).find((row) => row.textContent.includes("before first"));
+    const contextCell = contextRow.querySelector(".diff-text-cell");
+    assert.equal(app.knownLineControllerForMutationTarget(contextCell), null);
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+    const originalInvalidate =
+      app.invalidateVisibleStickyHunkOrigins.bind(app);
+    let stickyInvalidations = 0;
+    app.invalidateVisibleStickyHunkOrigins = () => {
+      stickyInvalidations += 1;
+      return originalInvalidate();
+    };
+
+    const primaryAuxiliary = dom.window.document.createElement("div");
+    primaryAuxiliary.dataset.hostAuxiliary = "primary";
+    primaryAuxiliary.append(dom.window.document.createElement("button"));
+    const secondaryAuxiliary = dom.window.document.createElement("div");
+    secondaryAuxiliary.dataset.hostAuxiliary = "secondary";
+    secondaryAuxiliary.append(dom.window.document.createElement("button"));
+    contextCell.append(primaryAuxiliary, secondaryAuxiliary);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    primaryAuxiliary.remove();
+    secondaryAuxiliary.remove();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(refreshes, 0);
+    assert.equal(stickyInvalidations >= 2, true);
+    assert.deepEqual(controllersFor(app), originalControllers);
+    assert.equal(contextCell.querySelector("code").textContent, "before first");
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("uses direct current React progress ownership before controller scans", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const fileElements = [
+      ...new Set(
+        controllersFor(app).map((controller) => controller.fileElement),
+      ),
+    ];
+    const badges = Array.from(
+      dom.window.document.querySelectorAll(".hunkmark-file-progress"),
+    );
+    assert.equal(badges.length, fileElements.length);
+    badges.forEach((badge) => {
+      assert.equal(
+        fileElements.includes(app.directFileElementForProgressBadge(badge)),
+        true,
+      );
+    });
+
+    const directOwner =
+      app.directFileElementForProgressBadge.bind(app);
+    let directOwnerLookups = 0;
+    app.directFileElementForProgressBadge = (badge) => {
+      directOwnerLookups += 1;
+      return directOwner(badge);
+    };
+    app.updateProgress();
+    assert.equal(app.removeProgressForFilesWithoutRenderedHunks(), false);
+    assert.equal(directOwnerLookups, badges.length * 2);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("refreshes when an untracked context identity changes", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextEvidenceFixture(),
+  );
+  try {
+    const originalController = controllersFor(app).find(
+      (controller) => controller.lines[0]?.text === "+first",
+    );
+    const originalContextFingerprint =
+      originalController.lines[0].contextFingerprint;
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+
+    const contextCode = Array.from(
+      dom.window.document.querySelectorAll(
+        'tr.diff-line-row[data-line-type="context"] code',
+      ),
+    ).find((code) => code.textContent === "before first");
+    contextCode.textContent = "replaced before first";
+
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      const refreshedController = controllersFor(app).find(
+        (controller) => controller.lines[0]?.text === "+first",
+      );
+      assert.notEqual(refreshedController, originalController);
+      assert.notEqual(
+        refreshedController.lines[0].contextFingerprint,
+        originalContextFingerprint,
+      );
+    });
   } finally {
     app.stop();
     dom.window.close();
