@@ -214,8 +214,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         ".diff-text-cell",
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
-        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
-        this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
       if (
         target === fileHeader ||
@@ -235,8 +233,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
-        this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
-        this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
       const changedNodes = [
         ...mutation.addedNodes,

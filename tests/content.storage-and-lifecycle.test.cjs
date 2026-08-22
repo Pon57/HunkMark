@@ -1895,13 +1895,23 @@ test("skips non-structural file UI only while tracked identity matches", async (
     fileBody.prepend(auxiliaryUi);
     await new Promise((resolve) => setTimeout(resolve, 180));
 
+    const previewHost = dom.window.document.createElement("div");
+    const loadingPreview = dom.window.document.createElement("section");
+    loadingPreview.innerHTML = `
+      <span data-component="loadingSpinner">
+        <span data-component="Spinner" role="progressbar">Loading</span>
+      </span>`;
+    previewHost.append(loadingPreview);
+    auxiliaryUi.append(previewHost);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
     const preview = dom.window.document.createElement("div");
     preview.innerHTML = `
       <pre><code>const draft = true;</code></pre>
       <h3><a href="#diff-user-content">Linked preview</a></h3>
       <table><tbody><tr><td>Table preview</td></tr></tbody></table>
       <div role="row"><span role="cell">Grid preview</span></div>`;
-    auxiliaryUi.append(preview);
+    loadingPreview.replaceWith(preview);
     await new Promise((resolve) => setTimeout(resolve, 180));
 
     preview
@@ -1934,13 +1944,20 @@ test("skips non-structural file UI only while tracked identity matches", async (
     assert.equal(app.refreshRunning, false);
 
     app.resolveFilePath = resolveFilePath;
+    const diffBody = fileGrid.querySelector("tbody");
+    assert.ok(diffBody);
+    const diffLoader = dom.window.document.createElement("tr");
+    diffLoader.setAttribute("data-component", "loadingSpinner");
+    diffLoader.innerHTML = '<td role="progressbar">Loading diff</td>';
+    diffBody.append(diffLoader);
+    await waitFor(() => assert.equal(refreshes, 1));
+
+    refreshes = 0;
     const diffRow = dom.window.document.createElement("tr");
     diffRow.className = "diff-line-row";
     diffRow.setAttribute("data-line-type", "context");
     diffRow.innerHTML =
       '<td class="diff-text-cell"><code>new context</code></td>';
-    const diffBody = fileGrid.querySelector("tbody");
-    assert.ok(diffBody);
     diffBody.append(diffRow);
     await waitFor(() => assert.equal(refreshes, 1));
 
