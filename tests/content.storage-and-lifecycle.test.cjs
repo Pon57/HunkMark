@@ -1860,6 +1860,10 @@ test("skips non-structural file UI only while tracked identity matches", async (
       app.currentFilePathEvidence(fileRegion),
       "src/react-one.js",
     );
+    assert.equal(
+      app.currentFilePathEvidence(fileGrid),
+      "src/react-one.js",
+    );
     const originalRefresh = app.refresh.bind(app);
     let refreshes = 0;
     app.refresh = async (...args) => {

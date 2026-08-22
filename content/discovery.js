@@ -458,9 +458,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     currentFilePathEvidence(fileElement) {
-      const grid = fileElement.querySelector(
-        '[role="grid"][aria-label^="Diff for: "]',
-      );
+      const gridSelector = '[role="grid"][aria-label^="Diff for: "]';
+      const grid = fileElement.matches(gridSelector)
+        ? fileElement
+        : fileElement.querySelector(gridSelector);
       const gridPath = this.trustedFilePath(
         grid?.getAttribute("aria-label")?.slice("Diff for: ".length),
       );
