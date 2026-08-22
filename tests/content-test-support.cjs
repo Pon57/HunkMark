@@ -1002,7 +1002,7 @@ function currentReactContextExpansionFixture() {
             </div>
           </div>
         </div>
-        <div class="border position-relative rounded-bottom-2">
+        <div>
           <table role="grid" aria-label="Diff for: ${path}"><tbody>
             <tr class="diff-line-row">
               <td role="gridcell" class="diff-hunk-cell">

@@ -25,6 +25,15 @@
     CONTROL_CLASS: "hunkmark-control",
     CURRENT_FILE_DIFF_REGION_SELECTOR,
     FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
+    FILE_PATH_EVIDENCE_SELECTOR: [
+      "[data-file-path]",
+      ".file-header[data-path]",
+      '[data-testid*="file-header"][data-path]',
+      '[data-testid*="file-name"]',
+      "clipboard-copy[value]",
+      '[role="grid"][aria-label^="Diff for: "]',
+      'a[href^="#diff-"]',
+    ].join(", "),
     FILE_CONTAINER_SELECTOR: [
       ".js-file",
       '[data-details-container-group="file"]',

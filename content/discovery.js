@@ -202,11 +202,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const knownFilePath = this.knownFilePath(fileRegion);
       if (
         !knownFilePath ||
-        this.resolveFilePath(fileRegion, 0) !== knownFilePath
+        this.currentFilePathEvidence(fileRegion) !== knownFilePath
       ) {
         return false;
       }
 
+      const fileIdentityTarget = target.matches(
+        this.constants.FILE_PATH_EVIDENCE_SELECTOR,
+      )
+        ? target
+        : target.closest(this.constants.FILE_PATH_EVIDENCE_SELECTOR);
       const identityTargetSelector = [
         ".diff-text-cell",
         this.constants.HUNK_ELEMENT_SELECTOR,
@@ -216,6 +221,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
       if (
+        (fileIdentityTarget && fileIdentityTarget !== fileRegion) ||
         target.matches(identityTargetSelector) ||
         target.closest(identityTargetSelector)
       ) {
@@ -225,6 +231,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const structuralSelector = [
         "[data-hunkmark-ui]",
         ".hunkmark-file-progress",
+        this.constants.FILE_PATH_EVIDENCE_SELECTOR,
         this.constants.FILE_CONTAINER_SELECTOR,
         this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
@@ -450,6 +457,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return this.fileIdentityByElement.get(fileElement)?.path ?? null;
     },
 
+    currentFilePathEvidence(fileElement) {
+      const grid = fileElement.querySelector(
+        '[role="grid"][aria-label^="Diff for: "]',
+      );
+      const gridPath = this.trustedFilePath(
+        grid?.getAttribute("aria-label")?.slice("Diff for: ".length),
+      );
+      if (gridPath) {
+        return gridPath;
+      }
+
+      const pathOwner = fileElement.matches("[data-file-path]")
+        ? fileElement
+        : fileElement.querySelector("[data-file-path]");
+      return this.trustedFilePath(pathOwner?.getAttribute("data-file-path"));
+    },
+
     rememberFileIdentity(fileElement, path, presentedPath) {
       const previous = this.fileIdentityByElement.get(fileElement);
       this.fileIdentityByElement.set(fileElement, {
@@ -467,15 +491,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const cachedPath = cachedIdentity?.path ?? null;
       const pathElements = Array.from(
         fileElement.querySelectorAll(
-          [
-            "[data-file-path]",
-            ".file-header[data-path]",
-            '[data-testid*="file-header"][data-path]',
-            '[data-testid*="file-name"]',
-            "clipboard-copy[value]",
-            '[role="grid"][aria-label^="Diff for: "]',
-            'a[href^="#diff-"]',
-          ].join(", "),
+          this.constants.FILE_PATH_EVIDENCE_SELECTOR,
         ),
       );
       const cleanPresentedPath = (element) => {

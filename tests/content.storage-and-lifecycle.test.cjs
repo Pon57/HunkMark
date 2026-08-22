@@ -1840,17 +1840,25 @@ test("preserves untracked context identity across auxiliary descendants", async 
   }
 });
 
-test("preserves current React file identity across file comments", async () => {
+test("skips non-structural file UI only while tracked identity matches", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
   );
   try {
     const originalControllers = controllersFor(app);
-    const fileRegion = dom.window.document
-      .querySelector('[aria-label="Diff for: src/react-one.js"]')
-      .closest('[role="region"]');
-    const fileBody = fileRegion.querySelector(
-      ".border.position-relative.rounded-bottom-2",
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-one.js"]',
+    );
+    assert.ok(fileGrid);
+    const fileRegion = fileGrid.closest('[role="region"]');
+    assert.ok(fileRegion);
+    const fileBody = fileGrid.parentElement;
+    assert.ok(fileBody);
+    assert.notEqual(fileBody, fileRegion);
+    assert.equal(app.knownFilePath(fileRegion), "src/react-one.js");
+    assert.equal(
+      app.currentFilePathEvidence(fileRegion),
+      "src/react-one.js",
     );
     const originalRefresh = app.refresh.bind(app);
     let refreshes = 0;
@@ -1865,22 +1873,26 @@ test("preserves current React file identity across file comments", async () => {
       stickyInvalidations += 1;
       return originalInvalidate();
     };
+    const resolveFilePath = app.resolveFilePath.bind(app);
+    app.resolveFilePath = () => {
+      throw new Error(
+        "non-structural mutation checks must not rescan file identity",
+      );
+    };
 
-    const fileComment = dom.window.document.createElement("div");
-    fileComment.className =
-      "border rounded-2 Diff-module__diffAddFileThread__test";
-    fileComment.innerHTML = `
+    const auxiliaryUi = dom.window.document.createElement("div");
+    auxiliaryUi.innerHTML = `
       <h4>Add comment on file</h4>
       <textarea aria-label="Markdown value"></textarea>`;
-    fileBody.prepend(fileComment);
+    fileBody.prepend(auxiliaryUi);
     await new Promise((resolve) => setTimeout(resolve, 180));
 
     const preview = dom.window.document.createElement("div");
     preview.innerHTML = "<pre><code>const draft = true;</code></pre>";
-    fileComment.append(preview);
+    auxiliaryUi.append(preview);
     await new Promise((resolve) => setTimeout(resolve, 180));
 
-    fileComment.remove();
+    auxiliaryUi.remove();
     await new Promise((resolve) => setTimeout(resolve, 180));
 
     assert.equal(refreshes, 0);
@@ -1898,6 +1910,11 @@ test("preserves current React file identity across file comments", async () => {
     );
     assert.equal(app.refreshQueued, false);
     assert.equal(app.refreshRunning, false);
+
+    app.resolveFilePath = resolveFilePath;
+    fileGrid.setAttribute("aria-label", "Diff for: src/renamed.js");
+    fileBody.prepend(dom.window.document.createElement("aside"));
+    await waitFor(() => assert.equal(refreshes, 1));
   } finally {
     app.stop();
     dom.window.close();
