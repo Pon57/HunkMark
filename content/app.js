@@ -25,6 +25,22 @@
     CONTROL_CLASS: "hunkmark-control",
     CURRENT_FILE_DIFF_REGION_SELECTOR,
     FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
+    FILE_HEADER_SELECTOR: [
+      ".file-header",
+      '[data-testid*="file-header"]',
+      "[data-diff-header-wrapper]",
+      '[class*="Diff-module__diffHeaderWrapper"]',
+      '[class*="DiffFileHeader-module__diff-file-header"]',
+      "header",
+    ].join(", "),
+    FILE_PATH_METADATA_SELECTOR: [
+      "[data-file-path]",
+      ".file-header[data-path]",
+      '[data-testid*="file-header"][data-path]',
+      '[data-testid*="file-name"]',
+      "clipboard-copy[value]",
+      '[role="grid"][aria-label^="Diff for: "]',
+    ].join(", "),
     FILE_CONTAINER_SELECTOR: [
       ".js-file",
       '[data-details-container-group="file"]',

@@ -158,7 +158,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
-        this.constants.ROW_CANDIDATE_SELECTOR,
         this.constants.ACTIVE_DIFF_LOADING_SELECTOR,
         this.constants.UNRESOLVED_DIFF_SELECTOR,
       ].join(", ");
@@ -173,6 +172,83 @@ if (globalThis.HunkMarkContent?.extendApp) {
             return true;
           }
           return (
+            !node.matches(structuralSelector) &&
+            !node.querySelector(structuralSelector)
+          );
+        })
+      );
+    },
+
+    mutationPreservesFileAuxiliaryIdentity(mutation) {
+      const target =
+        mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target?.parentElement;
+      if (!(target instanceof this.window.Element)) {
+        return false;
+      }
+
+      const fileRegion = target.matches(
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+      )
+        ? target
+        : target.closest(
+            this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+          );
+      if (!fileRegion?.isConnected || target === fileRegion) {
+        return false;
+      }
+      const diffGrid = this.currentFileDiffGrid(fileRegion);
+      const fileHeader = this.fileHeaderElement(fileRegion);
+      const knownFilePath = this.knownFilePath(fileRegion);
+      if (
+        !diffGrid ||
+        !fileHeader ||
+        !knownFilePath ||
+        this.currentFilePathEvidence(fileRegion) !== knownFilePath
+      ) {
+        return false;
+      }
+
+      const identityTargetSelector = [
+        ".diff-text-cell",
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+      ].join(", ");
+      if (
+        target === fileHeader ||
+        fileHeader.contains(target) ||
+        target === diffGrid ||
+        diffGrid.contains(target) ||
+        target.matches(identityTargetSelector) ||
+        target.closest(identityTargetSelector)
+      ) {
+        return false;
+      }
+
+      const structuralSelector = [
+        "[data-hunkmark-ui]",
+        ".hunkmark-file-progress",
+        this.constants.FILE_CONTAINER_SELECTOR,
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+      ].join(", ");
+      const changedNodes = [
+        ...mutation.addedNodes,
+        ...mutation.removedNodes,
+      ];
+      return (
+        changedNodes.length > 0 &&
+        changedNodes.every((node) => {
+          if (node.nodeType !== this.window.Node.ELEMENT_NODE) {
+            return true;
+          }
+          return (
+            node !== fileHeader &&
+            !node.contains(fileHeader) &&
+            node !== diffGrid &&
+            !node.contains(diffGrid) &&
             !node.matches(structuralSelector) &&
             !node.querySelector(structuralSelector)
           );
@@ -202,6 +278,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         // Unreviewable diff cells can acquire auxiliary descendants too. Keep
         // those geometry changes visible to sticky layout handling, but do not
         // rediscover while identity content and diff structure remain untouched.
+        return false;
+      }
+      if (
+        target &&
+        this.mutationPreservesFileAuxiliaryIdentity(mutation)
+      ) {
+        // Current GitHub file comments and other auxiliary file UI are mounted
+        // beside the diff table. Their parent still contains every diff row, so
+        // file-region ancestry alone must not trigger whole-page rediscovery.
         return false;
       }
       if (
@@ -370,6 +455,38 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return this.fileIdentityByElement.get(fileElement)?.path ?? null;
     },
 
+    currentFileDiffGrid(fileElement) {
+      const selector = '[role="grid"][aria-label^="Diff for: "]';
+      return fileElement.matches(selector)
+        ? fileElement
+        : fileElement.querySelector(selector);
+    },
+
+    currentFilePathEvidence(fileElement) {
+      const grid = this.currentFileDiffGrid(fileElement);
+      return this.trustedFilePath(
+        grid?.getAttribute("aria-label")?.slice("Diff for: ".length),
+      );
+    },
+
+    fileHeaderElement(fileElement) {
+      if (fileElement.matches(this.constants.FILE_HEADER_SELECTOR)) {
+        return fileElement;
+      }
+      return Array.from(fileElement.children).find((child) =>
+        child.matches(this.constants.FILE_HEADER_SELECTOR),
+      ) ?? null;
+    },
+
+    filePathLink(fileElement) {
+      const header = this.fileHeaderElement(fileElement);
+      if (!header) {
+        return null;
+      }
+      const selector = 'a[href^="#diff-"]';
+      return header.matches(selector) ? header : header.querySelector(selector);
+    },
+
     rememberFileIdentity(fileElement, path, presentedPath) {
       const previous = this.fileIdentityByElement.get(fileElement);
       this.fileIdentityByElement.set(fileElement, {
@@ -387,17 +504,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const cachedPath = cachedIdentity?.path ?? null;
       const pathElements = Array.from(
         fileElement.querySelectorAll(
-          [
-            "[data-file-path]",
-            ".file-header[data-path]",
-            '[data-testid*="file-header"][data-path]',
-            '[data-testid*="file-name"]',
-            "clipboard-copy[value]",
-            '[role="grid"][aria-label^="Diff for: "]',
-            'a[href^="#diff-"]',
-          ].join(", "),
+          this.constants.FILE_PATH_METADATA_SELECTOR,
         ),
       );
+      const filePathLink = this.filePathLink(fileElement);
+      if (filePathLink) {
+        pathElements.push(filePathLink);
+      }
       const cleanPresentedPath = (element) => {
         const codeElement = element.matches("code")
           ? element

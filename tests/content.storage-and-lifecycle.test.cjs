@@ -1840,6 +1840,168 @@ test("preserves untracked context identity across auxiliary descendants", async 
   }
 });
 
+test("skips non-structural file UI only while tracked identity matches", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const originalControllers = controllersFor(app);
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-one.js"]',
+    );
+    assert.ok(fileGrid);
+    const fileRegion = fileGrid.closest('[role="region"]');
+    assert.ok(fileRegion);
+    const fileBody = fileGrid.parentElement;
+    assert.ok(fileBody);
+    assert.notEqual(fileBody, fileRegion);
+    const fileHeader = app.fileHeaderElement(fileRegion);
+    assert.ok(fileHeader);
+    const filePathLink = app.filePathLink(fileRegion);
+    assert.ok(filePathLink);
+    assert.equal(app.knownFilePath(fileRegion), "src/react-one.js");
+    assert.equal(
+      app.currentFilePathEvidence(fileRegion),
+      "src/react-one.js",
+    );
+    assert.equal(
+      app.currentFilePathEvidence(fileGrid),
+      "src/react-one.js",
+    );
+    const originalRefresh = app.refresh.bind(app);
+    let refreshes = 0;
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return originalRefresh(...args);
+    };
+    const originalInvalidate =
+      app.invalidateVisibleStickyHunkOrigins.bind(app);
+    let stickyInvalidations = 0;
+    app.invalidateVisibleStickyHunkOrigins = () => {
+      stickyInvalidations += 1;
+      return originalInvalidate();
+    };
+    const resolveFilePath = app.resolveFilePath.bind(app);
+    app.resolveFilePath = () => {
+      throw new Error(
+        "non-structural mutation checks must not rescan file identity",
+      );
+    };
+
+    const auxiliaryUi = dom.window.document.createElement("div");
+    auxiliaryUi.innerHTML = `
+      <h4>Add comment on file</h4>
+      <textarea aria-label="Markdown value"></textarea>`;
+    fileBody.prepend(auxiliaryUi);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const previewHost = dom.window.document.createElement("div");
+    const loadingPreview = dom.window.document.createElement("section");
+    loadingPreview.innerHTML = `
+      <span data-component="loadingSpinner">
+        <span data-component="Spinner" role="progressbar">Loading</span>
+      </span>`;
+    previewHost.append(loadingPreview);
+    auxiliaryUi.append(previewHost);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const preview = dom.window.document.createElement("div");
+    preview.innerHTML = `
+      <pre><code>const draft = true;</code></pre>
+      <h3><a href="#diff-user-content">Linked preview</a></h3>
+      <table><tbody><tr><td>Table preview</td></tr></tbody></table>
+      <div role="row"><span role="cell">Grid preview</span></div>`;
+    loadingPreview.replaceWith(preview);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    preview
+      .querySelector("tbody")
+      .append(dom.window.document.createElement("tr"));
+    preview
+      .querySelector("h3")
+      .append(dom.window.document.createElement("span"));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(app.filePathLink(fileRegion), filePathLink);
+
+    auxiliaryUi.remove();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(refreshes, 0);
+    assert.equal(stickyInvalidations >= 3, true);
+    assert.deepEqual(controllersFor(app), originalControllers);
+    assert.equal(
+      originalControllers.every(
+        (controller) =>
+          controller.hunkRow.isConnected &&
+          controller.lines.every(
+            (line) => !line.control || line.control.isConnected,
+          ),
+      ),
+      true,
+    );
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+
+    app.resolveFilePath = resolveFilePath;
+    const diffBody = fileGrid.querySelector("tbody");
+    assert.ok(diffBody);
+    const diffLoader = dom.window.document.createElement("tr");
+    diffLoader.setAttribute("data-component", "loadingSpinner");
+    diffLoader.innerHTML = '<td role="progressbar">Loading diff</td>';
+    diffBody.append(diffLoader);
+    await waitFor(() => assert.equal(refreshes, 1));
+
+    refreshes = 0;
+    const diffRow = dom.window.document.createElement("tr");
+    diffRow.className = "diff-line-row";
+    diffRow.setAttribute("data-line-type", "context");
+    diffRow.innerHTML =
+      '<td class="diff-text-cell"><code>new context</code></td>';
+    diffBody.append(diffRow);
+    await waitFor(() => assert.equal(refreshes, 1));
+
+    refreshes = 0;
+    fileGrid.setAttribute("aria-label", "Diff for: src/renamed.js");
+    fileBody.prepend(dom.window.document.createElement("aside"));
+    await waitFor(() => assert.equal(refreshes, 1));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps file auxiliary mutations fail-closed without a diff grid", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-one.js"]',
+    );
+    assert.ok(fileGrid);
+    const fileRegion = fileGrid.closest('[role="region"]');
+    assert.ok(fileRegion);
+    const fileBody = fileGrid.parentElement;
+    assert.ok(fileBody);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+
+    fileGrid.removeAttribute("role");
+    fileGrid.removeAttribute("aria-label");
+    fileBody.prepend(dom.window.document.createElement("aside"));
+
+    await waitFor(() => assert.equal(refreshes, 1));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
