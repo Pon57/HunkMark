@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.1.2](https://github.com/Pon57/HunkMark/compare/v3.1.1...v3.1.2) - 2026-08-22
+
+### Bug Fixes
+- perf: avoid full refresh for file comments by @Pon57 in https://github.com/Pon57/HunkMark/pull/36
+
 ## [v3.1.1](https://github.com/Pon57/HunkMark/compare/v3.1.0...v3.1.1) - 2026-08-22
 
 ### Enhancements
