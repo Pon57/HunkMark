@@ -469,6 +469,88 @@ test("batches new hunk host reads before controller DOM writes", async () => {
   }
 });
 
+test("yields queued page tasks within discovery of one huge file", async () => {
+  let pageTaskRan = false;
+  let schedulerYields = 0;
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(3_000, 48),
+    {},
+    {
+      setupWindow(window) {
+        window.setTimeout(() => {
+          pageTaskRan = true;
+        }, 0);
+        Object.defineProperty(window, "scheduler", {
+          configurable: true,
+          value: {
+            async yield() {
+              schedulerYields += 1;
+            },
+          },
+        });
+      },
+      waitForScope: false,
+    },
+  );
+  try {
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.controllersByRow.size, 1);
+    }, 10_000);
+    const controller = controllerAt(app, 0);
+    assert.equal(controller.lines.length, 3_000);
+    assert.equal(pageTaskRan, true);
+    assert.equal(schedulerYields > 0, true);
+
+    let discoveryYields = 0;
+    let queuedDuringDiscovery = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      discoveryYields += 1;
+      await yieldForDiscovery(...args);
+    };
+    dom.window.setTimeout(() => {
+      queuedDuringDiscovery = true;
+    }, 0);
+    const discovered = await app.discoverHunks();
+    assert.equal(discovered?.[0].lines.length, 3_000);
+    assert.equal(discoveryYields > 0, true);
+    assert.equal(queuedDuringDiscovery, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("aborts one-file discovery when a row changes after an internal yield", async () => {
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(300, 48),
+  );
+  try {
+    let mutated = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      if (!mutated) {
+        mutated = true;
+        dom.window.document.querySelector(".blob-code-addition").textContent =
+          "+changed-during-one-file-discovery";
+      }
+      await yieldForDiscovery(...args);
+    };
+
+    const discovered = await app.discoverHunks();
+
+    assert.equal(mutated, true);
+    assert.equal(discovered, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("bounds hashing and defers line controls for a collapsed large block", async () => {
   const digestInputSizes = [];
   const first = await startExtension(
@@ -1238,7 +1320,7 @@ for (const scenario of [
       await waitFor(() => {
         replacementFileElement = dom.window.document.querySelector(".js-file");
         assert.notEqual(replacementFileElement, fileElement);
-        assert.equal(app.controllersByRow.size, 1);
+        assert.equal(app.controllersByRow.size, 0);
         assertFileRevealState(
           dom,
           replacementFileElement,
@@ -1250,13 +1332,15 @@ for (const scenario of [
       replacementFileElement
         .querySelector('[data-component="loadingSpinner"]')
         .remove();
-      app.finishReadyFileRevealPrepaintRestores();
-      assertFileRevealState(
-        dom,
-        replacementFileElement,
-        replacementFileElement.querySelector(".diff-body"),
-        false,
-      );
+      await waitFor(() => {
+        assert.equal(app.controllersByRow.size, 1);
+        assertFileRevealState(
+          dom,
+          replacementFileElement,
+          replacementFileElement.querySelector(".diff-body"),
+          false,
+        );
+      });
     } finally {
       app.stop();
       dom.window.close();
@@ -1296,7 +1380,7 @@ test("keeps a current React diff-region skeleton guarded without a spinner", asy
     await waitFor(() => {
       replacementFileElement = dom.window.document.querySelector(".js-file");
       assert.notEqual(replacementFileElement, fileElement);
-      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(app.controllersByRow.size, 0);
       assert.equal(
         app.fileDiffHasActiveLoadingContent(replacementFileElement),
         true,
@@ -1325,6 +1409,7 @@ test("keeps a current React diff-region skeleton guarded without a spinner", asy
       false,
     );
     await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 1);
       assertFileRevealState(
         dom,
         replacementFileElement,

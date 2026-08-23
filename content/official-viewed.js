@@ -988,11 +988,20 @@ if (globalThis.HunkMarkContent?.extendApp) {
             (cachedFileIncomplete || activeLoadingContent) &&
             unresolvedDiff) ||
           renderedControllers.some(
-            (controller) =>
-              controller.input.disabled ||
-              controller.lines.some(
-                (line) => line.control?.disabled === true,
-              ),
+            (controller) => {
+              // Diff-load suspension is a deliberate fail-closed state,
+              // not an unfinished storage restore. The loaded content may
+              // paint while its review controls stay inert until refresh.
+              return (
+                !this.reviewControllerSuspensionAllowsFileReveal(
+                  controller,
+                ) &&
+                (controller.input.disabled ||
+                  controller.lines.some(
+                    (line) => line.control?.disabled === true,
+                  ))
+              );
+            },
           )
         ) {
           return;

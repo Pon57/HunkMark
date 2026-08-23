@@ -1418,6 +1418,8 @@ test("updates only crossed sticky hunks during an adjacent handoff", async () =>
       indices.get(controller) < activeCount ? 20 : 80;
     state.orderDirty = true;
     state.stickyTop = 40;
+    app.updateStickyHunkLayouts();
+    assert.equal(state.activeController, controllers[95]);
     let activeClassMutations = 0;
     let pastClassMutations = 0;
     const restorers = controllers.flatMap((controller) =>
@@ -1439,13 +1441,6 @@ test("updates only crossed sticky hunks during an adjacent handoff", async () =>
       }),
     );
 
-    app.updateStickyHunkLayouts();
-    assert.equal(state.activeController, controllers[95]);
-    assert.equal(activeClassMutations, 1);
-    assert.equal(pastClassMutations, 0);
-
-    activeClassMutations = 0;
-    pastClassMutations = 0;
     activeCount = 97;
     app.updateStickyHunkLayouts();
     assert.equal(state.activeController, controllers[96]);

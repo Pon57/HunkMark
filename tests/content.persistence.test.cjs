@@ -1498,7 +1498,7 @@ test("does not sync official Viewed while diff content is unresolved", async () 
   }
 });
 
-test("does not sync official Viewed while a host loading spinner remains", async () => {
+test("blocks review and official Viewed sync while a host spinner remains", async () => {
   const fixture = contextualLineFixture({ officialControl: true }).replace(
     "<table>",
     '<div class="js-diff-progressive-container"><span data-component="Spinner">Loading</span></div><table>',
@@ -1514,17 +1514,22 @@ test("does not sync official Viewed while a host loading spinner remains", async
       officialControl.setAttribute("aria-label", "Viewed");
       officialControl.setAttribute("aria-pressed", "true");
     });
-    const controller = controllerAt(app);
-    changeCheckbox(dom, controller.input, true);
+    let controller;
     await waitFor(() => {
-      assert.equal(controller.marked, true);
-      assert.equal(controller.input.disabled, false);
+      controller = controllerAt(app);
+      assert.ok(controller);
     });
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+    controller.input.disabled = false;
+    changeCheckbox(dom, controller.input, true);
+    assert.equal(controller.marked, false);
+    assert.equal(controller.input.disabled, true);
     assert.equal(officialClicks, 0);
 
     dom.window.document.querySelector('[data-component="Spinner"]').remove();
-    changeCheckbox(dom, controller.input, false);
     await waitFor(() => {
+      assert.equal(app.reviewControllerIsSuspended(controller), false);
       assert.equal(controller.marked, false);
       assert.equal(controller.input.disabled, false);
     });

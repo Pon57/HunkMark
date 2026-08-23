@@ -79,6 +79,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     startLineDrag(lineController, viewed, pointerId) {
+      if (
+        !this.reviewControllerIsCurrent(lineController.controller) ||
+        this.reviewControllerIsSuspended(lineController.controller) ||
+        lineController.control?.disabled
+      ) {
+        return false;
+      }
       if (this.dragState) {
         void this.finishLineDrag(true);
       }

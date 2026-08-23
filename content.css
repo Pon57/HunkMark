@@ -513,13 +513,14 @@
 }
 
 .hunkmark-line-viewed code,
-.hunkmark-line-viewed code *,
 .hunkmark-line-viewed pre,
-.hunkmark-line-viewed pre *,
 .hunkmark-line-viewed .blob-code-inner,
-.hunkmark-line-viewed .blob-code-inner *,
 .hunkmark-line-viewed .diff-text-inner,
-.hunkmark-line-viewed .diff-text-inner * {
+.hunkmark-line-viewed .diff-text-marker,
+.hunkmark-line-viewed code span,
+.hunkmark-line-viewed pre span,
+.hunkmark-line-viewed .blob-code-inner span,
+.hunkmark-line-viewed .diff-text-inner span {
   background-color: transparent !important;
 }
 

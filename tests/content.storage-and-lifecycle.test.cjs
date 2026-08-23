@@ -7,7 +7,10 @@ const {
   LEGACY_ACCOUNT_REVIEW_STORAGE_NAMESPACE,
   LEGACY_CONTENT_REVIEW_STORAGE_NAMESPACE,
   createChromeApi,
+  createDeferred,
   createExclusiveLockManager,
+  delayReviewStorageRemove,
+  delayReviewStorageSet,
   installContentStyles,
   controllersFor,
   controllerAt,
@@ -25,11 +28,162 @@ const {
   replacePageBody,
   dragFixture,
   modernGridFixture,
+  loadDiffFixture,
   currentReactContextExpansionFixture,
   currentReactContextEvidenceFixture,
   currentReactSplitContextExpansionFixture,
   contextualLineFixture,
 } = require("./content-test-support.cjs");
+
+function manyFileHunkFixture(fileCount) {
+  const files = Array.from({ length: fileCount }, (_, index) => `
+    <div class="PullRequestDiffsList-module__diffEntry__chunk-${index}">
+      <div role="region" id="diff-chunk-${index}"
+        class="Diff-module__diffTargetable__chunk Diff-module__diff__chunk">
+        <div class="Diff-module__diffHeaderWrapper__chunk">
+          <div class="DiffFileHeader-module__diff-file-header__chunk">
+            <h3><code>src/chunk-${index}.js</code></h3>
+          </div>
+        </div>
+        <table role="grid" aria-label="Diff for: src/chunk-${index}.js">
+          <tbody>
+            <tr class="diff-line-row">
+              <td role="gridcell" class="diff-hunk-cell">
+                @@ -${index + 1} +${index + 1} @@
+              </td>
+            </tr>
+            <tr class="diff-line-row" data-line-type="addition">
+              <td role="gridcell"
+                class="diff-text-cell right-side-diff-cell"
+                data-line-anchor="diff-chunk-${index}-R${index + 1}">
+                <code class="addition" data-diff-side="right">+chunk ${index}</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`).join("");
+  return `<!doctype html><html><body>${files}</body></html>`;
+}
+
+function fileGridFor(dom, filePath) {
+  const fileGrid = dom.window.document.querySelector(
+    `[aria-label="Diff for: ${filePath}"]`,
+  );
+  assert.ok(fileGrid);
+  return fileGrid;
+}
+
+function controllersForFile(app, filePath) {
+  return controllersFor(app).filter(
+    (controller) => controller.filePath === filePath,
+  );
+}
+
+function controllerForFile(app, filePath) {
+  const [controller] = controllersForFile(app, filePath);
+  assert.ok(controller);
+  return controller;
+}
+
+function appendDiffLoader(dom, fileGrid, label = "Loading diff") {
+  const loader = dom.window.document.createElement("tr");
+  loader.setAttribute("data-component", "loadingSpinner");
+  loader.innerHTML = `<td role="progressbar">${label}</td>`;
+  fileGrid.querySelector("tbody").append(loader);
+  return loader;
+}
+
+function appendAdditionHunk(
+  dom,
+  fileGrid,
+  { anchor = null, before = null, lineNumber, text },
+) {
+  const hunkRow = dom.window.document.createElement("tr");
+  hunkRow.className = "diff-line-row";
+  hunkRow.innerHTML =
+    `<td role="gridcell" class="diff-hunk-cell">` +
+    `@@ -${lineNumber} +${lineNumber} @@</td>`;
+  const lineRow = dom.window.document.createElement("tr");
+  lineRow.className = "diff-line-row";
+  lineRow.setAttribute("data-line-type", "addition");
+  lineRow.innerHTML =
+    '<td role="gridcell" class="diff-text-cell right-side-diff-cell" ' +
+    `data-line-anchor="${anchor ?? `diff-contract-R${lineNumber}`}">` +
+    `<code class="addition" data-diff-side="right">${text}</code></td>`;
+  if (before) {
+    before.before(hunkRow, lineRow);
+  } else {
+    fileGrid.querySelector("tbody").append(hunkRow, lineRow);
+  }
+  return { hunkRow, lineRow };
+}
+
+async function hydrationQueueContract(filePaths, constantOverrides = {}) {
+  const { app, dom } = await startExtension(
+    "<!doctype html><html><body></body></html>",
+  );
+  app.observer.disconnect();
+  app.constants = {
+    ...app.constants,
+    DIFF_LOAD_FILE_HYDRATION_CONCURRENCY: 2,
+    DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_CONCURRENCY: 1,
+    DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS: 0,
+    DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 10,
+    ...constantOverrides,
+  };
+  app.settleDeferredDiffLoadRefreshes = () => false;
+  const elements = new Map();
+  const rects = new Map();
+  const gates = new Map();
+  const started = [];
+  let running = 0;
+  let maxRunning = 0;
+  filePaths.forEach((filePath) => {
+    const fileElement = dom.window.document.createElement("section");
+    fileElement.className = "js-file";
+    fileElement.dataset.filePath = filePath;
+    fileElement.innerHTML = `<div><code>${filePath}</code></div>`;
+    rects.set(filePath, { bottom: 5_200, top: 5_000 });
+    fileElement.getBoundingClientRect = () => rects.get(filePath);
+    dom.window.document.body.append(fileElement);
+    elements.set(filePath, fileElement);
+  });
+  app.hydrateDiffLoadFile = async (_fileElement, filePath) => {
+    started.push(filePath);
+    running += 1;
+    maxRunning = Math.max(maxRunning, running);
+    await new Promise((resolve) => gates.set(filePath, resolve));
+    running -= 1;
+    return 0;
+  };
+  return {
+    app,
+    dom,
+    elements,
+    get maxRunning() {
+      return maxRunning;
+    },
+    release(filePath) {
+      gates.get(filePath)?.();
+    },
+    schedule(filePath) {
+      return app.scheduleDiffLoadFileHydration(
+        filePath,
+        elements.get(filePath),
+      );
+    },
+    setRect(filePath, rect) {
+      rects.set(filePath, rect);
+    },
+    started,
+    stop() {
+      gates.forEach((resolve) => resolve());
+      app.stop();
+      dom.window.close();
+    },
+  };
+}
 
 test("removes legacy review state and prunes inactive pull requests as complete units", async () => {
   const now = Date.now();
@@ -888,6 +1042,45 @@ test("updates interaction progress only for affected files", async () => {
   }
 });
 
+test("coalesces background hydration progress scans", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      PROGRESS_UPDATE_DELAY_MS: 20,
+    };
+    let progressUpdates = 0;
+    const updateProgressForControllers =
+      app.updateProgressForControllers.bind(app);
+    app.updateProgressForControllers = (...args) => {
+      progressUpdates += 1;
+      return updateProgressForControllers(...args);
+    };
+    const controller = controllerAt(app);
+    const renderedFilePaths = [];
+    const renderFileProgress = app.renderFileProgress.bind(app);
+    app.renderFileProgress = (fileElement, state) => {
+      renderedFilePaths.push(app.knownFilePath(fileElement));
+      return renderFileProgress(fileElement, state);
+    };
+
+    app.scheduleProgressUpdate([controller]);
+    app.scheduleProgressUpdate([controller]);
+    app.scheduleProgressUpdate([controller]);
+
+    await waitFor(() => assert.equal(progressUpdates, 1));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(progressUpdates, 1);
+    assert.deepEqual(renderedFilePaths, [controller.filePath]);
+    assert.equal(app.progressUpdateTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("finds drag endpoints logarithmically with stable row boundaries", async () => {
   const { app, dom } = await startExtension(dragFixture());
   try {
@@ -1701,6 +1894,730 @@ test("does not inspect DOM mutations while outside a pull request diff", async (
   }
 });
 
+test("yields between interaction-sensitive phases of a large refresh", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    let yields = 0;
+    Object.defineProperty(dom.window, "scheduler", {
+      configurable: true,
+      value: {
+        async yield() {
+          yields += 1;
+        },
+      },
+    });
+    await app.yieldForLargeRefreshInteraction(
+      app.constants.LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD - 1,
+    );
+    assert.equal(yields, 0);
+
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    await app.refresh();
+
+    assert.equal(yields, 2);
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+    assert.equal(controllersFor(app).length, 2);
+
+    controllersFor(app).forEach((controller) =>
+      app.destroyController(controller),
+    );
+    assert.equal(controllersFor(app).length, 0);
+    yields = 0;
+
+    await app.refresh();
+
+    assert.equal(yields, 2);
+    assert.equal(controllersFor(app).length, 2);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps stable controller DOM connected across a stale refresh retry", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    const originalControllers = controllersFor(app);
+    const originalActions = originalControllers.map(
+      (controller) => controller.actions,
+    );
+    let invalidated = false;
+    const yieldForRefresh =
+      app.yieldForLargeRefreshInteraction.bind(app);
+    app.yieldForLargeRefreshInteraction = async (...args) => {
+      if (!invalidated) {
+        invalidated = true;
+        app.diffMutationGeneration += 1;
+      }
+      await yieldForRefresh(...args);
+    };
+    let connectedAtAbort = false;
+    const abortRefresh = app.abortRefreshForStaleDiff.bind(app);
+    app.abortRefreshForStaleDiff = (...args) => {
+      const result = abortRefresh(...args);
+      connectedAtAbort = originalControllers.every(
+        (controller, index) =>
+          !controller.destroyed &&
+          controller.actions === originalActions[index] &&
+          controller.actions.isConnected,
+      );
+      return result;
+    };
+
+    await app.refresh();
+    await waitFor(() => {
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+    });
+
+    assert.equal(connectedAtAbort, true);
+    assert.deepEqual(controllersFor(app), originalControllers);
+    assert.equal(
+      originalActions.every((actions) => actions.isConnected),
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("does not retry a stale refresh while diff loading remains unsettled", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 20,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    const originalControllers = controllersFor(app);
+    const originalActions = originalControllers.map(
+      (controller) => controller.actions,
+    );
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-one.js"]',
+    );
+    const loader = appendDiffLoader(dom, fileGrid);
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(originalControllers[0].input.disabled, true);
+    });
+
+    let invalidated = false;
+    const yieldForRefresh =
+      app.yieldForLargeRefreshInteraction.bind(app);
+    app.yieldForLargeRefreshInteraction = async (...args) => {
+      if (!invalidated) {
+        invalidated = true;
+        app.diffMutationGeneration += 1;
+      }
+      await yieldForRefresh(...args);
+    };
+
+    await app.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(app.refreshQueued, false);
+    assert.equal(app.refreshRunning, false);
+    assert.deepEqual(controllersFor(app), originalControllers);
+    assert.equal(
+      originalActions.every((actions) => actions.isConnected),
+      true,
+    );
+
+    loader.remove();
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(
+        controllersFor(app).every(
+          (controller) => controller.input.disabled === false,
+        ),
+        true,
+      );
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("discards unreconciled controllers from a stale refresh retry", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    controllersFor(app).forEach((controller) =>
+      app.destroyController(controller),
+    );
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    const createdControllers = [];
+    const createController = app.createController.bind(app);
+    app.createController = (...args) => {
+      const controller = createController(...args);
+      createdControllers.push(controller);
+      return controller;
+    };
+    let yields = 0;
+    let firstAttemptControllers = [];
+    const yieldForRefresh =
+      app.yieldForLargeRefreshInteraction.bind(app);
+    app.yieldForLargeRefreshInteraction = async (...args) => {
+      yields += 1;
+      if (yields === 2) {
+        firstAttemptControllers = createdControllers.slice();
+        app.diffMutationGeneration += 1;
+      }
+      await yieldForRefresh(...args);
+    };
+
+    await app.refresh();
+    await waitFor(() => {
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(controllersFor(app).length, 2);
+      assert.equal(
+        controllersFor(app).every(
+          (controller) => controller.input.disabled === false,
+        ),
+        true,
+      );
+    });
+
+    assert.equal(firstAttemptControllers.length, 2);
+    assert.equal(
+      firstAttemptControllers.every(
+        (controller) =>
+          controller.destroyed && !controller.actions.isConnected,
+      ),
+      true,
+    );
+    assert.equal(
+      controllersFor(app).every(
+        (controller) => !firstAttemptControllers.includes(controller),
+      ),
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+for (const mutationYield of [1, 2]) {
+  test(
+    `blocks stale review writes during large refresh yield ${mutationYield}`,
+    async () => {
+      const { app, chrome, dom } = await startExtension(
+        currentReactContextExpansionFixture(),
+      );
+      try {
+        app.constants = {
+          ...app.constants,
+          LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+        };
+        const originalController = controllersFor(app).find(
+          (controller) => controller.filePath === "src/react-one.js",
+        );
+        assert.ok(originalController);
+        const originalLine = originalController.lines[0];
+        const originalControl = originalLine.control;
+        const originalKey = originalLine.key;
+        assert.ok(originalControl);
+        let mutated = false;
+        let yields = 0;
+        const yieldForRefresh =
+          app.yieldForLargeRefreshInteraction.bind(app);
+        app.yieldForLargeRefreshInteraction = async (...args) => {
+          yields += 1;
+          if (!mutated && yields === mutationYield) {
+            mutated = true;
+            originalLine.element.querySelector("code").textContent =
+              `+replacement-${mutationYield}`;
+            await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+            assert.equal(originalControl.disabled, true);
+            originalControl.click();
+          }
+          await yieldForRefresh(...args);
+        };
+
+        await app.refresh();
+        await waitFor(() => {
+          assert.equal(app.refreshQueued, false);
+          assert.equal(app.refreshRunning, false);
+          const currentController = controllersFor(app).find(
+            (controller) => controller.filePath === "src/react-one.js",
+          );
+          assert.ok(currentController);
+          assert.notEqual(currentController, originalController);
+          assert.equal(
+            currentController.lines[0].text,
+            `+replacement-${mutationYield}`,
+          );
+          assert.equal(currentController.lines[0].control.disabled, false);
+          assert.equal(currentController.lines[0].marked, false);
+        });
+        assert.equal(originalController.destroyed, true);
+        assert.equal(originalKey in chrome.snapshot(), false);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    },
+  );
+}
+
+test("restores only controls enabled before diff mutation suspension", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const first = controllersFor(app).find(
+      (controller) => controller.filePath === "src/react-one.js",
+    );
+    const second = controllersFor(app).find(
+      (controller) => controller.filePath === "src/react-two.js",
+    );
+    assert.ok(first);
+    assert.ok(second);
+    first.lines[0].control.disabled = true;
+
+    app.suspendReviewControllersForDiffMutation(
+      new Set(["src/react-one.js"]),
+    );
+
+    assert.equal(first.input.disabled, true);
+    assert.equal(first.collapseButton.disabled, true);
+    assert.equal(first.lines[0].control.disabled, true);
+    assert.equal(second.input.disabled, false);
+    assert.equal(second.lines[0].control.disabled, false);
+
+    app.restoreDiffMutationSuspendedReviewControls();
+
+    assert.equal(first.input.disabled, false);
+    assert.equal(first.collapseButton.disabled, false);
+    assert.equal(first.lines[0].control.disabled, true);
+    assert.equal(second.input.disabled, false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("suspends file-header mutations only when path identity changes", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.observer.disconnect();
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    assert.ok(controller);
+    const fileHeader = app.fileHeaderElement(controller.fileElement);
+    const fileGrid = controller.fileElement.querySelector(
+      '[role="grid"][aria-label^="Diff for: "]',
+    );
+    const auxiliaryButton = dom.window.document.createElement("button");
+    auxiliaryButton.textContent = "Collapse file";
+    fileHeader.append(auxiliaryButton);
+    app.handleMutations([
+      {
+        addedNodes: [auxiliaryButton],
+        removedNodes: [],
+        target: fileHeader,
+      },
+    ]);
+
+    assert.equal(app.reviewControllerIsSuspended(controller), false);
+    assert.equal(controller.input.disabled, false);
+
+    fileGrid.setAttribute("aria-label", "Diff for: src/renamed-one.js");
+    const identityMutation = dom.window.document.createElement("button");
+    identityMutation.textContent = "Updated header";
+    fileHeader.append(identityMutation);
+    app.handleMutations([
+      {
+        addedNodes: [identityMutation],
+        removedNodes: [],
+        target: fileHeader,
+      },
+    ]);
+
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("rejects review events from controls reenabled while suspended", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    assert.ok(controller);
+    const line = controller.lines[0];
+    app.suspendReviewControllersForDiffMutation(
+      new Set(["src/react-one.js"]),
+    );
+
+    line.control.disabled = false;
+    line.control.click();
+    controller.input.disabled = false;
+    controller.input.checked = true;
+    controller.input.dispatchEvent(new dom.window.Event("change"));
+    controller.collapseButton.disabled = false;
+    controller.collapseButton.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+
+    assert.equal(line.marked, false);
+    assert.equal(controller.marked, false);
+    assert.equal(controller.collapsed, false);
+    assert.equal(controller.input.checked, false);
+    assert.equal(controller.input.disabled, true);
+    assert.equal(controller.collapseButton.disabled, true);
+    assert.equal(line.key in chrome.snapshot(), false);
+    assert.equal(controller.key in chrome.snapshot(), false);
+    assert.equal(controller.collapsedKey in chrome.snapshot(), false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps a suspended line disabled when an older write finishes", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.autoCollapseViewed = false;
+    app.constants = {
+      ...app.constants,
+      REFRESH_DELAY_MS: 500,
+    };
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    assert.ok(controller);
+    const line = controller.lines[0];
+    const control = line.control;
+    const oldKey = line.key;
+    assert.ok(control);
+    await app.setLineViewed(line, true);
+    assert.ok(chrome.snapshot()[oldKey]);
+
+    const delayedClear = delayReviewStorageRemove(app, 1);
+    const pendingClear = app.setLineViewed(line, false);
+    await delayedClear.started;
+    line.element.querySelector("code").textContent = "+replacement-pending";
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+
+    assert.equal(app.diffMutationSuspendedControllers.has(controller), true);
+    assert.equal(app.reviewControllerIsCurrent(controller), true);
+    assert.equal(control.disabled, true);
+
+    delayedClear.release();
+    await pendingClear;
+
+    assert.equal(app.diffMutationSuspendedControllers.has(controller), true);
+    assert.equal(app.reviewControllerIsCurrent(controller), true);
+    assert.equal(control.disabled, true);
+    control.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+    assert.equal(oldKey in chrome.snapshot(), false);
+
+    await waitFor(() => {
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      const replacement = controllersFor(app).find(
+        (candidate) => candidate.filePath === "src/react-one.js",
+      );
+      assert.ok(replacement);
+      assert.notEqual(replacement, controller);
+      assert.equal(replacement.lines[0].text, "+replacement-pending");
+      assert.equal(replacement.lines[0].marked, false);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("enables a line after its pending write and refresh both finish", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.autoCollapseViewed = false;
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    assert.ok(controller);
+    const line = controller.lines[0];
+    const delayedWrite = delayReviewStorageSet(app, 1);
+    const pendingWrite = app.setLineViewed(line, true);
+    await delayedWrite.started;
+    assert.equal(line.control.disabled, true);
+
+    const refreshYielded = createDeferred();
+    const resumeRefresh = createDeferred();
+    let paused = false;
+    const yieldForRefresh = app.yieldForLargeRefreshInteraction.bind(app);
+    app.yieldForLargeRefreshInteraction = async (...args) => {
+      if (!paused) {
+        paused = true;
+        refreshYielded.resolve();
+        await resumeRefresh.promise;
+      }
+      await yieldForRefresh(...args);
+    };
+    const pendingRefresh = app.refresh();
+    await refreshYielded.promise;
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(line.control.disabled, true);
+
+    delayedWrite.release();
+    await pendingWrite;
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(line.control.disabled, true);
+    assert.ok(chrome.snapshot()[line.key]);
+
+    resumeRefresh.resolve();
+    await pendingRefresh;
+
+    assert.equal(app.reviewControllerIsCurrent(controller), true);
+    assert.equal(app.reviewControllerIsSuspended(controller), false);
+    assert.equal(line.control.disabled, false);
+    assert.equal(line.marked, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("tracks a fully disabled zero-line hunk while its clear finishes", async () => {
+  const { app, chrome, dom } = await startExtension(`<!doctype html>
+    <html><body>
+      <div class="js-file" data-file-path="src/zero-line.js">
+        <div class="file-header"><span class="file-info">src/zero-line.js</span></div>
+        <table><tbody>
+          <tr><td class="blob-code-hunk">@@ -1,0 +1,0 @@</td></tr>
+        </tbody></table>
+      </div>
+    </body></html>`);
+  try {
+    app.autoCollapseViewed = false;
+    app.constants = {
+      ...app.constants,
+      REFRESH_DELAY_MS: 500,
+    };
+    const controller = controllerAt(app);
+    assert.equal(controller.lines.length, 0);
+    const oldKey = controller.key;
+    await app.setHunkViewed(controller, true);
+    assert.ok(chrome.snapshot()[oldKey]);
+
+    const delayedClear = delayReviewStorageRemove(app, 1);
+    const pendingClear = app.setHunkViewed(controller, false);
+    await delayedClear.started;
+    controller.hunkCell.textContent = "@@ -2,0 +2,0 @@ changed";
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+
+    assert.equal(app.reviewControllerIsCurrent(controller), true);
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+
+    delayedClear.release();
+    await pendingClear;
+
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+    controller.input.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+    assert.equal(oldKey in chrome.snapshot(), false);
+
+    await waitFor(() => {
+      const replacement = controllerAt(app);
+      assert.notEqual(replacement, controller);
+      assert.equal(replacement.marked, false);
+      assert.equal(replacement.input.disabled, false);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("blocks stale review writes during chunked discovery", async () => {
+  const { app, chrome, dom } = await startExtension(manyFileHunkFixture(17));
+  try {
+    const originalController = controllersFor(app).find(
+      (controller) => controller.filePath === "src/chunk-0.js",
+    );
+    assert.ok(originalController);
+    const originalLine = originalController.lines[0];
+    const originalControl = originalLine.control;
+    const originalKey = originalLine.key;
+    assert.ok(originalControl);
+    let mutated = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      if (!mutated) {
+        mutated = true;
+        originalLine.element.querySelector("code").textContent =
+          "+replacement-during-discovery";
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+        assert.equal(originalControl.disabled, true);
+        originalControl.click();
+      }
+      await yieldForDiscovery(...args);
+    };
+
+    await app.refresh();
+    await waitFor(() => {
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      const currentController = controllersFor(app).find(
+        (controller) => controller.filePath === "src/chunk-0.js",
+      );
+      assert.ok(currentController);
+      assert.notEqual(currentController, originalController);
+      assert.equal(
+        currentController.lines[0].text,
+        "+replacement-during-discovery",
+      );
+      assert.equal(currentController.lines[0].control.disabled, false);
+    });
+    assert.equal(originalController.destroyed, true);
+    assert.equal(originalKey in chrome.snapshot(), false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("yields while discovering many files before discovery completes", async () => {
+  const { app, dom } = await startExtension(manyFileHunkFixture(17));
+  try {
+    let scheduledTaskRan = false;
+    let preparedAfterScheduledTask = false;
+    let schedulerYields = 0;
+    let yields = 0;
+    Object.defineProperty(dom.window, "scheduler", {
+      configurable: true,
+      value: {
+        async yield() {
+          schedulerYields += 1;
+        },
+      },
+    });
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      yields += 1;
+      await yieldForDiscovery(...args);
+    };
+    const prepare = app.prepareDiscoveredHunkFileInputs.bind(app);
+    app.prepareDiscoveredHunkFileInputs = (...args) => {
+      preparedAfterScheduledTask ||= scheduledTaskRan;
+      return prepare(...args);
+    };
+    dom.window.setTimeout(() => {
+      scheduledTaskRan = true;
+    }, 0);
+
+    await app.refresh();
+
+    assert.equal(yields, 8);
+    assert.equal(schedulerYields, 7);
+    assert.equal(preparedAfterScheduledTask, true);
+    assert.equal(controllersFor(app).length, 17);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("aborts chunked discovery when the diff DOM changes after a yield", async () => {
+  const { app, dom } = await startExtension(manyFileHunkFixture(9));
+  try {
+    const generation = app.diffMutationGeneration;
+    let removed = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      if (!removed) {
+        removed = true;
+        dom.window.document.querySelector("#diff-chunk-8").remove();
+      }
+      await yieldForDiscovery(...args);
+    };
+
+    const discovered = await app.discoverHunks();
+
+    assert.equal(discovered, null);
+    assert.equal(app.diffMutationGeneration > generation, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("aborts chunked discovery when the review scope changes after a yield", async () => {
+  const { app, dom } = await startExtension(manyFileHunkFixture(9));
+  try {
+    let navigated = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      if (!navigated) {
+        navigated = true;
+        dom.window.history.replaceState(
+          {},
+          "",
+          "https://github.com/octo/repo/pull/124/files",
+        );
+      }
+      await yieldForDiscovery(...args);
+    };
+
+    const discovered = await app.discoverHunks();
+
+    assert.equal(discovered, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("preserves known changed-line identity across auxiliary descendants", async () => {
   const { app, dom } = await startExtension(
     currentReactSplitContextExpansionFixture(),
@@ -1946,11 +2863,35 @@ test("skips non-structural file UI only while tracked identity matches", async (
     app.resolveFilePath = resolveFilePath;
     const diffBody = fileGrid.querySelector("tbody");
     assert.ok(diffBody);
-    const diffLoader = dom.window.document.createElement("tr");
-    diffLoader.setAttribute("data-component", "loadingSpinner");
-    diffLoader.innerHTML = '<td role="progressbar">Loading diff</td>';
-    diffBody.append(diffLoader);
-    await waitFor(() => assert.equal(refreshes, 1));
+    const diffLoader = appendDiffLoader(dom, fileGrid);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+
+    appendAdditionHunk(dom, fileGrid, {
+      anchor: "diff-one-R20",
+      lineNumber: 20,
+      text: "+partial load",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(
+      controllersFor(app).some((controller) =>
+        controller.lines.some((line) => line.text === "+partial load"),
+      ),
+      false,
+    );
+    assert.equal(refreshes, 0);
+    assert.equal(diffLoader.isConnected, true);
+
+    diffLoader.remove();
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(controllersFor(app).length, originalControllers.length + 1);
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
 
     refreshes = 0;
     const diffRow = dom.window.document.createElement("tr");
@@ -1965,6 +2906,1738 @@ test("skips non-structural file UI only while tracked identity matches", async (
     fileGrid.setAttribute("aria-label", "Diff for: src/renamed.js");
     fileBody.prepend(dom.window.document.createElement("aside"));
     await waitFor(() => assert.equal(refreshes, 1));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("defers an expected Load Diff root transition before a loader appears", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 2_000,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 20,
+    };
+    const replacementFileHtml = (options) => {
+      const fixture = new JSDOM(loadDiffFixture(options));
+      try {
+        return fixture.window.document.querySelector(".js-file").outerHTML;
+      } finally {
+        fixture.window.close();
+      }
+    };
+    const initialFile = dom.window.document.querySelector(".js-file");
+    const fileParent = initialFile.parentElement;
+    assert.ok(fileParent);
+    const loadButton = initialFile.querySelector("button");
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+    loadButton.addEventListener("click", () => {
+      initialFile.remove();
+    });
+
+    loadButton.click();
+
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+
+    const stagingTemplate = dom.window.document.createElement("template");
+    stagingTemplate.innerHTML = replacementFileHtml();
+    const stagingFile = stagingTemplate.content.firstElementChild;
+    fileParent.append(stagingFile);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+
+    const loadedTemplate = dom.window.document.createElement("template");
+    loadedTemplate.innerHTML = replacementFileHtml({ loaded: true });
+    stagingFile.replaceWith(loadedTemplate.content.firstElementChild);
+
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.controllersByRow.size, 1);
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps an earlier explicit Load Diff waiting during another file load", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.observer.disconnect();
+    const fileRegions = Array.from(
+      dom.window.document.querySelectorAll('[role="region"]'),
+    );
+    assert.equal(fileRegions.length, 2);
+    const firstRegion = fileRegions[0];
+    const secondRegion = fileRegions[1];
+    const secondController = controllersFor(app).find(
+      (controller) => controller.filePath === "src/react-two.js",
+    );
+    assert.ok(secondController);
+    const controlContainer = dom.window.document.createElement("div");
+    controlContainer.innerHTML = "<button>Load Diff</button>";
+    firstRegion.append(controlContainer);
+    const restore = app.beginFileRevealPrepaintRestore(
+      firstRegion,
+      "src/react-one.js",
+      controlContainer.querySelector("button"),
+      {
+        timeoutMs: 500,
+        waitForResolvedContent: true,
+      },
+    );
+    assert.ok(restore);
+    app.rememberDeferredDiffLoadRefresh("src/react-one.js", firstRegion);
+    app.ensureDeferredDiffLoadRefreshTimeout();
+    firstRegion.remove();
+    assert.equal(
+      app.deferredDiffLoadRecordAwaitsReplacement(firstRegion),
+      true,
+    );
+
+    const secondBody = secondRegion.querySelector("tbody");
+    const loader = appendDiffLoader(dom, secondRegion, "Loading another diff");
+    app.handleMutations([
+      {
+        addedNodes: [loader],
+        removedNodes: [],
+        target: secondBody,
+      },
+    ]);
+
+    assert.equal(app.deferredDiffLoadRefreshes.size, 2);
+    assert.equal(app.deferredDiffLoadStatus().active, true);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+    assert.equal(secondController.input.disabled, true);
+    assert.equal(secondController.lines[0].control.disabled, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("rechecks active loading when quiet settlement fires", async () => {
+  const { app, dom } = await startExtension(loadDiffFixture());
+  try {
+    app.observer.disconnect();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 500,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 20,
+    };
+    let refreshes = 0;
+    app.scheduleRefresh = () => {
+      refreshes += 1;
+    };
+    const fileElement = dom.window.document.querySelector(".js-file");
+    app.rememberDeferredDiffLoadRefresh("src/large-diff.js", fileElement);
+    app.scheduleDeferredDiffLoadRefreshSettlement();
+    app.beginFileRevealPrepaintRestore(
+      fileElement,
+      "src/large-diff.js",
+      fileElement.querySelector("button"),
+      { timeoutMs: 500, waitForResolvedContent: true },
+    );
+
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 60));
+
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("starts a deferred batch from a loader outside the mutation files", async () => {
+  const fixture = new JSDOM(currentReactContextExpansionFixture());
+  let html;
+  try {
+    const secondGrid = fixture.window.document.querySelector(
+      '[aria-label="Diff for: src/react-two.js"]',
+    );
+    const loadingRegion = secondGrid.closest('[role="region"]');
+    loadingRegion.id = "diff-loading-two";
+    loadingRegion.setAttribute("aria-label", "Loading src/react-two.js");
+    loadingRegion.innerHTML =
+      '<div data-component="loadingSpinner" role="progressbar">' +
+      "Loading diff two</div>";
+    html = fixture.serialize();
+  } finally {
+    fixture.window.close();
+  }
+
+  const { app, dom } = await startExtension(html);
+  try {
+    let originalController;
+    const loadingRegion = dom.window.document.querySelector(
+      '[aria-label="Loading src/react-two.js"]',
+    );
+    await waitFor(() => {
+      originalController = controllersFor(app).find(
+        (controller) => controller.filePath === "src/react-one.js",
+      );
+      assert.ok(originalController);
+    });
+    assert.ok(loadingRegion);
+    assert.equal(loadingRegion.querySelector('[role="grid"]'), null);
+    assert.equal(
+      app.knownFilePath(loadingRegion),
+      "src/react-two.js",
+    );
+    assert.equal(
+      app.currentFilePathEvidence(loadingRegion),
+      "src/react-two.js",
+    );
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+
+    const replacementRow = dom.window.document.createElement("tr");
+    replacementRow.className = "diff-line-row";
+    replacementRow.setAttribute("data-line-type", "addition");
+    replacementRow.innerHTML =
+      '<td role="gridcell" class="diff-text-cell right-side-diff-cell" ' +
+      'data-line-anchor="diff-one-R10"><code class="addition" ' +
+      'data-diff-side="right">+one</code></td>';
+    originalController.lines[0].row.replaceWith(replacementRow);
+
+    await waitFor(() => {
+      assert.equal(refreshes, 0);
+      assert.equal(originalController.destroyed, true);
+      assert.equal(
+        controllersFor(app).some(
+          (controller) => controller.filePath === "src/react-one.js",
+        ),
+        false,
+      );
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 2);
+    assert.equal(
+      app.knownFilePath(loadingRegion),
+      "src/react-two.js",
+    );
+
+    let replacementController;
+    await waitFor(() => {
+      replacementController = controllersFor(app).find(
+        (controller) => controller.filePath === "src/react-one.js",
+      );
+      assert.ok(replacementController);
+      assert.equal(replacementController.lines[0].row, replacementRow);
+      assert.equal(replacementController.actions.isConnected, true);
+      assert.equal(replacementController.input.disabled, false);
+      assert.equal(
+        app.reviewControllerIsSuspended(replacementController),
+        false,
+      );
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(
+        replacementController.hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-row",
+        ),
+        true,
+      );
+      assert.equal(refreshes, 0);
+    });
+
+    loadingRegion
+      .querySelector('[data-component="loadingSpinner"]')
+      .remove();
+    loadingRegion.setAttribute("aria-label", "Diff file src/react-two.js");
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      const finalController = controllersFor(app).find(
+        (controller) => controller.filePath === "src/react-one.js",
+      );
+      assert.equal(finalController, replacementController);
+      assert.equal(finalController.lines[0].control?.isConnected, true);
+      assert.equal(
+        finalController.hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-row",
+        ),
+        true,
+      );
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("does not restart an initial batch while its loader stays active", async () => {
+  const fixture = new JSDOM(currentReactContextExpansionFixture());
+  let html;
+  try {
+    const secondGrid = fixture.window.document.querySelector(
+      '[aria-label="Diff for: src/react-two.js"]',
+    );
+    const loader = fixture.window.document.createElement("tr");
+    loader.setAttribute("data-component", "loadingSpinner");
+    loader.innerHTML = '<td role="progressbar">Loading diff</td>';
+    secondGrid.querySelector("tbody").append(loader);
+    html = fixture.serialize();
+  } finally {
+    fixture.window.close();
+  }
+
+  const { app, dom } = await startExtension(
+    html,
+    {},
+    { waitForScope: false },
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 1_000,
+    };
+    const hydrateCounts = new Map();
+    const hydrateDiffLoadFile = app.hydrateDiffLoadFile.bind(app);
+    app.hydrateDiffLoadFile = async (fileElement, filePath, options) => {
+      hydrateCounts.set(filePath, (hydrateCounts.get(filePath) ?? 0) + 1);
+      return hydrateDiffLoadFile(fileElement, filePath, options);
+    };
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.deferredDiffLoadRefreshes.size > 0, true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    assert.equal(refreshes, 1);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+    const stableHydrations = hydrateCounts.get("src/react-one.js");
+    assert.equal(stableHydrations, 1);
+
+    app.scheduleRefresh({ immediate: true });
+    await waitFor(() => {
+      assert.equal(refreshes, 2);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(hydrateCounts.get("src/react-one.js"), stableHydrations);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("defers new review controls through quiet diff settlement", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 1_500,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 500,
+    };
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const diffBody = fileElement.querySelector("tbody");
+    const appendedHunkRows = [];
+    const appendHunk = (lineNumber, text) => {
+      const hunkRow = dom.window.document.createElement("tr");
+      hunkRow.innerHTML =
+        `<td class="blob-code-hunk">@@ -${lineNumber} +${lineNumber} @@</td>`;
+      const lineRow = dom.window.document.createElement("tr");
+      lineRow.innerHTML =
+        `<td class="blob-num">${lineNumber}</td>` +
+        `<td class="blob-code-addition">${text}</td>`;
+      diffBody.append(hunkRow, lineRow);
+      appendedHunkRows.push(hunkRow);
+    };
+
+    const loader = appendDiffLoader(dom, fileElement);
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(
+        controllersFor(app).every((controller) =>
+          app.reviewControllerIsSuspended(controller),
+        ),
+        true,
+      );
+    });
+
+    loader.remove();
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(app.deferredDiffLoadStatus().active, false);
+      assert.notEqual(app.deferredDiffLoadRefreshSettleTimer, null);
+    });
+
+    appendHunk(20, "+late duplicate");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.equal(controllersFor(app).length, 2);
+    assert.equal(
+      appendedHunkRows[0].querySelector(".hunkmark-hunk-actions"),
+      null,
+    );
+    assert.equal(
+      appendedHunkRows[0].classList.contains("hunkmark-sticky-hunk-row"),
+      false,
+    );
+
+    appendHunk(30, "+late duplicate");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.equal(controllersFor(app).length, 2);
+    assert.equal(
+      appendedHunkRows.every(
+        (row) =>
+          row.querySelector(".hunkmark-hunk-actions") === null &&
+          !row.classList.contains("hunkmark-sticky-hunk-row"),
+      ),
+      true,
+    );
+
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      const duplicateLines = controllersFor(app)
+        .flatMap((controller) => controller.lines)
+        .filter((line) => line.text === "+late duplicate");
+      assert.equal(duplicateLines.length, 2);
+      assert.equal(
+        duplicateLines.every(
+          (line) =>
+            !line.marked &&
+            line.control?.disabled === false,
+        ),
+        true,
+      );
+      assert.equal(controllersFor(app).length, 4);
+      assert.equal(
+        appendedHunkRows.every(
+          (row) =>
+            row.querySelector(".hunkmark-hunk-actions") !== null &&
+            row.classList.contains("hunkmark-sticky-hunk-row"),
+        ),
+        true,
+      );
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("coalesces concurrent file loads until every diff settles", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 100,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 100,
+    };
+    const fileGrids = Array.from(
+      dom.window.document.querySelectorAll(
+        '[role="grid"][aria-label^="Diff for: "]',
+      ),
+    );
+    assert.equal(fileGrids.length, 2);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+    const loaders = fileGrids.map((fileGrid, index) =>
+      appendDiffLoader(dom, fileGrid, `Loading diff ${index + 1}`),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 2);
+
+    fileGrids.forEach((fileGrid, index) =>
+      appendAdditionHunk(dom, fileGrid, {
+        anchor: `diff-load-R${20 + index}`,
+        lineNumber: 20 + index,
+        text: `+loaded ${index + 1}`,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    const loadedControllersBeforeSettle = controllersFor(app).filter(
+      (controller) =>
+        controller.lines.some((line) => line.text.startsWith("+loaded ")),
+    );
+    assert.equal(loadedControllersBeforeSettle.length, 2);
+    assert.equal(
+      loadedControllersBeforeSettle.every(
+        (controller) =>
+          controller.actions.isConnected &&
+          controller.input.disabled &&
+          controller.hunkRow.classList.contains(
+            "hunkmark-sticky-hunk-row",
+          ),
+      ),
+      true,
+    );
+    assert.equal(refreshes, 0);
+
+    loaders[0].remove();
+    await waitFor(() => {
+      const loadedControllers = controllersFor(app).filter((controller) =>
+        controller.lines.some((line) => line.text === "+loaded 1"),
+      );
+      assert.equal(loadedControllers.length, 1);
+      assert.equal(loadedControllers[0].actions.isConnected, true);
+      assert.equal(loadedControllers[0].input.disabled, false);
+      assert.equal(
+        app.reviewControllerIsSuspended(loadedControllers[0]),
+        false,
+      );
+      assert.equal(
+        loadedControllers[0].hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-row",
+        ),
+        true,
+      );
+      assert.equal(refreshes, 0);
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    });
+    const individuallySettledController = controllersFor(app).find(
+      (controller) =>
+        controller.lines.some((line) => line.text === "+loaded 1"),
+    );
+    changeCheckbox(dom, individuallySettledController.input, true);
+    await waitFor(() => {
+      assert.equal(individuallySettledController.marked, true);
+      assert.equal(individuallySettledController.input.disabled, false);
+      assert.equal(
+        individuallySettledController.lines.every(
+          (line) => Boolean(chrome.snapshot()[line.key]?.viewedAt),
+        ),
+        true,
+      );
+    });
+
+    loaders[1].remove();
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      const loadedControllers = controllersFor(app).filter((controller) =>
+        controller.lines.some((line) => line.text.startsWith("+loaded ")),
+      );
+      assert.equal(loadedControllers.length, 2);
+      assert.equal(
+        loadedControllers.every((controller) =>
+          controller.hunkRow.classList.contains("hunkmark-sticky-hunk-row"),
+        ),
+        true,
+      );
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
+    assert.equal(
+      controllersFor(app).every(
+        (controller) =>
+          !controller.input.disabled &&
+          controller.lines.every(
+            (line) => !line.control || !line.control.disabled,
+          ),
+      ),
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("rekeys an existing line before its file settles independently", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.autoCollapseViewed = false;
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 100,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 100,
+    };
+    const fileGrids = Array.from(
+      dom.window.document.querySelectorAll(
+        '[role="grid"][aria-label^="Diff for: "]',
+      ),
+    );
+    const loaders = fileGrids.map((fileGrid, index) =>
+      appendDiffLoader(dom, fileGrid, `Loading ${index}`),
+    );
+    await waitFor(() =>
+      assert.equal(app.deferredDiffLoadRefreshes.size, 2),
+    );
+    const filePath = "src/react-one.js";
+    const originalController = controllerForFile(app, filePath);
+    const oldLineKey = originalController.lines[0].key;
+    appendAdditionHunk(dom, fileGrids[0], {
+      anchor: "diff-duplicate-R30",
+      before: loaders[0],
+      lineNumber: 30,
+      text: "+one",
+    });
+
+    await waitFor(() => {
+      const fileControllers = controllersForFile(app, filePath);
+      assert.equal(originalController.destroyed, true);
+      assert.equal(fileControllers.length, 2);
+      assert.equal(
+        fileControllers.every((controller) =>
+          app.reviewControllerIsSuspended(controller),
+        ),
+        true,
+      );
+    });
+
+    loaders[0].remove();
+    await waitFor(() => {
+      const fileControllers = controllersForFile(app, filePath);
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(fileControllers.length, 2);
+      assert.equal(
+        fileControllers.every(
+          (controller) =>
+            !app.reviewControllerIsSuspended(controller) &&
+            !controller.input.disabled,
+        ),
+        true,
+      );
+    });
+    const currentControllers = controllersForFile(app, filePath);
+    const currentLineKeys = currentControllers.flatMap((controller) =>
+      controller.lines.map((line) => line.key),
+    );
+    const discovered = await app.discoverHunks(
+      fileGrids[0].closest('[role="region"]'),
+    );
+    const discoveredLineKeys = discovered.flatMap((hunk) =>
+      hunk.lines.map((line) => line.key),
+    );
+    assert.equal(currentLineKeys.includes(oldLineKey), false);
+    assert.deepEqual(currentLineKeys, Array.from(discoveredLineKeys));
+
+    await app.setLineViewed(currentControllers[0].lines[0], true);
+    assert.ok(chrome.snapshot()[currentControllers[0].lines[0].key]);
+    assert.equal(oldLineKey in chrome.snapshot(), false);
+    loaders[1].remove();
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps appended context collapsed during file hydration", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextEvidenceFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 100,
+    };
+    const controller = controllersFor(app)[0];
+    assert.ok(controller);
+    await app.setCollapsed(controller, true);
+    assert.equal(controller.collapsed, true);
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-overlap.js"]',
+    );
+    const diffBody = fileGrid.querySelector("tbody");
+    const loader = appendDiffLoader(dom, fileGrid);
+    await waitFor(() => {
+      assert.equal(app.reviewControllerIsSuspended(controller), true);
+      assert.equal(controller.input.disabled, true);
+    });
+
+    const afterFirst = Array.from(
+      diffBody.querySelectorAll(
+        'tr.diff-line-row[data-line-type="context"]',
+      ),
+    ).find((row) => row.textContent.includes("after first"));
+    const fartherContext = dom.window.document.createElement("tr");
+    fartherContext.className = "diff-line-row";
+    fartherContext.setAttribute("data-line-type", "context");
+    fartherContext.innerHTML =
+      '<td role="gridcell" class="diff-text-cell right-side-diff-cell">' +
+      '<code class="diff-text" data-diff-side="right">' +
+      "farther after first</code></td>";
+    afterFirst.after(fartherContext);
+
+    await waitFor(() => {
+      assert.equal(app.reviewControllerIsCurrent(controller), true);
+      assert.equal(controller.collapsed, true);
+      assert.equal(app.reviewControllerIsSuspended(controller), true);
+      assert.equal(fartherContext.classList.contains("hunkmark-collapsed"), true);
+    });
+    loader.remove();
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("prioritizes viewport hydration ahead of offscreen aggregation", async () => {
+  const contract = await hydrationQueueContract(
+    ["offscreen.js", "visible.js"],
+    { DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS: 100 },
+  );
+  try {
+    contract.setRect("visible.js", { bottom: 400, top: 100 });
+    contract.schedule("offscreen.js");
+    contract.schedule("visible.js");
+    await waitFor(() => assert.deepEqual(contract.started, ["visible.js"]));
+
+    contract.setRect("offscreen.js", { bottom: 400, top: 100 });
+    contract.app.reprioritizeViewportHydrations();
+    await waitFor(() =>
+      assert.deepEqual(contract.started, ["visible.js", "offscreen.js"]),
+    );
+    contract.release("visible.js");
+    contract.release("offscreen.js");
+  } finally {
+    contract.stop();
+  }
+});
+
+test("does not postpone one file hydration for another file mutation", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 5_000,
+    };
+    const fileGrids = Array.from(
+      dom.window.document.querySelectorAll(
+        '[role="grid"][aria-label^="Diff for: "]',
+      ),
+    );
+    const loaders = fileGrids.map((fileGrid, index) =>
+      appendDiffLoader(dom, fileGrid, `Loading ${index}`),
+    );
+    await waitFor(() => assert.equal(app.diffLoadHydrations.size, 2));
+    const firstPath = "src/react-one.js";
+    const secondPath = "src/react-two.js";
+    const firstState = app.diffLoadHydrations.get(firstPath);
+    let secondState = app.diffLoadHydrations.get(secondPath);
+    assert.ok(firstState);
+    assert.ok(secondState);
+
+    for (let index = 0; index < 3; index += 1) {
+      const marker = dom.window.document.createElement("span");
+      marker.textContent = `tick ${index}`;
+      loaders[1].querySelector("td").append(marker);
+      await waitFor(() => {
+        assert.notEqual(app.diffLoadHydrations.get(secondPath), secondState);
+      });
+      assert.equal(app.diffLoadHydrations.get(firstPath), firstState);
+      secondState = app.diffLoadHydrations.get(secondPath);
+    }
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("scopes hydration invalidation to the mutated file", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.scheduleRefresh = () => {};
+    const controllers = controllersFor(app);
+    const first = controllers.find(
+      (controller) => controller.filePath === "src/react-one.js",
+    );
+    const second = controllers.find(
+      (controller) => controller.filePath === "src/react-two.js",
+    );
+    const firstSnapshot = app.hunkDiscoverySnapshot(first.fileElement);
+    const generation = app.diffMutationGeneration;
+
+    second.lines[0].element.querySelector("code").textContent =
+      "+other-file-change";
+    await waitFor(() =>
+      assert.equal(app.diffMutationGeneration > generation, true),
+    );
+    assert.equal(app.hunkDiscoverySnapshotIsCurrent(firstSnapshot), true);
+
+    const nextFirstSnapshot = app.hunkDiscoverySnapshot(first.fileElement);
+    first.lines[0].element.querySelector("code").textContent =
+      "+same-file-change";
+    await waitFor(() => {
+      assert.equal(
+        app.hunkDiscoverySnapshotIsCurrent(nextFirstSnapshot),
+        false,
+      );
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("invalidates another file during expected visibility settlement", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.scheduleRefresh = () => {};
+    const controllers = controllersFor(app);
+    const first = controllers.find(
+      (controller) => controller.filePath === "src/react-one.js",
+    );
+    const second = controllers.find(
+      (controller) => controller.filePath === "src/react-two.js",
+    );
+    assert.ok(first);
+    assert.ok(second);
+    const staleLine = second.lines[0];
+    const staleLineKey = staleLine.key;
+    const secondSnapshot = app.hunkDiscoverySnapshot(second.fileElement);
+    app.expectFileDiffVisibility(first.fileElement, false);
+
+    first.hunkCell.remove();
+    second.lines[0].element.querySelector("code").textContent =
+      "+simultaneous other-file change";
+
+    await waitFor(() => {
+      assert.equal(
+        app.hunkDiscoverySnapshotIsCurrent(secondSnapshot),
+        false,
+      );
+      assert.equal(app.reviewControllerIsSuspended(second), true);
+      assert.equal(second.input.disabled, true);
+      assert.equal(staleLine.control.disabled, true);
+    });
+    staleLine.control.disabled = false;
+    staleLine.control.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+    assert.equal(staleLineKey in chrome.snapshot(), false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("retries file hydration across queued and running full refreshes", async () => {
+  for (const busyField of ["refreshQueued", "refreshRunning"]) {
+    const { app, dom } = await startExtension(
+      currentReactContextExpansionFixture(),
+    );
+    try {
+      app.observer.disconnect();
+      app.constants = {
+        ...app.constants,
+        DIFF_LOAD_FILE_HYDRATION_RETRY_MS: 10,
+        DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+      };
+      const filePath = "src/react-one.js";
+      const fileGrid = fileGridFor(dom, filePath);
+      const fileRegion = fileGrid.closest('[role="region"]');
+      appendDiffLoader(dom, fileGrid);
+      const { hunkRow } = appendAdditionHunk(dom, fileGrid, {
+        anchor: "diff-refresh-collision-R40",
+        lineNumber: 40,
+        text: `+${busyField} collision`,
+      });
+      app.rememberDeferredDiffLoadRefresh(filePath, fileRegion);
+      app[busyField] = true;
+
+      assert.equal(
+        app.scheduleDiffLoadFileHydration(filePath, fileRegion),
+        true,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      assert.equal(app.diffLoadHydrations.has(filePath), true);
+      assert.equal(
+        hunkRow.querySelector(".hunkmark-hunk-actions"),
+        null,
+      );
+
+      app[busyField] = false;
+      app.pumpDiffLoadFileHydrations();
+      await waitFor(() => {
+        const controller = controllersFor(app).find((candidate) =>
+          candidate.lines.some(
+            (line) => line.text === `+${busyField} collision`,
+          ),
+        );
+        assert.ok(controller);
+        assert.equal(controller.actions.isConnected, true);
+        assert.equal(
+          controller.hunkRow.classList.contains(
+            "hunkmark-sticky-hunk-row",
+          ),
+          true,
+        );
+        assert.equal(app.diffLoadHydrations.has(filePath), false);
+      });
+      assert.equal(app.deferredDiffLoadRefreshes.has(filePath), true);
+    } finally {
+      app[busyField] = false;
+      app.stop();
+      dom.window.close();
+    }
+  }
+});
+
+test("yields an initial refresh to a deferred viewport hydration", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+    {},
+    { waitForScope: false },
+  );
+  const preferencesEntered = createDeferred();
+  const resumePreferences = createDeferred();
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_RETRY_MS: 10,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+    };
+    const loadPreferences = app.loadPreferences.bind(app);
+    app.loadPreferences = async () => {
+      await loadPreferences();
+      preferencesEntered.resolve();
+      await resumePreferences.promise;
+    };
+    let documentDiscoveries = 0;
+    const discoverHunks = app.discoverHunks.bind(app);
+    app.discoverHunks = async (searchRoot) => {
+      if (searchRoot === undefined || searchRoot === app.document) {
+        documentDiscoveries += 1;
+      }
+      return discoverHunks(searchRoot);
+    };
+
+    await preferencesEntered.promise;
+    assert.equal(app.refreshRunning, true);
+    const filePath = "src/react-one.js";
+    const fileGrid = fileGridFor(dom, filePath);
+    appendDiffLoader(dom, fileGrid);
+    appendAdditionHunk(dom, fileGrid, {
+      anchor: "diff-initial-refresh-R50",
+      lineNumber: 50,
+      text: "+deferred before discovery",
+    });
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.has(filePath), true);
+      assert.equal(app.diffLoadHydrations.has(filePath), true);
+    });
+
+    resumePreferences.resolve();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(documentDiscoveries, 0);
+      const controller = controllersFor(app).find((candidate) =>
+        candidate.lines.some(
+          (line) => line.text === "+deferred before discovery",
+        ),
+      );
+      assert.ok(controller);
+      assert.equal(controller.actions.isConnected, true);
+      assert.equal(
+        controller.hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-row",
+        ),
+        true,
+      );
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.has(filePath), true);
+  } finally {
+    resumePreferences.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("hydrates a stable file scrolled into an aborted initial refresh", async () => {
+  const fileCount = 30;
+  const loadingIndex = fileCount - 1;
+  const scrolledIndex = 20;
+  const { app, dom } = await startExtension(
+    manyFileHunkFixture(fileCount),
+    {},
+    { waitForScope: false },
+  );
+  const preferencesEntered = createDeferred();
+  const resumePreferences = createDeferred();
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_RETRY_MS: 10,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+    };
+    const fileRegions = Array.from(
+      dom.window.document.querySelectorAll('[role="region"]'),
+    );
+    assert.equal(fileRegions.length, fileCount);
+    fileRegions.forEach((fileRegion, index) => {
+      fileRegion.getBoundingClientRect = () =>
+        index === loadingIndex
+          ? { bottom: 400, top: 100 }
+          : { bottom: 5_200, top: 5_000 };
+    });
+    const loadPreferences = app.loadPreferences.bind(app);
+    app.loadPreferences = async () => {
+      await loadPreferences();
+      preferencesEntered.resolve();
+      await resumePreferences.promise;
+    };
+    let documentDiscoveries = 0;
+    const discoverHunks = app.discoverHunks.bind(app);
+    app.discoverHunks = async (searchRoot) => {
+      if (searchRoot === undefined || searchRoot === app.document) {
+        documentDiscoveries += 1;
+      }
+      return discoverHunks(searchRoot);
+    };
+
+    await preferencesEntered.promise;
+    const loadingPath = `src/chunk-${loadingIndex}.js`;
+    const loadingGrid = fileGridFor(dom, loadingPath);
+    appendDiffLoader(dom, loadingGrid);
+    await waitFor(() =>
+      assert.equal(app.deferredDiffLoadRefreshes.has(loadingPath), true),
+    );
+
+    resumePreferences.resolve();
+    const scrolledPath = `src/chunk-${scrolledIndex}.js`;
+    await waitFor(() => {
+      assert.equal(documentDiscoveries, 0);
+      assert.equal(app.diffLoadHydrations.has(scrolledPath), true);
+    });
+    assert.equal(
+      controllersFor(app).some(
+        (controller) => controller.filePath === scrolledPath,
+      ),
+      false,
+    );
+
+    fileRegions[scrolledIndex].getBoundingClientRect = () => ({
+      bottom: 400,
+      top: 100,
+    });
+    app.reprioritizeViewportHydrations();
+    await waitFor(() => {
+      const controller = controllersFor(app).find(
+        (candidate) => candidate.filePath === scrolledPath,
+      );
+      assert.ok(controller);
+      assert.equal(controller.actions.isConnected, true);
+      assert.equal(controller.input.disabled, false);
+      assert.equal(
+        controller.hunkRow.classList.contains(
+          "hunkmark-sticky-hunk-row",
+        ),
+        true,
+      );
+    }, 1_000);
+    assert.equal(app.deferredDiffLoadRefreshes.has(loadingPath), true);
+  } finally {
+    resumePreferences.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("bootstraps one current root per repeated file path", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.observer.disconnect();
+    app.clearDeferredDiffLoadRefreshes();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 5_000,
+    };
+    const originalRegion = dom.window.document
+      .querySelector('[aria-label="Diff for: src/react-one.js"]')
+      .closest('[role="region"]');
+    const replacementRegion = originalRegion.cloneNode(true);
+    replacementRegion.id = "diff-react-one-replacement";
+    replacementRegion
+      .querySelectorAll('[data-hunkmark-ui="true"]')
+      .forEach((element) => element.remove());
+    originalRegion.parentElement.append(replacementRegion);
+
+    app.bootstrapRenderedDiffLoadHydrations();
+
+    const filePath = "src/react-one.js";
+    assert.equal(
+      app.deferredDiffLoadRefreshes.get(filePath)?.fileElement,
+      replacementRegion,
+    );
+    assert.equal(
+      app.diffLoadHydrations.get(filePath)?.fileElement,
+      replacementRegion,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("bootstrap suspends an existing controller for an attribute-only loader", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.clearDeferredDiffLoadRefreshes();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+    };
+    const filePath = "src/react-one.js";
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === filePath,
+    );
+    const line = controller.lines[0];
+    const staleLineKey = line.key;
+    const fileRegion = controller.fileElement;
+    fileRegion.id = "diff-react-one-loading";
+    fileRegion.setAttribute("aria-label", `Loading ${filePath}`);
+
+    app.bootstrapRenderedDiffLoadHydrations();
+
+    assert.equal(app.fileDiffHasActiveLoadingContent(fileRegion), true);
+    assert.equal(app.deferredDiffLoadRefreshes.has(filePath), true);
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+    assert.equal(line.control.disabled, true);
+    line.control.disabled = false;
+    line.control.click();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+    assert.equal(staleLineKey in chrome.snapshot(), false);
+    await waitFor(() => {
+      assert.equal(app.diffLoadHydrations.has(filePath), false);
+      assert.equal(app.reviewControllerIsSuspended(controller), true);
+      assert.equal(controller.input.disabled, true);
+      assert.equal(line.control.disabled, true);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("reserves hydration capacity for a newly visible file", async () => {
+  const contract = await hydrationQueueContract(["a.js", "b.js", "c.js"]);
+  try {
+    ["a.js", "b.js", "c.js"].forEach(contract.schedule);
+    await waitFor(() => assert.deepEqual(contract.started, ["a.js"]));
+    await waitFor(() => {
+      assert.equal(contract.app.diffLoadHydrations.get("b.js")?.ready, true);
+      assert.equal(contract.app.diffLoadHydrations.get("c.js")?.ready, true);
+    });
+    contract.setRect("b.js", { bottom: -100, top: -200 });
+    contract.setRect("c.js", { bottom: 400, top: 100 });
+    contract.app.reprioritizeViewportHydrations();
+    await waitFor(() => assert.deepEqual(contract.started, ["a.js", "c.js"]));
+    assert.equal(contract.maxRunning, 2);
+    contract.release("c.js");
+    contract.release("a.js");
+    await waitFor(() =>
+      assert.deepEqual(contract.started, ["a.js", "c.js", "b.js"]),
+    );
+    contract.release("b.js");
+    await waitFor(() =>
+      assert.equal(contract.app.diffLoadHydrations.size, 0),
+    );
+    assert.equal(contract.maxRunning, 2);
+  } finally {
+    contract.stop();
+  }
+});
+
+test("promotes a file reflowed into view without a scroll event", async () => {
+  const contract = await hydrationQueueContract(
+    ["a.js", "b.js"],
+    { DIFF_LOAD_HYDRATION_SCROLL_SETTLE_MS: 10 },
+  );
+  try {
+    contract.schedule("a.js");
+    contract.schedule("b.js");
+    await waitFor(() => assert.deepEqual(contract.started, ["a.js"]));
+    await waitFor(() =>
+      assert.equal(
+        contract.app.diffLoadHydrations.get("b.js")?.ready,
+        true,
+      ),
+    );
+
+    contract.setRect("b.js", { bottom: 400, top: 100 });
+    contract.dom.window.document.elementsFromPoint = () => [
+      contract.elements.get("b.js").querySelector("code"),
+    ];
+    const hostReflow = contract.dom.window.document.createElement("div");
+    contract.app.handleMutations([
+      {
+        addedNodes: [hostReflow],
+        removedNodes: [],
+        target: contract.dom.window.document.body,
+      },
+    ]);
+
+    await waitFor(() =>
+      assert.deepEqual(contract.started, ["a.js", "b.js"]),
+    );
+    contract.release("b.js");
+    contract.release("a.js");
+    await waitFor(() =>
+      assert.equal(contract.app.diffLoadHydrations.size, 0),
+    );
+  } finally {
+    contract.stop();
+  }
+});
+
+test("rolls back a canceled hydration write before timeout refresh", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  const storageWriteEntered = createDeferred();
+  const resumeStorageWrite = createDeferred();
+  try {
+    app.observer.disconnect();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+    };
+    const filePath = "src/react-one.js";
+    const fileGrid = fileGridFor(dom, filePath);
+    const fileRegion = fileGrid.closest('[role="region"]');
+    const { lineRow } = appendAdditionHunk(dom, fileGrid, {
+      anchor: "diff-timeout-barrier-R60",
+      lineNumber: 60,
+      text: "+timeout barrier",
+    });
+    app.rememberDeferredDiffLoadRefresh(filePath, fileRegion);
+    const discovered = await app.discoverHunks(fileRegion);
+    const staleLine = discovered
+      .flatMap((hunk) => hunk.lines)
+      .find((line) => line.text === "+timeout barrier");
+    assert.ok(staleLine);
+    await app.setReviewStorage({
+      [staleLine.legacyKey]: {
+        contextFingerprint: staleLine.contextFingerprint,
+        viewedAt: Date.now() - 1_000,
+      },
+    });
+    let holdStorageWrite = true;
+    const setReviewStorageValuesUnlocked =
+      app.setReviewStorageValuesUnlocked.bind(app);
+    app.setReviewStorageValuesUnlocked = async (values) => {
+      if (holdStorageWrite && staleLine.key in values) {
+        holdStorageWrite = false;
+        storageWriteEntered.resolve();
+        await resumeStorageWrite.promise;
+      }
+      return setReviewStorageValuesUnlocked(values);
+    };
+    let documentDiscoveries = 0;
+    const discoverHunks = app.discoverHunks.bind(app);
+    app.discoverHunks = async (searchRoot, options) => {
+      if (searchRoot === undefined || searchRoot === app.document) {
+        documentDiscoveries += 1;
+      }
+      return discoverHunks(searchRoot, options);
+    };
+    app.scheduleDiffLoadFileHydration(filePath, fileRegion);
+    await storageWriteEntered.promise;
+    assert.equal(app.diffLoadHydrationRunningStates.size, 1);
+    lineRow.querySelector("code").textContent = "+timeout replacement";
+
+    app.deferredDiffLoadRefreshTimedOut = true;
+    app.clearDeferredDiffLoadRefreshes();
+    app.scheduleRefresh({ immediate: true });
+    await waitFor(() => {
+      assert.equal(app.refreshAfterDiffLoadHydrations, true);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(documentDiscoveries, 0);
+    });
+
+    resumeStorageWrite.resolve();
+    await waitFor(() => {
+      assert.equal(app.diffLoadHydrationRunningStates.size, 0);
+      assert.equal(app.refreshAfterDiffLoadHydrations, false);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(documentDiscoveries, 1);
+    });
+    const stored = chrome.snapshot();
+    assert.equal(staleLine.key in stored, false);
+    assert.equal(staleLine.legacyKey in stored, true);
+  } finally {
+    resumeStorageWrite.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("rolls back a canceled full-refresh migration write", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  const storageWriteEntered = createDeferred();
+  const resumeStorageWrite = createDeferred();
+  try {
+    app.observer.disconnect();
+    const fileGrid = fileGridFor(dom, "src/react-one.js");
+    const fileRegion = fileGrid.closest('[role="region"]');
+    const { lineRow } = appendAdditionHunk(dom, fileGrid, {
+      anchor: "diff-full-refresh-race-R70",
+      lineNumber: 70,
+      text: "+old full-refresh race",
+    });
+    const discovered = await app.discoverHunks(fileRegion);
+    const staleLine = discovered
+      .flatMap((hunk) => hunk.lines)
+      .find((line) => line.text === "+old full-refresh race");
+    assert.ok(staleLine);
+    await app.setReviewStorage({
+      [staleLine.legacyKey]: {
+        contextFingerprint: staleLine.contextFingerprint,
+        viewedAt: Date.now() - 1_000,
+      },
+    });
+    let holdStorageWrite = true;
+    const setReviewStorageValuesUnlocked =
+      app.setReviewStorageValuesUnlocked.bind(app);
+    app.setReviewStorageValuesUnlocked = async (values) => {
+      if (holdStorageWrite && staleLine.key in values) {
+        holdStorageWrite = false;
+        storageWriteEntered.resolve();
+        await resumeStorageWrite.promise;
+      }
+      return setReviewStorageValuesUnlocked(values);
+    };
+
+    const refreshPromise = app.refresh();
+    await storageWriteEntered.promise;
+    lineRow.querySelector("code").textContent = "+new full-refresh race";
+    app.diffMutationGeneration += 1;
+    resumeStorageWrite.resolve();
+    await refreshPromise;
+
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      const replacementLine = controllersFor(app)
+        .flatMap((controller) => controller.lines)
+        .find((line) => line.text === "+new full-refresh race");
+      assert.ok(replacementLine);
+      assert.equal(replacementLine.marked, false);
+      assert.equal(replacementLine.key in chrome.snapshot(), false);
+    });
+    const stored = chrome.snapshot();
+    assert.equal(staleLine.key in stored, false);
+    assert.equal(staleLine.legacyKey in stored, true);
+  } finally {
+    resumeStorageWrite.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("rolls back a canceled migration after post-write pruning", async () => {
+  const { app, chrome, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  const pruneEntered = createDeferred();
+  const resumePrune = createDeferred();
+  try {
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    const line = controller.lines[0];
+    const viewedAt = Date.now() - 1_000;
+    const removalKey = "hunkmark:test:cancel-removal";
+    await app.setLocalStorage({
+      [removalKey]: { retained: true },
+    });
+    await app.setReviewStorage({
+      [line.legacyKey]: {
+        contextFingerprint: line.contextFingerprint,
+        viewedAt,
+      },
+    });
+    app.reviewStorageLimitExceeded = () => true;
+    const removedKeyBatches = [];
+    const removeReviewStorageUnlocked =
+      app.removeReviewStorageUnlocked.bind(app);
+    app.removeReviewStorageUnlocked = async (keys) => {
+      removedKeyBatches.push(Array.isArray(keys) ? [...keys] : [keys]);
+      return removeReviewStorageUnlocked(keys);
+    };
+    app.ensureStoredReviewStatePrunedUnlocked = async () => {
+      if (removedKeyBatches.length === 0) {
+        return;
+      }
+      pruneEntered.resolve();
+      await resumePrune.promise;
+    };
+    let current = true;
+    const pendingMutation = app.withReviewStorageLock(() =>
+      app.mutateReviewStorageUnlocked({
+        isCurrent: () => current,
+        now: viewedAt,
+        removals: [line.legacyKey, removalKey],
+        scope: app.currentReviewScope,
+        values: {
+          [line.key]: app.lineReviewStorageValue(line, viewedAt),
+        },
+      }),
+    );
+    await pruneEntered.promise;
+    assert.equal(line.key in chrome.snapshot(), true);
+    assert.deepEqual(removedKeyBatches, [[line.legacyKey, removalKey]]);
+    assert.equal(removalKey in chrome.snapshot(), false);
+
+    current = false;
+    resumePrune.resolve();
+    assert.equal(await pendingMutation, false);
+    assert.equal(line.key in chrome.snapshot(), false);
+    assert.equal(removalKey in chrome.snapshot(), true);
+    assert.equal(line.legacyKey in chrome.snapshot(), true);
+  } finally {
+    resumePrune.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("does not wait for pending file hydration before full settlement", async () => {
+  const { app, dom } = await startExtension(commitSelectionFixture());
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 5_000,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 20,
+    };
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+    const fileElement = dom.window.document.querySelector(".js-file");
+    const diffBody = fileElement.querySelector("tbody");
+    const loader = appendDiffLoader(dom, fileElement);
+    await waitFor(() =>
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1),
+    );
+
+    const hunkRow = dom.window.document.createElement("tr");
+    hunkRow.innerHTML =
+      '<td class="blob-code-hunk">@@ -40 +40 @@</td>';
+    const lineRow = dom.window.document.createElement("tr");
+    lineRow.innerHTML =
+      '<td class="blob-num">40</td>' +
+      '<td class="blob-code-addition">+settled before hydration</td>';
+    diffBody.append(hunkRow, lineRow);
+    await waitFor(() => assert.equal(app.diffLoadHydrations.size, 1));
+
+    const settledAt = Date.now();
+    loader.remove();
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(
+        controllersFor(app).some((controller) =>
+          controller.lines.some(
+            (line) => line.text === "+settled before hydration",
+          ),
+        ),
+        true,
+      );
+    }, 500);
+
+    assert.equal(Date.now() - settledAt < 500, true);
+    assert.equal(app.diffLoadHydrations.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("settles after pruning a disconnected file from a concurrent diff load", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 500,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 10,
+    };
+    const fileGrids = Array.from(
+      dom.window.document.querySelectorAll(
+        '[role="grid"][aria-label^="Diff for: "]',
+      ),
+    );
+    assert.equal(fileGrids.length, 2);
+    const firstRegion = fileGrids[0].closest('[role="region"]');
+    assert.ok(firstRegion);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+
+    const loaders = fileGrids.map((fileGrid, index) =>
+      appendDiffLoader(dom, fileGrid, `Loading diff ${index + 1}`),
+    );
+    await waitFor(() =>
+      assert.equal(app.deferredDiffLoadRefreshes.size, 2),
+    );
+
+    firstRegion.remove();
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+      assert.equal(controllersFor(app).length, 1);
+      assert.equal(refreshes, 0);
+    });
+
+    const settledAt = Date.now();
+    loaders[1].remove();
+    await waitFor(() => assert.equal(refreshes, 1), 250);
+
+    assert.equal(Date.now() - settledAt < 500, true);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
+    assert.equal(controllersFor(app).length, 1);
+    assert.equal(
+      dom.window.document.querySelector(".hunkmark-panel-summary")
+        .textContent,
+      "Hunks 0 / 1 · Lines 0 / 1",
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("discards loading hydration invalidated during reconciliation", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.observer.disconnect();
+    const fileGrid = fileGridFor(dom, "src/react-one.js");
+    const fileRegion = fileGrid.closest('[role="region"]');
+    appendAdditionHunk(dom, fileGrid, {
+      anchor: "diff-hydration-R20",
+      lineNumber: 20,
+      text: "+hydrated",
+    });
+
+    let invalidatedController = null;
+    const reconcile = app.reconcileNewReviewControllers.bind(app);
+    app.reconcileNewReviewControllers = async (options) => {
+      [invalidatedController] = options.newControllers;
+      app.reconcileNewReviewControllers = reconcile;
+      app.diffMutationGenerationByFileElement.set(
+        fileRegion,
+        (app.diffMutationGenerationByFileElement.get(fileRegion) ?? 0) + 1,
+      );
+      return true;
+    };
+
+    const hydrated = await app.hydrateDiffLoadFile(
+      fileRegion,
+      "src/react-one.js",
+    );
+
+    assert.equal(hydrated, null);
+    assert.ok(invalidatedController);
+    assert.equal(invalidatedController.destroyed, true);
+    assert.notEqual(
+      app.controllersByRow.get(invalidatedController.hunkRow),
+      invalidatedController,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test(
+  "upgrades loading reconciliation only when migrations are required",
+  async () => {
+    const locks = createExclusiveLockManager();
+    const { app, dom } = await startExtension(
+      duplicateHunkFixture(),
+      {},
+      { lockManager: locks },
+    );
+    try {
+      const controller = controllerAt(app);
+      const lockRequestsBeforeReconciliation = locks.requests.length;
+      const reconciled = await app.reconcileNewReviewControllers({
+        deferStorageMigrations: true,
+        expansionAssessmentByController: new Map([
+          [
+            controller,
+            {
+              opensHunk: true,
+              previous: [],
+              reviewIntents: [],
+            },
+          ],
+        ]),
+        newControllers: [controller],
+      });
+
+      assert.equal(reconciled, true);
+      assert.deepEqual(
+        locks.requests
+          .slice(lockRequestsBeforeReconciliation)
+          .map(({ mode }) => mode),
+        ["shared", "exclusive"],
+      );
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  },
+);
+
+test("settles a deferred React diff load from its aria label", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const fileGrid = dom.window.document.querySelector(
+      '[aria-label="Diff for: src/react-one.js"]',
+    );
+    assert.ok(fileGrid);
+    const fileRegion = fileGrid.closest('[role="region"]');
+    assert.ok(fileRegion);
+    const diffBody = fileGrid.querySelector("tbody");
+    assert.ok(diffBody);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+
+    fileRegion.id = "diff-react-one";
+    fileRegion.setAttribute("aria-label", "Loading src/react-one.js");
+    const partialDiffRow = dom.window.document.createElement("tr");
+    partialDiffRow.className = "diff-line-row";
+    partialDiffRow.setAttribute("data-line-type", "context");
+    partialDiffRow.innerHTML =
+      '<td class="diff-text-cell"><code>partial context</code></td>';
+    diffBody.append(partialDiffRow);
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(refreshes, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+
+    fileRegion.setAttribute("aria-label", "Diff file src/react-one.js");
+
+    await waitFor(() => assert.equal(refreshes, 1));
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("cleans deferred diff loading refresh state on stop", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const fileGrid = fileGridFor(dom, "src/react-one.js");
+    appendDiffLoader(dom, fileGrid);
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+
+    app.stop();
+
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("bounds a stalled deferred diff load with a fail-closed refresh", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 40,
+    };
+    const fileGrid = fileGridFor(dom, "src/react-one.js");
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = async (...args) => {
+      refreshes += 1;
+      return refresh(...args);
+    };
+    appendDiffLoader(dom, fileGrid);
+
+    await waitFor(() => {
+      assert.equal(refreshes, 1);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.refreshRunning, false);
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.deferredDiffLoadRefreshTimer, null);
   } finally {
     app.stop();
     dom.window.close();
@@ -2112,6 +4785,10 @@ test("supports GitHub's current React diff with persistent controls visible", as
     assert.match(progress.textContent, /Hunks 0\/1 · Lines 0\/2/);
 
     const style = installContentStyles(dom);
+    assert.doesNotMatch(
+      style.textContent,
+      /\.hunkmark-line-viewed\s+(?:code|pre|\.blob-code-inner|\.diff-text-inner)\s+\*/,
+    );
     const lineHoverRule = Array.from(style.sheet.cssRules).find(
       (rule) => rule.selectorText === ".hunkmark-line-control:hover",
     );

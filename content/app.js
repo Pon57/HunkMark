@@ -24,6 +24,17 @@
     ACTIVE_DIFF_LOADING_SELECTOR,
     CONTROL_CLASS: "hunkmark-control",
     CURRENT_FILE_DIFF_REGION_SELECTOR,
+    DIFF_LOAD_FILE_HYDRATION_CONCURRENCY: 2,
+    DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS: 500,
+    DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_CONCURRENCY: 1,
+    DIFF_LOAD_FILE_HYDRATION_RETRY_MS: 50,
+    DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 750,
+    DIFF_LOAD_HYDRATION_SCROLL_SETTLE_MS: 50,
+    DIFF_LOAD_REFRESH_MAX_WAIT_MS: 30_000,
+    DIFF_LOAD_REFRESH_SETTLE_MS: 750,
+    HUNK_DISCOVERY_FILE_CHUNK_SIZE: 8,
+    HUNK_DISCOVERY_LARGE_ROOT_TEXT_THRESHOLD: 16_384,
+    HUNK_DISCOVERY_ROW_CHUNK_SIZE: 128,
     FILE_DIFF_VISIBILITY_EXPECTATION_TIMEOUT_MS: 30_000,
     FILE_HEADER_SELECTOR: [
       ".file-header",
@@ -81,6 +92,7 @@
     HOST_CONTEXT_EXPANSION_MAX_LIFETIME_MS: 30_000,
     LAZY_LINE_CONTROL_CHUNK_SIZE: 16,
     LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD: 500,
+    LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 100,
     OFFICIAL_FILE_VIEWED_SELECTOR: [
       'button[aria-pressed][aria-label="Not Viewed"]',
       'button[aria-pressed][aria-label="Viewed"]',
@@ -94,6 +106,7 @@
     PANEL_SETTINGS_ID: "hunkmark-panel-settings",
     PANEL_SPACER_ID: "hunkmark-panel-spacer",
     RECONNECT_NOTICE_ID: "hunkmark-reconnect-notice",
+    PROGRESS_UPDATE_DELAY_MS: 100,
     REFRESH_DELAY_MS: 120,
     REVIEW_ACCESS_TOUCH_INTERVAL_MS: 24 * 60 * 60 * 1000,
     REVIEW_RETENTION_MS: 180 * 24 * 60 * 60 * 1000,
@@ -152,6 +165,19 @@
       this.officialViewedSyncPending = new WeakSet();
       this.officialViewedSyncSuppressed = new Set();
       this.fileRevealRestorePending = new Set();
+      this.diffLoadHydrations = new Map();
+      this.diffLoadHydrationBatchBootstrapped = false;
+      this.diffLoadHydrationReflowTimer = null;
+      this.diffLoadHydrationRunningStates = new Set();
+      this.diffLoadHydrationViewportTimer = null;
+      this.diffMutationGeneration = 0;
+      this.diffMutationGenerationByFileElement = new WeakMap();
+      this.unscopedDiffMutationGeneration = 0;
+      this.diffMutationSuspendedControllers = new Map();
+      this.deferredDiffLoadRefreshes = new Map();
+      this.deferredDiffLoadRefreshTimedOut = false;
+      this.deferredDiffLoadRefreshSettleTimer = null;
+      this.deferredDiffLoadRefreshTimer = null;
       this.fileProgressStateByKey = new Map();
       this.fileReviewSnapshotsByKey = new Map();
       this.hostContextExpansionIntents = new Set();
@@ -175,8 +201,11 @@
       this.panelClearanceFileTarget = null;
       this.panelClearanceTarget = null;
       this.panelEventController = null;
+      this.pendingProgressControllers = new Set();
+      this.progressUpdateTimer = null;
       this.refreshQueued = false;
       this.refreshRunning = false;
+      this.refreshAfterDiffLoadHydrations = false;
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;
       this.refreshTimer = null;
