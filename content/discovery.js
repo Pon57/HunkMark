@@ -100,7 +100,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       ) {
         return false;
       }
-      const currentLines = this.changedLineDescriptors([row]);
+      const currentLines = this.changedLineDescriptorsForRows([row]);
       if (
         expectedLines.length === 0 ||
         currentLines.length !== expectedLines.length
@@ -802,7 +802,28 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return "unified";
     },
 
-    changedLineDescriptors(groupRows) {
+    runHunkDiscoveryWork(iterator) {
+      let step = iterator.next();
+      while (!step.done) {
+        step = iterator.next();
+      }
+      return step.value;
+    },
+
+    async runHunkDiscoveryWorkChunked(iterator, snapshot) {
+      let step = iterator.next();
+      while (!step.done) {
+        await this.yieldForHunkDiscoveryInteraction(snapshot);
+        if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+          iterator.return();
+          return null;
+        }
+        step = iterator.next();
+      }
+      return step.value;
+    },
+
+    changedLineDescriptorsForRows(groupRows) {
       const changedLines = [];
       const seenElements = new Set();
 
@@ -864,11 +885,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return changedLines;
     },
 
-    async changedLineDescriptorsChunked(groupRows, snapshot) {
-      const chunkSize = Math.max(
-        1,
-        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
-      );
+    *changedLineDescriptorsWork(groupRows, chunkSize) {
       const changedLines = [];
       for (
         let chunkStart = 0;
@@ -876,15 +893,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
         chunkStart += chunkSize
       ) {
         changedLines.push(
-          ...this.changedLineDescriptors(
+          ...this.changedLineDescriptorsForRows(
             groupRows.slice(chunkStart, chunkStart + chunkSize),
           ),
         );
         if (chunkStart + chunkSize < groupRows.length) {
-          await this.yieldForHunkDiscoveryInteraction(snapshot);
-          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-            return null;
-          }
+          yield;
         }
       }
       return changedLines;
@@ -943,144 +957,31 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return texts.length === 1 ? `context:${texts[0]}` : null;
     },
 
-    lineReviewContextOptions(
+    *lineReviewContextOptionsWork(
       groupRows,
       lineDescriptors,
       headerText,
+      checkpointEvery,
     ) {
-      const changedByRow = new Map();
-      lineDescriptors.forEach((descriptor) => {
-        const descriptors = changedByRow.get(descriptor.row) ?? [];
-        descriptors.push(descriptor);
-        changedByRow.set(descriptor.row, descriptors);
-      });
-      const contextAnchor = (start, step) => {
-        for (
-          let index = start;
-          index >= 0 && index < groupRows.length;
-          index += step
-        ) {
-          const anchor = this.reviewAnchorForContextRow(groupRows[index]);
-          if (anchor) {
-            return anchor;
-          }
-        }
-        return "";
-      };
-      const layoutContextAnchor = (start, step) => {
-        for (
-          let index = start;
-          index >= 0 && index < groupRows.length;
-          index += step
-        ) {
-          const anchor = this.layoutReviewAnchorForContextRow(
-            groupRows[index],
-          );
-          if (anchor === null || anchor.length > 0) {
-            return anchor;
-          }
-        }
-        return "";
-      };
-      const contextOptionsByLine = new Map();
-
-      for (let blockStart = 0; blockStart < groupRows.length; blockStart += 1) {
-        if (!changedByRow.has(groupRows[blockStart])) {
-          continue;
-        }
-        let blockEnd = blockStart;
-        while (
-          blockEnd + 1 < groupRows.length &&
-          changedByRow.has(groupRows[blockEnd + 1])
-        ) {
-          blockEnd += 1;
-        }
-
-        const blockLines = groupRows
-          .slice(blockStart, blockEnd + 1)
-          .flatMap((row) => changedByRow.get(row) ?? []);
-        const layoutBlockLines = blockLines.slice().sort((left, right) => {
-          const kindOrder = { deletion: 0, addition: 1 };
-          return (
-            (kindOrder[left.kind] ?? 2) -
-            (kindOrder[right.kind] ?? 2)
-          );
-        });
-        const blockSignature = blockLines
-          .map(
-            (descriptor) =>
-              `${descriptor.kind}:${descriptor.side}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
-          )
-          .join("\n");
-        const layoutBeforeAnchor = layoutContextAnchor(blockStart - 1, -1);
-        const layoutAfterAnchor = layoutContextAnchor(blockEnd + 1, 1);
-        const layoutBlockSignature = layoutBlockLines
-          .map(
-            (descriptor) =>
-              `${descriptor.kind}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
-          )
-          .join("\n");
-        const layoutBlock = {
-          headerText,
-          beforeAnchor: layoutBeforeAnchor,
-          afterAnchor: layoutAfterAnchor,
-          blockSignature: layoutBlockSignature,
-        };
-        const block = {
-          headerText,
-          beforeAnchor: contextAnchor(blockStart - 1, -1),
-          afterAnchor: contextAnchor(blockEnd + 1, 1),
-          blockSignature,
-        };
-        blockLines.forEach((line, blockLineIndex) => {
-          contextOptionsByLine.set(
-            line,
-            {
-              block,
-              blockLineIndex,
-              layoutBlock,
-            },
-          );
-        });
-        blockStart = blockEnd;
-      }
-
-      return lineDescriptors.map((line) => contextOptionsByLine.get(line));
-    },
-
-    async lineReviewContextOptionsChunked(
-      groupRows,
-      lineDescriptors,
-      headerText,
-      snapshot,
-    ) {
-      const chunkSize = Math.max(
-        1,
-        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
-      );
       let workSinceYield = 0;
       const checkpointNeeded = () => {
         workSinceYield += 1;
-        if (workSinceYield < chunkSize) {
+        if (workSinceYield < checkpointEvery) {
           return false;
         }
         workSinceYield = 0;
         return true;
-      };
-      const checkpoint = async () => {
-        await this.yieldForHunkDiscoveryInteraction(snapshot);
-        return this.hunkDiscoverySnapshotIsCurrent(snapshot);
       };
       const changedByRow = new Map();
       for (const descriptor of lineDescriptors) {
         const descriptors = changedByRow.get(descriptor.row) ?? [];
         descriptors.push(descriptor);
         changedByRow.set(descriptor.row, descriptors);
-        if (checkpointNeeded() && !(await checkpoint())) {
-          return null;
+        if (checkpointNeeded()) {
+          yield;
         }
       }
-      const contextAnchor = async (start, step, layout = false) => {
+      const contextAnchor = function* (start, step, layout = false) {
         for (
           let index = start;
           index >= 0 && index < groupRows.length;
@@ -1093,20 +994,20 @@ if (globalThis.HunkMarkContent?.extendApp) {
             (layout && (anchor === null || anchor.length > 0)) ||
             (!layout && anchor)
           ) {
-            return { current: true, value: anchor };
+            return anchor;
           }
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return { current: false, value: "" };
+          if (checkpointNeeded()) {
+            yield;
           }
         }
-        return { current: true, value: "" };
-      };
+        return "";
+      }.bind(this);
       const contextOptionsByLine = new Map();
 
       for (let blockStart = 0; blockStart < groupRows.length; blockStart += 1) {
         if (!changedByRow.has(groupRows[blockStart])) {
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
           continue;
         }
@@ -1116,32 +1017,31 @@ if (globalThis.HunkMarkContent?.extendApp) {
           changedByRow.has(groupRows[blockEnd + 1])
         ) {
           blockEnd += 1;
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
         }
 
         const blockLines = [];
         for (let index = blockStart; index <= blockEnd; index += 1) {
           blockLines.push(...(changedByRow.get(groupRows[index]) ?? []));
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
         }
-        const layoutBlockLines = blockLines.slice().sort((left, right) => {
-          const kindOrder = { deletion: 0, addition: 1 };
-          return (
+        const kindOrder = { deletion: 0, addition: 1 };
+        const layoutBlockLines = blockLines.slice().sort(
+          (left, right) =>
             (kindOrder[left.kind] ?? 2) -
-            (kindOrder[right.kind] ?? 2)
-          );
-        });
+            (kindOrder[right.kind] ?? 2),
+        );
         const blockSignatureParts = [];
         for (const descriptor of blockLines) {
           blockSignatureParts.push(
             `${descriptor.kind}:${descriptor.side}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
           );
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
         }
         const layoutBlockSignatureParts = [];
@@ -1149,46 +1049,40 @@ if (globalThis.HunkMarkContent?.extendApp) {
           layoutBlockSignatureParts.push(
             `${descriptor.kind}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
           );
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
         }
-        const layoutBefore = await contextAnchor(blockStart - 1, -1, true);
-        if (!layoutBefore.current) {
-          return null;
-        }
-        const layoutAfter = await contextAnchor(blockEnd + 1, 1, true);
-        if (!layoutAfter.current) {
-          return null;
-        }
-        const before = await contextAnchor(blockStart - 1, -1);
-        if (!before.current) {
-          return null;
-        }
-        const after = await contextAnchor(blockEnd + 1, 1);
-        if (!after.current) {
-          return null;
-        }
+        const layoutBeforeAnchor =
+          yield* contextAnchor(blockStart - 1, -1, true);
+        const layoutAfterAnchor =
+          yield* contextAnchor(blockEnd + 1, 1, true);
+        const beforeAnchor = yield* contextAnchor(blockStart - 1, -1);
+        const afterAnchor = yield* contextAnchor(blockEnd + 1, 1);
         const layoutBlock = {
           headerText,
-          beforeAnchor: layoutBefore.value,
-          afterAnchor: layoutAfter.value,
+          beforeAnchor: layoutBeforeAnchor,
+          afterAnchor: layoutAfterAnchor,
           blockSignature: layoutBlockSignatureParts.join("\n"),
         };
         const block = {
           headerText,
-          beforeAnchor: before.value,
-          afterAnchor: after.value,
+          beforeAnchor,
+          afterAnchor,
           blockSignature: blockSignatureParts.join("\n"),
         };
-        for (let blockLineIndex = 0; blockLineIndex < blockLines.length; blockLineIndex += 1) {
+        for (
+          let blockLineIndex = 0;
+          blockLineIndex < blockLines.length;
+          blockLineIndex += 1
+        ) {
           contextOptionsByLine.set(blockLines[blockLineIndex], {
             block,
             blockLineIndex,
             layoutBlock,
           });
-          if (checkpointNeeded() && !(await checkpoint())) {
-            return null;
+          if (checkpointNeeded()) {
+            yield;
           }
         }
         blockStart = blockEnd;
@@ -1197,14 +1091,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const contextOptions = [];
       for (const line of lineDescriptors) {
         contextOptions.push(contextOptionsByLine.get(line));
-        if (checkpointNeeded() && !(await checkpoint())) {
-          return null;
+        if (checkpointNeeded()) {
+          yield;
         }
       }
       return contextOptions;
     },
 
-    reviewLayoutForHunk(lineDescriptors) {
+    reviewLayoutForLines(lineDescriptors) {
       return lineDescriptors.some((line) => {
         const row = line.row;
         const cells = Array.from(row.children).filter((child) =>
@@ -1216,28 +1110,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
         : "unified";
     },
 
-    async reviewLayoutForHunkChunked(lineDescriptors, snapshot) {
-      const chunkSize = Math.max(
-        1,
-        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
-      );
+    *reviewLayoutForHunkWork(lineDescriptors, chunkSize) {
       for (
         let chunkStart = 0;
         chunkStart < lineDescriptors.length;
         chunkStart += chunkSize
       ) {
         if (
-          this.reviewLayoutForHunk(
+          this.reviewLayoutForLines(
             lineDescriptors.slice(chunkStart, chunkStart + chunkSize),
           ) === "split"
         ) {
           return "split";
         }
         if (chunkStart + chunkSize < lineDescriptors.length) {
-          await this.yieldForHunkDiscoveryInteraction(snapshot);
-          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-            return null;
-          }
+          yield;
         }
       }
       return "unified";
@@ -1327,157 +1214,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return Array.from(groupedByFile.entries());
     },
 
-    prepareDiscoveredHunkFileInputs(
+    *prepareDiscoveredHunkFileInputsWork(
       fileElement,
       entries,
       fileIndex,
-      collectedRows = null,
-    ) {
-      const filePath = this.resolveFilePath(fileElement, fileIndex);
-      const fileRows = collectedRows ?? this.collectRows(fileElement);
-      const rowIndexes = new Map(
-        fileRows.map((row, index) => [row, index]),
-      );
-      const hunkOccurrenceCounts = new Map();
-      const layoutHunkOccurrenceCounts = new Map();
-      const lineOccurrenceCounts = new Map();
-
-      const preparedEntries = entries.map((entry, index) => {
-        const nextEntry = entries[index + 1];
-        const groupRows = this.rowsForHunk(
-          fileRows,
-          entry.hunkRow,
-          nextEntry?.hunkRow,
-          rowIndexes,
-        );
-        const headerText = this.stableHunkHeaderText(entry.marker);
-        const lineDescriptors = this.changedLineDescriptors(groupRows);
-        const reviewLayout = this.reviewLayoutForHunk(lineDescriptors);
-        const lineIdentityTokens = lineDescriptors.map(
-          (line) =>
-            `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
-        );
-        const lineContextOptions = this.lineReviewContextOptions(
-          groupRows,
-          lineDescriptors,
-          headerText,
-        );
-        const layoutBlocks = [
-          ...new Set(
-            lineContextOptions.map((options) => options?.layoutBlock),
-          ),
-        ];
-        const {
-          completionSignature: layoutSignature,
-          occurrenceSignature: layoutOccurrenceSignature,
-        } = this.Core.buildLayoutHunkIdentity({
-          blocks: layoutBlocks,
-          headerText,
-        });
-        return {
-          ...entry,
-          groupRows,
-          headerText,
-          lineDescriptors,
-          lineIdentityTokens,
-          lineContextOptions,
-          layoutOccurrenceSignature,
-          layoutSignature,
-          reviewLayout,
-        };
-      });
-      const identicalLineCounts = new Map();
-      preparedEntries.forEach((entry) => {
-        entry.lineIdentityTokens.forEach((lineIdentityToken) => {
-          identicalLineCounts.set(
-            lineIdentityToken,
-            (identicalLineCounts.get(lineIdentityToken) ?? 0) + 1,
-          );
-        });
-      });
-
-      const hunkInputs = [];
-      for (const entry of preparedEntries) {
-        const {
-          groupRows,
-          headerText,
-          lineDescriptors,
-          lineIdentityTokens,
-          lineContextOptions,
-          layoutOccurrenceSignature,
-          layoutSignature,
-          reviewLayout,
-        } = entry;
-        const signature = this.Core.buildHunkSignature({
-          headerText,
-          changedLines: lineDescriptors,
-        });
-        const hunkOccurrenceToken = `${filePath}\u0000${signature}`;
-        const occurrence = hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
-        hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
-        const layoutHunkOccurrenceToken = layoutOccurrenceSignature
-          ? `${filePath}\u0000${layoutOccurrenceSignature}`
-          : null;
-        const layoutOccurrence = layoutHunkOccurrenceToken
-          ? layoutHunkOccurrenceCounts.get(layoutHunkOccurrenceToken) ?? 0
-          : 0;
-        if (layoutHunkOccurrenceToken) {
-          layoutHunkOccurrenceCounts.set(
-            layoutHunkOccurrenceToken,
-            layoutOccurrence + 1,
-          );
-        }
-        const lineInputs = lineDescriptors.map((line, index) => {
-          const lineIdentityToken = lineIdentityTokens[index];
-          const lineOccurrence =
-            lineOccurrenceCounts.get(lineIdentityToken) ?? 0;
-          lineOccurrenceCounts.set(lineIdentityToken, lineOccurrence + 1);
-          return {
-            contextOptions: lineContextOptions[index],
-            identicalCount: identicalLineCounts.get(lineIdentityToken),
-            layout: reviewLayout,
-            line,
-            lineOccurrence,
-          };
-        });
-
-        hunkInputs.push({
-          fileElement,
-          filePath,
-          groupRows,
-          headerText,
-          hunkCell: entry.marker,
-          hunkRow: entry.hunkRow,
-          lineInputs,
-          occurrence,
-          layoutOccurrence,
-          layoutSignature,
-          signature,
-        });
-      }
-      return { filePath, hunkInputs };
-    },
-
-    async prepareDiscoveredHunkFileInputsChunked(
-      fileElement,
-      entries,
-      fileIndex,
-      snapshot,
+      fileRows,
     ) {
       const chunkSize = Math.max(
         1,
         this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
       );
-      const fileRows = this.collectRows(fileElement);
-      if (fileRows.length <= chunkSize && entries.length <= chunkSize) {
-        return this.prepareDiscoveredHunkFileInputs(
-          fileElement,
-          entries,
-          fileIndex,
-          fileRows,
-        );
-      }
-
       const filePath = this.resolveFilePath(fileElement, fileIndex);
       const rowIndexes = new Map();
       for (
@@ -1490,10 +1236,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           rowIndexes.set(fileRows[index], index);
         }
         if (chunkEnd < fileRows.length) {
-          await this.yieldForHunkDiscoveryInteraction(snapshot);
-          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-            return null;
-          }
+          yield;
         }
       }
 
@@ -1512,20 +1255,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
           rowIndexes,
         );
         const headerText = this.stableHunkHeaderText(entry.marker);
-        const lineDescriptors = await this.changedLineDescriptorsChunked(
-          groupRows,
-          snapshot,
-        );
-        if (!lineDescriptors) {
-          return null;
-        }
-        const reviewLayout = await this.reviewLayoutForHunkChunked(
-          lineDescriptors,
-          snapshot,
-        );
-        if (!reviewLayout) {
-          return null;
-        }
+        const lineDescriptors =
+          yield* this.changedLineDescriptorsWork(groupRows, chunkSize);
+        const reviewLayout =
+          yield* this.reviewLayoutForHunkWork(lineDescriptors, chunkSize);
         const lineIdentityTokens = [];
         for (
           let chunkStart = 0;
@@ -1540,22 +1273,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
               );
             });
           if (chunkStart + chunkSize < lineDescriptors.length) {
-            await this.yieldForHunkDiscoveryInteraction(snapshot);
-            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-              return null;
-            }
+            yield;
           }
         }
         const lineContextOptions =
-          await this.lineReviewContextOptionsChunked(
+          yield* this.lineReviewContextOptionsWork(
             groupRows,
             lineDescriptors,
             headerText,
-            snapshot,
+            chunkSize,
           );
-        if (!lineContextOptions) {
-          return null;
-        }
         const layoutBlocks = new Set();
         for (
           let chunkStart = 0;
@@ -1566,10 +1293,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             .slice(chunkStart, chunkStart + chunkSize)
             .forEach((options) => layoutBlocks.add(options?.layoutBlock));
           if (chunkStart + chunkSize < lineContextOptions.length) {
-            await this.yieldForHunkDiscoveryInteraction(snapshot);
-            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-              return null;
-            }
+            yield;
           }
         }
         const {
@@ -1594,10 +1318,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           (entryIndex + 1) % chunkSize === 0 &&
           entryIndex + 1 < entries.length
         ) {
-          await this.yieldForHunkDiscoveryInteraction(snapshot);
-          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-            return null;
-          }
+          yield;
         }
       }
 
@@ -1615,10 +1336,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           );
           countedLines += 1;
           if (countedLines % chunkSize === 0 && countedLines < totalLines) {
-            await this.yieldForHunkDiscoveryInteraction(snapshot);
-            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-              return null;
-            }
+            yield;
           }
         }
       }
@@ -1673,10 +1391,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           });
           preparedLines += 1;
           if (preparedLines % chunkSize === 0 && preparedLines < totalLines) {
-            await this.yieldForHunkDiscoveryInteraction(snapshot);
-            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
-              return null;
-            }
+            yield;
           }
         }
         hunkInputs.push({
@@ -1694,6 +1409,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
         });
       }
       return { filePath, hunkInputs };
+    },
+
+    prepareDiscoveredHunkFileInputs(
+      fileElement,
+      entries,
+      fileIndex,
+    ) {
+      const fileRows = this.collectRows(fileElement);
+      return this.runHunkDiscoveryWork(
+        this.prepareDiscoveredHunkFileInputsWork(
+          fileElement,
+          entries,
+          fileIndex,
+          fileRows,
+        ),
+      );
+    },
+
+    async prepareDiscoveredHunkFileInputsChunked(
+      fileElement,
+      entries,
+      fileIndex,
+      snapshot,
+    ) {
+      const fileRows = this.collectRows(fileElement);
+      const iterator = this.prepareDiscoveredHunkFileInputsWork(
+        fileElement,
+        entries,
+        fileIndex,
+        fileRows,
+      );
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
+      );
+      return fileRows.length <= chunkSize && entries.length <= chunkSize
+        ? this.runHunkDiscoveryWork(iterator)
+        : this.runHunkDiscoveryWorkChunked(iterator, snapshot);
     },
 
     collectDiscoveredHunkInputs(searchRoot = this.document) {

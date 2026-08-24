@@ -32,6 +32,164 @@ const {
   contextualLineFixture,
 } = require("./content-test-support.cjs");
 
+function discoveryIdentity(hunks) {
+  return Array.from(hunks ?? [], (hunk) => ({
+    filePath: hunk.filePath,
+    headerText: hunk.headerText,
+    key: hunk.key,
+    lines: Array.from(hunk.lines, (line) => ({
+      contextFingerprint: line.contextFingerprint,
+      key: line.key,
+      kind: line.kind,
+      layout: line.layout,
+      legacyKey: line.legacyKey,
+      side: line.side,
+      text: line.text,
+    })),
+    officialSuppressionKey: hunk.officialSuppressionKey,
+    sharedCompletionKey: hunk.sharedCompletionKey,
+  }));
+}
+
+function persistedDiscoveryIdentity(hunks) {
+  const storageSuffix = (key) =>
+    key ? key.split(":").slice(-2).join(":") : null;
+  return Array.from(hunks ?? [], (hunk) => ({
+    filePath: hunk.filePath,
+    key: storageSuffix(hunk.key),
+    lines: Array.from(hunk.lines, (line) => ({
+      contextFingerprint: line.contextFingerprint,
+      key: storageSuffix(line.key),
+      legacyKey: storageSuffix(line.legacyKey),
+    })),
+    officialSuppressionKey:
+      hunk.officialSuppressionKey?.split(":").at(-1) ?? null,
+    sharedCompletionKey: storageSuffix(hunk.sharedCompletionKey),
+  }));
+}
+
+test("cached and cooperative discovery produce identical review identity", async () => {
+  for (const fixture of [
+    duplicateHunkFixture(),
+    splitFixture(),
+    currentReactContextEvidenceFixture(),
+  ]) {
+    const { app, dom } = await startExtension(fixture);
+    try {
+      app.constants = {
+        ...app.constants,
+        HUNK_DISCOVERY_ROW_CHUNK_SIZE: 1,
+      };
+      let cooperativeYields = 0;
+      const yieldForDiscovery =
+        app.yieldForHunkDiscoveryInteraction.bind(app);
+      app.yieldForHunkDiscoveryInteraction = async (...args) => {
+        cooperativeYields += 1;
+        await yieldForDiscovery(...args);
+      };
+      app.Core.clearIdentifierCache();
+      assert.equal(app.discoverCachedHunks(), null);
+      const discovered = await app.discoverHunks();
+      const cached = app.discoverCachedHunks();
+      assert.ok(discovered);
+      assert.ok(cached);
+      assert.equal(Array.isArray(cached), true);
+      assert.deepEqual(
+        discoveryIdentity(cached),
+        discoveryIdentity(discovered),
+      );
+      assert.equal(cooperativeYields > 0, true);
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  }
+});
+
+test("preserves persisted review identities from diff DOM", async () => {
+  const cases = [
+    [
+      duplicateHunkFixture(),
+      [
+        {
+          filePath: "src/example.js",
+          key: "sD0lEl0sQtIAHROAVjmOh-0MUqwQFEBdfQ-POL_xTm0:0",
+          lines: [{
+            contextFingerprint: "Ead3Q6bXXygUfIOf0a_gi5YJ-ezTOkFbvseFyQ26n3c",
+            key: "7DTNXpc-v83sPIqDQW-36YR2LhB_D1seFPSPu_Rjgb0:0",
+            legacyKey: "ppl0P65PCVBvA87r9kcm9ZPbi8ngxTBrvbJRWDqNNfo:0",
+          }],
+          officialSuppressionKey: "gl_8IQ3nyiLF1nF9Irsh_Bs5mV4Qc1mPt_EdkFwMX8k",
+          sharedCompletionKey: "5W8SwwhHSIsB7DClRRwY0wwwNxWrflF37ZkTAjcGSqE:0",
+        },
+        {
+          filePath: "src/example.js",
+          key: "sD0lEl0sQtIAHROAVjmOh-0MUqwQFEBdfQ-POL_xTm0:1",
+          lines: [{
+            contextFingerprint: "TepayJlLMftEQJxz3j-Fsi2pMsYxw995NYbwVgS8ICA",
+            key: "7DTNXpc-v83sPIqDQW-36YR2LhB_D1seFPSPu_Rjgb0:1",
+            legacyKey: "ppl0P65PCVBvA87r9kcm9ZPbi8ngxTBrvbJRWDqNNfo:1",
+          }],
+          officialSuppressionKey: "gl_8IQ3nyiLF1nF9Irsh_Bs5mV4Qc1mPt_EdkFwMX8k",
+          sharedCompletionKey: "OxQ5PjKfEnwQaJDt7bHKSTm6AB3fzhrh0Oll0m2S930:1",
+        },
+      ],
+    ],
+    [
+      contextualLineFixture(),
+      [{
+        filePath: "src/context.js",
+        key: "XfgMAEcb0L2kPmL3KRwcPJj7j4PqJL_Pqtt9LeSkSII:0",
+        lines: [{
+          contextFingerprint: "Dcpd8bnZozJkxRJlI74EftGOSDwVyNgPLnLViMJ4dqY",
+          key: "_rXYF_1_yHW5nBZNQ8_BaXIc9jcQvH-qBYHqKuZ3J7k:0",
+          legacyKey: "D3xTtQPePsv-0xQFKGhKhVp2LtO3NdEM-ItfieX0_Lg:0",
+        }],
+        officialSuppressionKey: "fGImcgDLrbkrXnZHm_t6DCRo1kyQQ-7fBGUr6f2oZ8g",
+        sharedCompletionKey: "gLAB9Hx3l2RSiUK8juoCF4sUTBHBa-yg2XskK5RGek4:0",
+      }],
+    ],
+    [
+      splitFixture(),
+      [{
+        filePath: "src/split.js",
+        key: "0JRB8ZmU9y2z282yRmAIeM35eep1yRFNqrQyxOfYmH8:0",
+        lines: [
+          {
+            contextFingerprint: "3_iEWTMkhcMtRKJNxluikt5wjduFlt62WZH0Ji5gaKk",
+            key: "14NgT4Ab1xWH89Ynkyypd5fdcjQB-5armvU82DruCAQ:0",
+            legacyKey: "PkAF2SVQNYt9UtzclnZmkTi76DNVuWEcMNlllsyLBAA:0",
+          },
+          {
+            contextFingerprint: "pipmwaMq-8EyGfSxIoQmpNUC23uQ8X68LQS4H-1EWH4",
+            key: "fr_DI6bOrI1TdNr2eKezo3G0VE46kDa3UsDvyGTlyo0:0",
+            legacyKey: "fQ8_NCspofSOsDo2KtsvOG_6BAgCVCI11yCUGELrycY:0",
+          },
+        ],
+        officialSuppressionKey: "GwCk8tDKS6thAxW3xSmac9bGoWlb1VmUsxs951pF5T8",
+        sharedCompletionKey: "KK3Qv0rn8KRA7aQgXW0jmn06QCUWT0A-Z1LtpQByInQ:0",
+      }],
+    ],
+  ];
+
+  for (const [fixture, expected] of cases) {
+    const { app, dom } = await startExtension(fixture);
+    try {
+      app.constants = {
+        ...app.constants,
+        HUNK_DISCOVERY_ROW_CHUNK_SIZE: 1,
+      };
+      assert.deepEqual(
+        persistedDiscoveryIdentity(await app.discoverHunks()),
+        expected,
+      );
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  }
+});
+
 test("places per-file progress beside the file name", async () => {
   const { app, dom } = await startExtension(commitSelectionFixture());
   try {
@@ -544,6 +702,33 @@ test("aborts one-file discovery when a row changes after an internal yield", asy
     const discovered = await app.discoverHunks();
 
     assert.equal(mutated, true);
+    assert.equal(discovered, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("aborts cooperative discovery when its caller becomes stale", async () => {
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(300, 48),
+  );
+  try {
+    let current = true;
+    let yielded = false;
+    const yieldForDiscovery =
+      app.yieldForHunkDiscoveryInteraction.bind(app);
+    app.yieldForHunkDiscoveryInteraction = async (...args) => {
+      await yieldForDiscovery(...args);
+      yielded = true;
+      current = false;
+    };
+
+    const discovered = await app.discoverHunks(app.document, {
+      isCurrent: () => current,
+    });
+
+    assert.equal(yielded, true);
     assert.equal(discovered, null);
   } finally {
     app.stop();
