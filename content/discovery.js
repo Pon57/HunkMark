@@ -464,9 +464,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     currentFilePathEvidence(fileElement) {
       const grid = this.currentFileDiffGrid(fileElement);
-      return this.trustedFilePath(
+      const gridPath = this.trustedFilePath(
         grid?.getAttribute("aria-label")?.slice("Diff for: ".length),
       );
+      if (gridPath) {
+        return gridPath;
+      }
+
+      const currentRegionSelector =
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR;
+      const currentRegion = fileElement.matches(currentRegionSelector)
+        ? fileElement
+        : fileElement.closest(currentRegionSelector) ??
+          fileElement.querySelector(currentRegionSelector);
+      const loadingLabel = currentRegion?.getAttribute("aria-label");
+      return loadingLabel?.startsWith("Loading ")
+        ? this.trustedFilePath(loadingLabel.slice("Loading ".length))
+        : null;
     },
 
     fileHeaderElement(fileElement) {
@@ -850,6 +864,32 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return changedLines;
     },
 
+    async changedLineDescriptorsChunked(groupRows, snapshot) {
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
+      );
+      const changedLines = [];
+      for (
+        let chunkStart = 0;
+        chunkStart < groupRows.length;
+        chunkStart += chunkSize
+      ) {
+        changedLines.push(
+          ...this.changedLineDescriptors(
+            groupRows.slice(chunkStart, chunkStart + chunkSize),
+          ),
+        );
+        if (chunkStart + chunkSize < groupRows.length) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+      return changedLines;
+    },
+
     contextLineDescriptors(row, { includeEmpty = false } = {}) {
       const legacyCells = row.querySelectorAll("td.blob-code-context");
       const dataCodeTextElements = row.querySelectorAll("[data-code-text]");
@@ -1008,6 +1048,162 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return lineDescriptors.map((line) => contextOptionsByLine.get(line));
     },
 
+    async lineReviewContextOptionsChunked(
+      groupRows,
+      lineDescriptors,
+      headerText,
+      snapshot,
+    ) {
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
+      );
+      let workSinceYield = 0;
+      const checkpointNeeded = () => {
+        workSinceYield += 1;
+        if (workSinceYield < chunkSize) {
+          return false;
+        }
+        workSinceYield = 0;
+        return true;
+      };
+      const checkpoint = async () => {
+        await this.yieldForHunkDiscoveryInteraction(snapshot);
+        return this.hunkDiscoverySnapshotIsCurrent(snapshot);
+      };
+      const changedByRow = new Map();
+      for (const descriptor of lineDescriptors) {
+        const descriptors = changedByRow.get(descriptor.row) ?? [];
+        descriptors.push(descriptor);
+        changedByRow.set(descriptor.row, descriptors);
+        if (checkpointNeeded() && !(await checkpoint())) {
+          return null;
+        }
+      }
+      const contextAnchor = async (start, step, layout = false) => {
+        for (
+          let index = start;
+          index >= 0 && index < groupRows.length;
+          index += step
+        ) {
+          const anchor = layout
+            ? this.layoutReviewAnchorForContextRow(groupRows[index])
+            : this.reviewAnchorForContextRow(groupRows[index]);
+          if (
+            (layout && (anchor === null || anchor.length > 0)) ||
+            (!layout && anchor)
+          ) {
+            return { current: true, value: anchor };
+          }
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return { current: false, value: "" };
+          }
+        }
+        return { current: true, value: "" };
+      };
+      const contextOptionsByLine = new Map();
+
+      for (let blockStart = 0; blockStart < groupRows.length; blockStart += 1) {
+        if (!changedByRow.has(groupRows[blockStart])) {
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+          continue;
+        }
+        let blockEnd = blockStart;
+        while (
+          blockEnd + 1 < groupRows.length &&
+          changedByRow.has(groupRows[blockEnd + 1])
+        ) {
+          blockEnd += 1;
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+        }
+
+        const blockLines = [];
+        for (let index = blockStart; index <= blockEnd; index += 1) {
+          blockLines.push(...(changedByRow.get(groupRows[index]) ?? []));
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+        }
+        const layoutBlockLines = blockLines.slice().sort((left, right) => {
+          const kindOrder = { deletion: 0, addition: 1 };
+          return (
+            (kindOrder[left.kind] ?? 2) -
+            (kindOrder[right.kind] ?? 2)
+          );
+        });
+        const blockSignatureParts = [];
+        for (const descriptor of blockLines) {
+          blockSignatureParts.push(
+            `${descriptor.kind}:${descriptor.side}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
+          );
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+        }
+        const layoutBlockSignatureParts = [];
+        for (const descriptor of layoutBlockLines) {
+          layoutBlockSignatureParts.push(
+            `${descriptor.kind}:${this.Core.normalizeLineBreaks(descriptor.text)}`,
+          );
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+        }
+        const layoutBefore = await contextAnchor(blockStart - 1, -1, true);
+        if (!layoutBefore.current) {
+          return null;
+        }
+        const layoutAfter = await contextAnchor(blockEnd + 1, 1, true);
+        if (!layoutAfter.current) {
+          return null;
+        }
+        const before = await contextAnchor(blockStart - 1, -1);
+        if (!before.current) {
+          return null;
+        }
+        const after = await contextAnchor(blockEnd + 1, 1);
+        if (!after.current) {
+          return null;
+        }
+        const layoutBlock = {
+          headerText,
+          beforeAnchor: layoutBefore.value,
+          afterAnchor: layoutAfter.value,
+          blockSignature: layoutBlockSignatureParts.join("\n"),
+        };
+        const block = {
+          headerText,
+          beforeAnchor: before.value,
+          afterAnchor: after.value,
+          blockSignature: blockSignatureParts.join("\n"),
+        };
+        for (let blockLineIndex = 0; blockLineIndex < blockLines.length; blockLineIndex += 1) {
+          contextOptionsByLine.set(blockLines[blockLineIndex], {
+            block,
+            blockLineIndex,
+            layoutBlock,
+          });
+          if (checkpointNeeded() && !(await checkpoint())) {
+            return null;
+          }
+        }
+        blockStart = blockEnd;
+      }
+
+      const contextOptions = [];
+      for (const line of lineDescriptors) {
+        contextOptions.push(contextOptionsByLine.get(line));
+        if (checkpointNeeded() && !(await checkpoint())) {
+          return null;
+        }
+      }
+      return contextOptions;
+    },
+
     reviewLayoutForHunk(lineDescriptors) {
       return lineDescriptors.some((line) => {
         const row = line.row;
@@ -1020,29 +1216,92 @@ if (globalThis.HunkMarkContent?.extendApp) {
         : "unified";
     },
 
-    collectDiscoveredHunkInputs(searchRoot = this.document) {
-      const groupedByFile = new Map();
-      const fileRoots = Array.from(
-        searchRoot.querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR),
-      ).filter(
-        (candidate) =>
-          candidate.matches(this.constants.HUNK_ELEMENT_SELECTOR) ||
-          candidate.querySelector(this.constants.HUNK_ELEMENT_SELECTOR) ||
-          this.Core.isHunkHeaderText(this.cleanElementText(candidate)),
+    async reviewLayoutForHunkChunked(lineDescriptors, snapshot) {
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
       );
+      for (
+        let chunkStart = 0;
+        chunkStart < lineDescriptors.length;
+        chunkStart += chunkSize
+      ) {
+        if (
+          this.reviewLayoutForHunk(
+            lineDescriptors.slice(chunkStart, chunkStart + chunkSize),
+          ) === "split"
+        ) {
+          return "split";
+        }
+        if (chunkStart + chunkSize < lineDescriptors.length) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+      return "unified";
+    },
+
+    hunkDiscoveryRootSelection(searchRoot = this.document) {
+      const fileRootSelector = [
+        this.constants.FILE_CONTAINER_SELECTOR,
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+      ].join(", ");
+      return {
+        candidates: Array.from(
+          searchRoot.querySelectorAll(fileRootSelector),
+        ),
+        fileRootSelector,
+      };
+    },
+
+    hunkDiscoveryRootContainsHunk(candidate) {
+      return (
+        candidate.matches(this.constants.HUNK_ELEMENT_SELECTOR) ||
+        candidate.querySelector(this.constants.HUNK_ELEMENT_SELECTOR) ||
+        this.Core.isHunkHeaderText(this.cleanElementText(candidate))
+      );
+    },
+
+    hunkDiscoveryRootNeedsRowChunking(candidate) {
+      return (
+        (candidate.textContent?.length ?? 0) >=
+        this.constants.HUNK_DISCOVERY_LARGE_ROOT_TEXT_THRESHOLD
+      );
+    },
+
+    outermostHunkDiscoveryRoots(fileRoots, fileRootSelector) {
       const fileRootSet = new Set(fileRoots);
-      const searchRoots = fileRoots.filter((candidate) => {
-        const ancestor = candidate.parentElement?.closest(
-          this.constants.FILE_CONTAINER_SELECTOR,
-        );
+      return fileRoots.filter((candidate) => {
+        const ancestor = candidate.parentElement?.closest(fileRootSelector);
         return !ancestor || !fileRootSet.has(ancestor);
       });
-      const markers = new Set();
-      (searchRoots.length > 0 ? searchRoots : [searchRoot]).forEach((rootNode) => {
-        this.findHunkMarkers(rootNode).forEach((marker) => markers.add(marker));
-      });
+    },
 
-      Array.from(markers).forEach((marker) => {
+    hunkDiscoverySearchRoots(searchRoot = this.document) {
+      const { candidates, fileRootSelector } =
+        this.hunkDiscoveryRootSelection(searchRoot);
+      const fileRoots = candidates.filter((candidate) =>
+        this.hunkDiscoveryRootContainsHunk(candidate),
+      );
+      const searchRoots = this.outermostHunkDiscoveryRoots(
+        fileRoots,
+        fileRootSelector,
+      );
+      return searchRoots.length > 0 ? searchRoots : [searchRoot];
+    },
+
+    collectDiscoveredHunkFileGroup(
+      groupedByFile,
+      markers,
+      rootNode,
+    ) {
+      this.findHunkMarkers(rootNode).forEach((marker) => {
+        if (markers.has(marker)) {
+          return;
+        }
+        markers.add(marker);
         const hunkRow = this.semanticRow(marker);
         const fileElement = this.findFileElement(marker, hunkRow);
         if (!fileElement) {
@@ -1053,142 +1312,572 @@ if (globalThis.HunkMarkContent?.extendApp) {
         entries.push({ marker, hunkRow });
         groupedByFile.set(fileElement, entries);
       });
+    },
 
-      return Array.from(groupedByFile.entries()).map(
-        ([fileElement, entries], fileIndex) => {
-          const filePath = this.resolveFilePath(fileElement, fileIndex);
-          const fileRows = this.collectRows(fileElement);
-          const rowIndexes = new Map(
-            fileRows.map((row, index) => [row, index]),
+    collectDiscoveredHunkFileGroups(searchRoot = this.document) {
+      const groupedByFile = new Map();
+      const markers = new Set();
+      this.hunkDiscoverySearchRoots(searchRoot).forEach((rootNode) =>
+        this.collectDiscoveredHunkFileGroup(
+          groupedByFile,
+          markers,
+          rootNode,
+        ),
+      );
+      return Array.from(groupedByFile.entries());
+    },
+
+    prepareDiscoveredHunkFileInputs(
+      fileElement,
+      entries,
+      fileIndex,
+      collectedRows = null,
+    ) {
+      const filePath = this.resolveFilePath(fileElement, fileIndex);
+      const fileRows = collectedRows ?? this.collectRows(fileElement);
+      const rowIndexes = new Map(
+        fileRows.map((row, index) => [row, index]),
+      );
+      const hunkOccurrenceCounts = new Map();
+      const layoutHunkOccurrenceCounts = new Map();
+      const lineOccurrenceCounts = new Map();
+
+      const preparedEntries = entries.map((entry, index) => {
+        const nextEntry = entries[index + 1];
+        const groupRows = this.rowsForHunk(
+          fileRows,
+          entry.hunkRow,
+          nextEntry?.hunkRow,
+          rowIndexes,
+        );
+        const headerText = this.stableHunkHeaderText(entry.marker);
+        const lineDescriptors = this.changedLineDescriptors(groupRows);
+        const reviewLayout = this.reviewLayoutForHunk(lineDescriptors);
+        const lineIdentityTokens = lineDescriptors.map(
+          (line) =>
+            `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
+        );
+        const lineContextOptions = this.lineReviewContextOptions(
+          groupRows,
+          lineDescriptors,
+          headerText,
+        );
+        const layoutBlocks = [
+          ...new Set(
+            lineContextOptions.map((options) => options?.layoutBlock),
+          ),
+        ];
+        const {
+          completionSignature: layoutSignature,
+          occurrenceSignature: layoutOccurrenceSignature,
+        } = this.Core.buildLayoutHunkIdentity({
+          blocks: layoutBlocks,
+          headerText,
+        });
+        return {
+          ...entry,
+          groupRows,
+          headerText,
+          lineDescriptors,
+          lineIdentityTokens,
+          lineContextOptions,
+          layoutOccurrenceSignature,
+          layoutSignature,
+          reviewLayout,
+        };
+      });
+      const identicalLineCounts = new Map();
+      preparedEntries.forEach((entry) => {
+        entry.lineIdentityTokens.forEach((lineIdentityToken) => {
+          identicalLineCounts.set(
+            lineIdentityToken,
+            (identicalLineCounts.get(lineIdentityToken) ?? 0) + 1,
           );
-          const hunkOccurrenceCounts = new Map();
-          const layoutHunkOccurrenceCounts = new Map();
-          const lineOccurrenceCounts = new Map();
+        });
+      });
 
-          const preparedEntries = entries.map((entry, index) => {
-            const nextEntry = entries[index + 1];
-            const groupRows = this.rowsForHunk(
-              fileRows,
-              entry.hunkRow,
-              nextEntry?.hunkRow,
-              rowIndexes,
-            );
-            const headerText = this.stableHunkHeaderText(entry.marker);
-            const lineDescriptors = this.changedLineDescriptors(groupRows);
-            const reviewLayout = this.reviewLayoutForHunk(lineDescriptors);
-            const lineIdentityTokens = lineDescriptors.map(
-              (line) =>
-                `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
-            );
-            const lineContextOptions = this.lineReviewContextOptions(
-              groupRows,
-              lineDescriptors,
-              headerText,
-            );
-            const layoutBlocks = [
-              ...new Set(
-                lineContextOptions.map((options) => options?.layoutBlock),
-              ),
-            ];
-            const {
-              completionSignature: layoutSignature,
-              occurrenceSignature: layoutOccurrenceSignature,
-            } = this.Core.buildLayoutHunkIdentity({
-              blocks: layoutBlocks,
-              headerText,
-            });
-            return {
-              ...entry,
-              groupRows,
-              headerText,
-              lineDescriptors,
-              lineIdentityTokens,
-              lineContextOptions,
-              layoutOccurrenceSignature,
-              layoutSignature,
-              reviewLayout,
-            };
-          });
-          const identicalLineCounts = new Map();
-          preparedEntries.forEach((entry) => {
-            entry.lineIdentityTokens.forEach((lineIdentityToken) => {
-              identicalLineCounts.set(
-                lineIdentityToken,
-                (identicalLineCounts.get(lineIdentityToken) ?? 0) + 1,
-              );
-            });
-          });
+      const hunkInputs = [];
+      for (const entry of preparedEntries) {
+        const {
+          groupRows,
+          headerText,
+          lineDescriptors,
+          lineIdentityTokens,
+          lineContextOptions,
+          layoutOccurrenceSignature,
+          layoutSignature,
+          reviewLayout,
+        } = entry;
+        const signature = this.Core.buildHunkSignature({
+          headerText,
+          changedLines: lineDescriptors,
+        });
+        const hunkOccurrenceToken = `${filePath}\u0000${signature}`;
+        const occurrence = hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
+        hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
+        const layoutHunkOccurrenceToken = layoutOccurrenceSignature
+          ? `${filePath}\u0000${layoutOccurrenceSignature}`
+          : null;
+        const layoutOccurrence = layoutHunkOccurrenceToken
+          ? layoutHunkOccurrenceCounts.get(layoutHunkOccurrenceToken) ?? 0
+          : 0;
+        if (layoutHunkOccurrenceToken) {
+          layoutHunkOccurrenceCounts.set(
+            layoutHunkOccurrenceToken,
+            layoutOccurrence + 1,
+          );
+        }
+        const lineInputs = lineDescriptors.map((line, index) => {
+          const lineIdentityToken = lineIdentityTokens[index];
+          const lineOccurrence =
+            lineOccurrenceCounts.get(lineIdentityToken) ?? 0;
+          lineOccurrenceCounts.set(lineIdentityToken, lineOccurrence + 1);
+          return {
+            contextOptions: lineContextOptions[index],
+            identicalCount: identicalLineCounts.get(lineIdentityToken),
+            layout: reviewLayout,
+            line,
+            lineOccurrence,
+          };
+        });
 
-          const hunkInputs = [];
-          for (const entry of preparedEntries) {
-            const {
-              groupRows,
-              headerText,
-              lineDescriptors,
-              lineIdentityTokens,
-              lineContextOptions,
-              layoutOccurrenceSignature,
-              layoutSignature,
-              reviewLayout,
-            } = entry;
-            const signature = this.Core.buildHunkSignature({
-              headerText,
-              changedLines: lineDescriptors,
-            });
-            const hunkOccurrenceToken = `${filePath}\u0000${signature}`;
-            const occurrence =
-              hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
-            hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
-            const layoutHunkOccurrenceToken = layoutOccurrenceSignature
-              ? `${filePath}\u0000${layoutOccurrenceSignature}`
-              : null;
-            const layoutOccurrence = layoutHunkOccurrenceToken
-              ? layoutHunkOccurrenceCounts.get(layoutHunkOccurrenceToken) ?? 0
-              : 0;
-            if (layoutHunkOccurrenceToken) {
-              layoutHunkOccurrenceCounts.set(
-                layoutHunkOccurrenceToken,
-                layoutOccurrence + 1,
-              );
-            }
-            const lineInputs = lineDescriptors.map((line, index) => {
-              const lineIdentityToken = lineIdentityTokens[index];
-              const lineOccurrence =
-                lineOccurrenceCounts.get(lineIdentityToken) ?? 0;
-              lineOccurrenceCounts.set(
-                lineIdentityToken,
-                lineOccurrence + 1,
-              );
-              return {
-                contextOptions: lineContextOptions[index],
-                identicalCount: identicalLineCounts.get(lineIdentityToken),
-                layout: reviewLayout,
-                line,
-                lineOccurrence,
-              };
-            });
+        hunkInputs.push({
+          fileElement,
+          filePath,
+          groupRows,
+          headerText,
+          hunkCell: entry.marker,
+          hunkRow: entry.hunkRow,
+          lineInputs,
+          occurrence,
+          layoutOccurrence,
+          layoutSignature,
+          signature,
+        });
+      }
+      return { filePath, hunkInputs };
+    },
 
-            hunkInputs.push({
-              fileElement,
-              filePath,
-              groupRows,
-              headerText,
-              hunkCell: entry.marker,
-              hunkRow: entry.hunkRow,
-              lineInputs,
-              occurrence,
-              layoutOccurrence,
-              layoutSignature,
-              signature,
-            });
+    async prepareDiscoveredHunkFileInputsChunked(
+      fileElement,
+      entries,
+      fileIndex,
+      snapshot,
+    ) {
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
+      );
+      const fileRows = this.collectRows(fileElement);
+      if (fileRows.length <= chunkSize && entries.length <= chunkSize) {
+        return this.prepareDiscoveredHunkFileInputs(
+          fileElement,
+          entries,
+          fileIndex,
+          fileRows,
+        );
+      }
+
+      const filePath = this.resolveFilePath(fileElement, fileIndex);
+      const rowIndexes = new Map();
+      for (
+        let chunkStart = 0;
+        chunkStart < fileRows.length;
+        chunkStart += chunkSize
+      ) {
+        const chunkEnd = Math.min(chunkStart + chunkSize, fileRows.length);
+        for (let index = chunkStart; index < chunkEnd; index += 1) {
+          rowIndexes.set(fileRows[index], index);
+        }
+        if (chunkEnd < fileRows.length) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
           }
-          return { filePath, hunkInputs };
-        },
+        }
+      }
+
+      const preparedEntries = [];
+      for (
+        let entryIndex = 0;
+        entryIndex < entries.length;
+        entryIndex += 1
+      ) {
+        const entry = entries[entryIndex];
+        const nextEntry = entries[entryIndex + 1];
+        const groupRows = this.rowsForHunk(
+          fileRows,
+          entry.hunkRow,
+          nextEntry?.hunkRow,
+          rowIndexes,
+        );
+        const headerText = this.stableHunkHeaderText(entry.marker);
+        const lineDescriptors = await this.changedLineDescriptorsChunked(
+          groupRows,
+          snapshot,
+        );
+        if (!lineDescriptors) {
+          return null;
+        }
+        const reviewLayout = await this.reviewLayoutForHunkChunked(
+          lineDescriptors,
+          snapshot,
+        );
+        if (!reviewLayout) {
+          return null;
+        }
+        const lineIdentityTokens = [];
+        for (
+          let chunkStart = 0;
+          chunkStart < lineDescriptors.length;
+          chunkStart += chunkSize
+        ) {
+          lineDescriptors
+            .slice(chunkStart, chunkStart + chunkSize)
+            .forEach((line) => {
+              lineIdentityTokens.push(
+                `${line.kind}\u0000${this.Core.normalizeLineBreaks(line.text)}`,
+              );
+            });
+          if (chunkStart + chunkSize < lineDescriptors.length) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+        const lineContextOptions =
+          await this.lineReviewContextOptionsChunked(
+            groupRows,
+            lineDescriptors,
+            headerText,
+            snapshot,
+          );
+        if (!lineContextOptions) {
+          return null;
+        }
+        const layoutBlocks = new Set();
+        for (
+          let chunkStart = 0;
+          chunkStart < lineContextOptions.length;
+          chunkStart += chunkSize
+        ) {
+          lineContextOptions
+            .slice(chunkStart, chunkStart + chunkSize)
+            .forEach((options) => layoutBlocks.add(options?.layoutBlock));
+          if (chunkStart + chunkSize < lineContextOptions.length) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+        const {
+          completionSignature: layoutSignature,
+          occurrenceSignature: layoutOccurrenceSignature,
+        } = this.Core.buildLayoutHunkIdentity({
+          blocks: [...layoutBlocks],
+          headerText,
+        });
+        preparedEntries.push({
+          ...entry,
+          groupRows,
+          headerText,
+          lineDescriptors,
+          lineIdentityTokens,
+          lineContextOptions,
+          layoutOccurrenceSignature,
+          layoutSignature,
+          reviewLayout,
+        });
+        if (
+          (entryIndex + 1) % chunkSize === 0 &&
+          entryIndex + 1 < entries.length
+        ) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+
+      const identicalLineCounts = new Map();
+      let countedLines = 0;
+      const totalLines = preparedEntries.reduce(
+        (total, entry) => total + entry.lineIdentityTokens.length,
+        0,
+      );
+      for (const entry of preparedEntries) {
+        for (const lineIdentityToken of entry.lineIdentityTokens) {
+          identicalLineCounts.set(
+            lineIdentityToken,
+            (identicalLineCounts.get(lineIdentityToken) ?? 0) + 1,
+          );
+          countedLines += 1;
+          if (countedLines % chunkSize === 0 && countedLines < totalLines) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+      }
+
+      const hunkOccurrenceCounts = new Map();
+      const layoutHunkOccurrenceCounts = new Map();
+      const lineOccurrenceCounts = new Map();
+      const hunkInputs = [];
+      let preparedLines = 0;
+      for (const entry of preparedEntries) {
+        const {
+          groupRows,
+          headerText,
+          lineDescriptors,
+          lineIdentityTokens,
+          lineContextOptions,
+          layoutOccurrenceSignature,
+          layoutSignature,
+          reviewLayout,
+        } = entry;
+        const signature = this.Core.buildHunkSignature({
+          headerText,
+          changedLines: lineDescriptors,
+        });
+        const hunkOccurrenceToken = `${filePath}\u0000${signature}`;
+        const occurrence = hunkOccurrenceCounts.get(hunkOccurrenceToken) ?? 0;
+        hunkOccurrenceCounts.set(hunkOccurrenceToken, occurrence + 1);
+        const layoutHunkOccurrenceToken = layoutOccurrenceSignature
+          ? `${filePath}\u0000${layoutOccurrenceSignature}`
+          : null;
+        const layoutOccurrence = layoutHunkOccurrenceToken
+          ? layoutHunkOccurrenceCounts.get(layoutHunkOccurrenceToken) ?? 0
+          : 0;
+        if (layoutHunkOccurrenceToken) {
+          layoutHunkOccurrenceCounts.set(
+            layoutHunkOccurrenceToken,
+            layoutOccurrence + 1,
+          );
+        }
+        const lineInputs = [];
+        for (let index = 0; index < lineDescriptors.length; index += 1) {
+          const lineIdentityToken = lineIdentityTokens[index];
+          const lineOccurrence =
+            lineOccurrenceCounts.get(lineIdentityToken) ?? 0;
+          lineOccurrenceCounts.set(lineIdentityToken, lineOccurrence + 1);
+          lineInputs.push({
+            contextOptions: lineContextOptions[index],
+            identicalCount: identicalLineCounts.get(lineIdentityToken),
+            layout: reviewLayout,
+            line: lineDescriptors[index],
+            lineOccurrence,
+          });
+          preparedLines += 1;
+          if (preparedLines % chunkSize === 0 && preparedLines < totalLines) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+        hunkInputs.push({
+          fileElement,
+          filePath,
+          groupRows,
+          headerText,
+          hunkCell: entry.marker,
+          hunkRow: entry.hunkRow,
+          lineInputs,
+          occurrence,
+          layoutOccurrence,
+          layoutSignature,
+          signature,
+        });
+      }
+      return { filePath, hunkInputs };
+    },
+
+    collectDiscoveredHunkInputs(searchRoot = this.document) {
+      return this.collectDiscoveredHunkFileGroups(searchRoot).map(
+        ([fileElement, entries], fileIndex) =>
+          this.prepareDiscoveredHunkFileInputs(
+            fileElement,
+            entries,
+            fileIndex,
+          ),
       );
     },
 
-    async discoverHunks(searchRoot = this.document) {
-      const discoveredFiles = this.collectDiscoveredHunkInputs(searchRoot);
+    hunkDiscoverySnapshot(
+      searchRoot,
+      { isCurrent = () => true } = {},
+    ) {
+      const fileScoped =
+        searchRoot !== this.document &&
+        searchRoot instanceof this.window.Element;
+      return {
+        diffMutationGeneration: this.diffMutationGeneration,
+        fileMutationGeneration: fileScoped
+          ? this.diffMutationGenerationByFileElement.get(searchRoot) ?? 0
+          : null,
+        fileScoped,
+        isCurrent,
+        yieldedToQueuedTasks: false,
+        reviewScope: this.currentReviewScope,
+        searchRoot,
+        searchRootWasConnected:
+          searchRoot === this.document || Boolean(searchRoot?.isConnected),
+        unscopedDiffMutationGeneration: this.unscopedDiffMutationGeneration,
+      };
+    },
+
+    hunkDiscoverySnapshotIsCurrent(snapshot) {
+      if (
+        this.stopped ||
+        !snapshot.isCurrent() ||
+        (snapshot.fileScoped
+          ? (this.diffMutationGenerationByFileElement.get(
+            snapshot.searchRoot,
+          ) ?? 0) !== snapshot.fileMutationGeneration
+          : this.diffMutationGeneration !== snapshot.diffMutationGeneration) ||
+        (snapshot.fileScoped &&
+          this.unscopedDiffMutationGeneration !==
+            snapshot.unscopedDiffMutationGeneration) ||
+        this.currentReviewScope !== snapshot.reviewScope ||
+        (snapshot.searchRootWasConnected &&
+          snapshot.searchRoot !== this.document &&
+          !snapshot.searchRoot?.isConnected)
+      ) {
+        return false;
+      }
+      return (
+        this.Core.reviewStateScope(
+          this.Core.parseReviewScope(this.window.location),
+          this.Core.parseReviewVariant(this.window.location),
+        ) === snapshot.reviewScope
+      );
+    },
+
+    async yieldForHunkDiscoveryInteraction(snapshot) {
+      // scheduler.yield() resumes its continuation ahead of ordinary queued
+      // tasks. Use one fresh task boundary first so work already waiting on
+      // the page can run, then retain scheduler priority for later chunks.
+      if (snapshot?.yieldedToQueuedTasks) {
+        if (typeof this.window.scheduler?.yield === "function") {
+          await this.window.scheduler.yield();
+          return;
+        }
+      } else if (snapshot) {
+        snapshot.yieldedToQueuedTasks = true;
+      }
+      await new Promise((resolve) => this.window.setTimeout(resolve, 0));
+    },
+
+    async collectDiscoveredHunkInputsChunked(searchRoot, snapshot) {
+      const groupedByFile = new Map();
+      const markers = new Set();
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_FILE_CHUNK_SIZE,
+      );
+      const { candidates, fileRootSelector } =
+        this.hunkDiscoveryRootSelection(searchRoot);
+      const largeCandidates = new Set(
+        candidates.filter((candidate) =>
+          this.hunkDiscoveryRootNeedsRowChunking(candidate),
+        ),
+      );
+      if (largeCandidates.size > 0) {
+        await this.yieldForHunkDiscoveryInteraction(snapshot);
+        if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+          return null;
+        }
+      }
+      const fileRoots = [];
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (this.hunkDiscoveryRootContainsHunk(candidates[index])) {
+          fileRoots.push(candidates[index]);
+        }
+        if (
+          largeCandidates.has(candidates[index]) ||
+          ((index + 1) % chunkSize === 0 &&
+            index + 1 < candidates.length)
+        ) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+      const outermostRoots = this.outermostHunkDiscoveryRoots(
+        fileRoots,
+        fileRootSelector,
+      );
+      const searchRoots = outermostRoots.length > 0
+        ? outermostRoots
+        : [searchRoot];
+      const largeSearchRoots = new Set(
+        searchRoots.filter(
+          (rootNode) =>
+            largeCandidates.has(rootNode) ||
+            this.hunkDiscoveryRootNeedsRowChunking(rootNode),
+        ),
+      );
+      for (let index = 0; index < searchRoots.length; index += 1) {
+        this.collectDiscoveredHunkFileGroup(
+          groupedByFile,
+          markers,
+          searchRoots[index],
+        );
+        if (
+          largeSearchRoots.has(searchRoots[index]) ||
+          ((index + 1) % chunkSize === 0 &&
+            index + 1 < searchRoots.length)
+        ) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+
+      const fileGroups = Array.from(groupedByFile.entries());
+      const discoveredFiles = [];
+      for (let index = 0; index < fileGroups.length; index += 1) {
+        const [fileElement, entries] = fileGroups[index];
+        const discoveredFile =
+          await this.prepareDiscoveredHunkFileInputsChunked(
+            fileElement,
+            entries,
+            index,
+            snapshot,
+          );
+        if (!discoveredFile) {
+          return null;
+        }
+        discoveredFiles.push(discoveredFile);
+        if (
+          (index + 1) % chunkSize === 0 &&
+          index + 1 < fileGroups.length
+        ) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
+      return discoveredFiles;
+    },
+
+    async discoverHunks(
+      searchRoot = this.document,
+      { isCurrent = () => true, snapshot = null } = {},
+    ) {
+      snapshot ??= this.hunkDiscoverySnapshot(searchRoot, { isCurrent });
+      const discoveredFiles =
+        await this.collectDiscoveredHunkInputsChunked(searchRoot, snapshot);
+      if (!discoveredFiles) {
+        return null;
+      }
       const blockFingerprintPromises = new Map();
       const blockFingerprintFor = (contextOptions) => {
         const { block } = contextOptions;
@@ -1235,44 +1924,121 @@ if (globalThis.HunkMarkContent?.extendApp) {
           legacyKey,
         };
       };
-      const hunksByFile = await Promise.all(
-        discoveredFiles.map(async ({ filePath, hunkInputs }) => {
-          const officialSuppressionKey =
-            await this.officialViewedSuppressionKey(filePath);
-          return Promise.all(
-            hunkInputs.map(async (hunk) => ({
-              fileElement: hunk.fileElement,
-              filePath,
-              groupRows: hunk.groupRows,
-              headerText: hunk.headerText,
-              hunkCell: hunk.hunkCell,
-              hunkRow: hunk.hunkRow,
-              key: await this.Core.hunkStorageKey(
-                this.currentReviewScope,
-                filePath,
-                hunk.signature,
-                hunk.occurrence,
-              ),
-              sharedCompletionKey: hunk.layoutSignature
-                ? await this.Core.layoutHunkStorageKey(
-                    this.currentReviewScope,
-                    filePath,
-                    hunk.layoutSignature,
-                    hunk.layoutOccurrence,
-                  )
-                : null,
-              lines: await Promise.all(
-                hunk.lineInputs.map((input) =>
-                  hydrateLine(input, filePath),
-                ),
-              ),
-              officialSuppressionKey,
-            })),
-          );
-        }),
+      const rowChunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_ROW_CHUNK_SIZE,
       );
+      const hydrateHunk = async (hunk, filePath, officialSuppressionKey) => {
+        const keyPromise = this.Core.hunkStorageKey(
+          this.currentReviewScope,
+          filePath,
+          hunk.signature,
+          hunk.occurrence,
+        );
+        const sharedCompletionKeyPromise = hunk.layoutSignature
+          ? this.Core.layoutHunkStorageKey(
+            this.currentReviewScope,
+            filePath,
+            hunk.layoutSignature,
+            hunk.layoutOccurrence,
+          )
+          : Promise.resolve(null);
+        const lines = [];
+        for (
+          let chunkStart = 0;
+          chunkStart < hunk.lineInputs.length;
+          chunkStart += rowChunkSize
+        ) {
+          lines.push(
+            ...(await Promise.all(
+              hunk.lineInputs
+                .slice(chunkStart, chunkStart + rowChunkSize)
+                .map((input) => hydrateLine(input, filePath)),
+            )),
+          );
+          if (chunkStart + rowChunkSize < hunk.lineInputs.length) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+        const [key, sharedCompletionKey] = await Promise.all([
+          keyPromise,
+          sharedCompletionKeyPromise,
+        ]);
+        return {
+          fileElement: hunk.fileElement,
+          filePath,
+          groupRows: hunk.groupRows,
+          headerText: hunk.headerText,
+          hunkCell: hunk.hunkCell,
+          hunkRow: hunk.hunkRow,
+          key,
+          sharedCompletionKey,
+          lines,
+          officialSuppressionKey,
+        };
+      };
+      const hydrateFile = async ({ filePath, hunkInputs }) => {
+        const officialSuppressionKey =
+          await this.officialViewedSuppressionKey(filePath);
+        const hunks = [];
+        for (
+          let chunkStart = 0;
+          chunkStart < hunkInputs.length;
+          chunkStart += rowChunkSize
+        ) {
+          const hydratedHunks = await Promise.all(
+            hunkInputs
+              .slice(chunkStart, chunkStart + rowChunkSize)
+              .map((hunk) =>
+                hydrateHunk(hunk, filePath, officialSuppressionKey),
+              ),
+          );
+          if (hydratedHunks.some((hunk) => hunk === null)) {
+            return null;
+          }
+          hunks.push(...hydratedHunks);
+          if (chunkStart + rowChunkSize < hunkInputs.length) {
+            await this.yieldForHunkDiscoveryInteraction(snapshot);
+            if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+              return null;
+            }
+          }
+        }
+        return hunks;
+      };
+      const chunkSize = Math.max(
+        1,
+        this.constants.HUNK_DISCOVERY_FILE_CHUNK_SIZE,
+      );
+      const hunksByFile = [];
+      for (
+        let chunkStart = 0;
+        chunkStart < discoveredFiles.length;
+        chunkStart += chunkSize
+      ) {
+        const hydratedFiles = await Promise.all(
+          discoveredFiles
+            .slice(chunkStart, chunkStart + chunkSize)
+            .map(hydrateFile),
+        );
+        if (hydratedFiles.some((file) => file === null)) {
+          return null;
+        }
+        hunksByFile.push(...hydratedFiles);
+        if (chunkStart + chunkSize < discoveredFiles.length) {
+          await this.yieldForHunkDiscoveryInteraction(snapshot);
+          if (!this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
+            return null;
+          }
+        }
+      }
 
-      return hunksByFile.flat();
+      return this.hunkDiscoverySnapshotIsCurrent(snapshot)
+        ? hunksByFile.flat()
+        : null;
     },
 
     discoverCachedHunks(searchRoot = this.document) {

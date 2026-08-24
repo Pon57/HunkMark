@@ -3,9 +3,14 @@
 if (globalThis.HunkMarkContent?.extendApp) {
   globalThis.HunkMarkContent.extendApp({
     async reconcileNewReviewControllers({
+      deferStorageMigrations = false,
       expansionAssessmentByController,
+      isCurrent = () => true,
       newControllers,
     }) {
+      if (!isCurrent()) {
+        return false;
+      }
       if (newControllers.length === 0) {
         return true;
       }
@@ -13,12 +18,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (!this.reviewControllerIsCurrent(controller)) {
           return;
         }
-        controller.input.disabled = false;
-        controller.lines.forEach((line) => {
-          if (line.control) {
-            line.control.disabled = false;
-          }
-        });
+        this.enableControllerReviewControlsWhenSafe(controller);
         this.applyControllerAppearance(controller);
       };
       const failClosedControllerReviewControls = (controller) => {
@@ -74,9 +74,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         ]),
       ];
       let migrationError = null;
+      let migrationPersistenceNeeded = false;
       let migrationReadCompleted = false;
+      let reconciliationCanceled = false;
       await this.withReviewStorageLock(async () => {
         const stored = await this.getLocalStorage(keys);
+        if (!isCurrent()) {
+          reconciliationCanceled = true;
+          return;
+        }
         migrationReadCompleted = true;
         const migrations = {};
         const migrationRemovals = new Set();
@@ -393,15 +399,39 @@ if (globalThis.HunkMarkContent?.extendApp) {
         Object.keys(migrations).forEach((key) =>
           migrationRemovals.delete(key),
         );
-        await this.mutateReviewStorageUnlocked({
-          values: migrations,
-          removals: Array.from(migrationRemovals),
-          scope: this.currentReviewScope,
-          now: migrationTime,
-        });
+        migrationPersistenceNeeded = Boolean(
+          Object.keys(migrations).length > 0 ||
+            migrationRemovals.size > 0,
+        );
+        if (!deferStorageMigrations) {
+          const persisted = await this.mutateReviewStorageUnlocked({
+            isCurrent,
+            values: migrations,
+            removals: Array.from(migrationRemovals),
+            scope: this.currentReviewScope,
+            now: migrationTime,
+          });
+          reconciliationCanceled ||= !persisted;
+        }
+      }, {
+        mode: deferStorageMigrations ? "shared" : "exclusive",
       }).catch((error) => {
         migrationError = error;
       });
+      if (reconciliationCanceled || !isCurrent()) {
+        return false;
+      }
+      if (
+        !migrationError &&
+        deferStorageMigrations &&
+        migrationPersistenceNeeded
+      ) {
+        return this.reconcileNewReviewControllers({
+          expansionAssessmentByController,
+          isCurrent,
+          newControllers,
+        });
+      }
       if (migrationError) {
         if (!migrationReadCompleted) {
           const failedIntents = new Set(

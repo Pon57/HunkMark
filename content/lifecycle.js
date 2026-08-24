@@ -171,8 +171,614 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.document.body.append(notice);
     },
 
+    diffLoadFileElementForNode(node) {
+      const element =
+        node?.nodeType === this.window.Node.ELEMENT_NODE
+          ? node
+          : node?.parentElement;
+      if (!(element instanceof this.window.Element)) {
+        return null;
+      }
+
+      const currentRegionSelector =
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR;
+      const currentRegion = element.matches(currentRegionSelector)
+        ? element
+        : element.closest(currentRegionSelector);
+      if (currentRegion) {
+        return currentRegion;
+      }
+      const fileSelector = this.constants.FILE_CONTAINER_SELECTOR;
+      return element.matches(fileSelector)
+        ? element
+        : element.closest(fileSelector);
+    },
+
+    diffLoadFileElementsForMutation(mutation) {
+      const fileElements = new Set();
+      const remember = (node, { includeDescendants = false } = {}) => {
+        const direct = this.diffLoadFileElementForNode(node);
+        if (direct) {
+          fileElements.add(direct);
+          return;
+        }
+        if (
+          !includeDescendants ||
+          typeof node?.querySelectorAll !== "function"
+        ) {
+          return;
+        }
+        const currentRegions = Array.from(
+          node.querySelectorAll(
+            this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+          ),
+        ).filter((candidate) => candidate.isConnected);
+        if (currentRegions.length > 0) {
+          currentRegions.forEach((candidate) => fileElements.add(candidate));
+          return;
+        }
+        node
+          .querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR)
+          .forEach((candidate) => {
+            if (candidate.isConnected) {
+              fileElements.add(candidate);
+            }
+          });
+      };
+
+      remember(mutation.target);
+      [...mutation.addedNodes, ...mutation.removedNodes].forEach((node) =>
+        remember(node, { includeDescendants: true }),
+      );
+      return fileElements;
+    },
+
+    diffLoadFileElementsForMutations(
+      mutations,
+      expectedFileElements = [],
+    ) {
+      const fileElements = new Set(
+        Array.from(expectedFileElements).filter(
+          (fileElement) => fileElement instanceof this.window.Element,
+        ),
+      );
+      for (const mutation of mutations) {
+        const mutationFileElements =
+          this.diffLoadFileElementsForMutation(mutation);
+        if (mutationFileElements.size === 0) {
+          return null;
+        }
+        mutationFileElements.forEach((fileElement) =>
+          fileElements.add(fileElement),
+        );
+      }
+      return fileElements.size > 0 ? fileElements : null;
+    },
+
+    activeDiffLoadFileElements() {
+      const fileElements = new Set();
+      this.document
+        .querySelectorAll(this.constants.ACTIVE_DIFF_LOADING_SELECTOR)
+        .forEach((loadingElement) => {
+          const fileElement =
+            this.diffLoadFileElementForNode(loadingElement);
+          if (
+            fileElement?.isConnected &&
+            this.fileDiffHasActiveLoadingContent(fileElement)
+          ) {
+            fileElements.add(fileElement);
+          }
+        });
+      return fileElements;
+    },
+
+    unsettledDiffLoadReviewSuspensionPaths() {
+      const filePaths = new Set();
+      this.activeDiffLoadFileElements().forEach((fileElement) => {
+        const filePath =
+          this.currentFilePathEvidence(fileElement) ??
+          this.knownFilePath(fileElement);
+        if (filePath) {
+          filePaths.add(filePath);
+        }
+      });
+      // A loader can disappear in the same host batch that renders a partial
+      // file. Its deferred record remains authoritative through quiet settle;
+      // identities are not final until the record is cleared for full refresh.
+      this.deferredDiffLoadRefreshes.forEach((_, filePath) =>
+        filePaths.add(filePath),
+      );
+      return filePaths;
+    },
+
+    diffLoadFilePath(fileElement) {
+      const currentPath = this.currentFilePathEvidence(fileElement);
+      if (currentPath) {
+        return this.rememberFileIdentity(fileElement, currentPath);
+      }
+      const knownPath = this.knownFilePath(fileElement);
+      if (knownPath) {
+        return knownPath;
+      }
+      const legacyFileElements = Array.from(
+        this.document.querySelectorAll(
+          this.constants.FILE_CONTAINER_SELECTOR,
+        ),
+      );
+      const fallbackIndex = legacyFileElements.indexOf(fileElement);
+      const path = this.resolveFilePath(
+        fileElement,
+        fallbackIndex >= 0 ? fallbackIndex : 0,
+      );
+      return path?.startsWith("unknown-file:") ? null : path;
+    },
+
+    mutationPreservesFileHeaderReviewIdentity(mutation) {
+      const target =
+        mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target?.parentElement;
+      if (!(target instanceof this.window.Element)) {
+        return false;
+      }
+      const fileHeader = target.matches(this.constants.FILE_HEADER_SELECTOR)
+        ? target
+        : target.closest(this.constants.FILE_HEADER_SELECTOR);
+      const fileElement = this.diffLoadFileElementForNode(target);
+      const knownFilePath = fileElement && this.knownFilePath(fileElement);
+      if (
+        !fileHeader ||
+        !fileElement ||
+        !knownFilePath ||
+        this.currentFilePathEvidence(fileElement) !== knownFilePath
+      ) {
+        return false;
+      }
+      const structuralSelector = [
+        this.constants.FILE_PATH_METADATA_SELECTOR,
+        this.constants.FILE_CONTAINER_SELECTOR,
+        this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR,
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        this.constants.ROW_CANDIDATE_SELECTOR,
+      ].join(", ");
+      return [...mutation.addedNodes, ...mutation.removedNodes].every((node) => {
+        if (node.nodeType !== this.window.Node.ELEMENT_NODE) {
+          return true;
+        }
+        return (
+          !node.matches(structuralSelector) &&
+          !node.querySelector(structuralSelector)
+        );
+      });
+    },
+
+    mutationCanWaitForDiffLoad(mutation) {
+      const target =
+        mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target?.parentElement;
+      if (!(target instanceof this.window.Element)) {
+        return false;
+      }
+      if (this.mutationPreservesFileHeaderReviewIdentity(mutation)) {
+        return true;
+      }
+      const trackedIdentitySelector = [
+        this.constants.ROW_CANDIDATE_SELECTOR,
+        this.constants.HUNK_ELEMENT_SELECTOR,
+        "td.blob-code-addition",
+        "td.blob-code-deletion",
+        ".diff-text-cell",
+        ".hunkmark-line-cell",
+        "[data-line-anchor]",
+        '[role="gridcell"]',
+      ].join(", ");
+      const isTrackedIdentity = (element) => {
+        if (
+          this.controllersByRow.has(element) ||
+          this.lineControllersByElement.has(element)
+        ) {
+          return true;
+        }
+        const row = this.semanticRow(element);
+        return Boolean(
+          (row && this.controllersByRow.has(row)) ||
+          this.knownLineControllerForMutationTarget(element),
+        );
+      };
+      let removesTrackedIdentity = false;
+      for (const node of mutation.removedNodes) {
+        if (node.nodeType !== this.window.Node.ELEMENT_NODE) {
+          continue;
+        }
+        if (isTrackedIdentity(node)) {
+          removesTrackedIdentity = true;
+          break;
+        }
+        for (const element of node.querySelectorAll(
+          trackedIdentitySelector,
+        )) {
+          if (isTrackedIdentity(element)) {
+            removesTrackedIdentity = true;
+            break;
+          }
+        }
+        if (removesTrackedIdentity) {
+          break;
+        }
+      }
+      // Loader presence must never hide a semantic mutation inside an existing
+      // review identity. Those changes remain fail-closed and refresh now.
+      if (
+        removesTrackedIdentity ||
+        this.knownLineControllerForMutationTarget(target)
+      ) {
+        return false;
+      }
+      if (
+        target.matches(".diff-text-cell") ||
+        target.closest(".diff-text-cell")
+      ) {
+        return false;
+      }
+      if (
+        target.matches(this.constants.FILE_HEADER_SELECTOR) ||
+        target.closest(this.constants.FILE_HEADER_SELECTOR) ||
+        target.matches(this.constants.HUNK_ELEMENT_SELECTOR) ||
+        target.closest(this.constants.HUNK_ELEMENT_SELECTOR)
+      ) {
+        return false;
+      }
+      return true;
+    },
+
+    resetDiffLoadFileControllers(filePath, fileElement) {
+      const affectedControllers = Array.from(
+        this.controllersByRow.values(),
+      ).filter(
+        (controller) =>
+          controller.filePath === filePath ||
+          controller.fileElement === fileElement,
+      );
+      const fileElements = new Set(
+        affectedControllers.map((controller) => controller.fileElement),
+      );
+      affectedControllers.forEach((controller) =>
+        this.destroyController(controller),
+      );
+      fileElements.forEach((fileElement) =>
+        this.removeFileProgress(fileElement),
+      );
+      return affectedControllers.length;
+    },
+
+    cancelDeferredDiffLoadRefreshSettlement() {
+      if (this.deferredDiffLoadRefreshSettleTimer !== null) {
+        this.window.clearTimeout(this.deferredDiffLoadRefreshSettleTimer);
+        this.deferredDiffLoadRefreshSettleTimer = null;
+      }
+    },
+
+    cancelDiffLoadHydrations() {
+      if (this.diffLoadHydrationViewportTimer !== null) {
+        this.window.clearTimeout(this.diffLoadHydrationViewportTimer);
+        this.diffLoadHydrationViewportTimer = null;
+      }
+      if (this.diffLoadHydrationReflowTimer !== null) {
+        this.window.clearTimeout(this.diffLoadHydrationReflowTimer);
+        this.diffLoadHydrationReflowTimer = null;
+      }
+      this.diffLoadHydrations.forEach(({ timerId }) =>
+        this.window.clearTimeout(timerId),
+      );
+      this.diffLoadHydrations.clear();
+    },
+
+    clearDeferredDiffLoadRefreshes() {
+      this.cancelDiffLoadHydrations();
+      this.cancelDeferredDiffLoadRefreshSettlement();
+      if (this.deferredDiffLoadRefreshTimer !== null) {
+        this.window.clearTimeout(this.deferredDiffLoadRefreshTimer);
+        this.deferredDiffLoadRefreshTimer = null;
+      }
+      this.deferredDiffLoadRefreshes.forEach((record) =>
+        record.attributeObserver?.disconnect(),
+      );
+      this.deferredDiffLoadRefreshes.clear();
+      this.diffLoadHydrationBatchBootstrapped = false;
+    },
+
+    ensureDeferredDiffLoadRefreshTimeout() {
+      if (this.deferredDiffLoadRefreshTimer !== null) {
+        return;
+      }
+      this.deferredDiffLoadRefreshTimer = this.window.setTimeout(() => {
+        this.deferredDiffLoadRefreshTimer = null;
+        const deferred = this.deferredDiffLoadRefreshes.size > 0;
+        this.deferredDiffLoadRefreshTimedOut ||= deferred;
+        this.clearDeferredDiffLoadRefreshes();
+        if (deferred && !this.stopped) {
+          this.scheduleRefresh();
+        }
+      }, this.constants.DIFF_LOAD_REFRESH_MAX_WAIT_MS);
+    },
+
+    deferredDiffLoadRecordAwaitsReplacement(fileElement) {
+      return Boolean(
+        !fileElement.isConnected &&
+          this.fileRevealPrepaintRestores.get(fileElement)
+            ?.waitForResolvedContent,
+      );
+    },
+
+    pruneDisconnectedDeferredDiffLoadRefreshes() {
+      let pruned = 0;
+      for (const [filePath, record] of this.deferredDiffLoadRefreshes) {
+        if (
+          record.fileElement.isConnected ||
+          this.deferredDiffLoadRecordAwaitsReplacement(record.fileElement)
+        ) {
+          continue;
+        }
+        record.attributeObserver?.disconnect();
+        this.deferredDiffLoadRefreshes.delete(filePath);
+        pruned += 1;
+      }
+      return pruned;
+    },
+
+    deferredDiffLoadStatus() {
+      const status = {
+        active: false,
+        pruned: this.pruneDisconnectedDeferredDiffLoadRefreshes(),
+      };
+      for (const { fileElement } of this.deferredDiffLoadRefreshes.values()) {
+        if (this.deferredDiffLoadRecordAwaitsReplacement(fileElement)) {
+          status.active = true;
+          continue;
+        }
+        const explicitRestore = Boolean(
+          this.fileRevealPrepaintRestores.get(fileElement)
+            ?.waitForResolvedContent,
+        );
+        const explicitUnresolvedSkeleton = Boolean(
+          explicitRestore &&
+            this.fileDiffHasUnresolvedContent(fileElement) &&
+            this.findHunkMarkers(fileElement).length === 0,
+        );
+        const active =
+          this.fileDiffHasActiveLoadingContent(fileElement) ||
+          explicitUnresolvedSkeleton;
+        status.active ||= active;
+      }
+      return status;
+    },
+
+    scheduleDeferredDiffLoadRefreshSettlement() {
+      this.cancelDeferredDiffLoadRefreshSettlement();
+      this.deferredDiffLoadRefreshSettleTimer = this.window.setTimeout(() => {
+        this.deferredDiffLoadRefreshSettleTimer = null;
+        if (this.stopped) {
+          return;
+        }
+        const status = this.deferredDiffLoadStatus();
+        if (this.deferredDiffLoadRefreshes.size === 0) {
+          if (status.pruned > 0) {
+            this.clearDeferredDiffLoadRefreshes();
+            this.scheduleRefresh({ immediate: true });
+          }
+          return;
+        }
+        if (status.active) {
+          this.ensureDeferredDiffLoadRefreshTimeout();
+          return;
+        }
+        this.clearDeferredDiffLoadRefreshes();
+        this.scheduleRefresh({ immediate: true });
+      }, this.constants.DIFF_LOAD_REFRESH_SETTLE_MS);
+    },
+
+    rememberDeferredDiffLoadRefresh(filePath, fileElement) {
+      const previous = this.deferredDiffLoadRefreshes.get(filePath);
+      if (previous?.fileElement === fileElement) {
+        return previous;
+      }
+      previous?.attributeObserver?.disconnect();
+      const record = {
+        attributeObserver: null,
+        fileElement,
+      };
+      if (typeof this.window.MutationObserver === "function") {
+        record.attributeObserver = new this.window.MutationObserver(() => {
+          if (this.deferredDiffLoadRefreshes.get(filePath) !== record) {
+            return;
+          }
+          this.settleDeferredDiffLoadRefreshes();
+        });
+        record.attributeObserver.observe(fileElement, {
+          attributeFilter: ["aria-label"],
+          attributes: true,
+        });
+      }
+      this.deferredDiffLoadRefreshes.set(filePath, record);
+      return record;
+    },
+
+    settleDeferredDiffLoadFile(filePath, fileElement) {
+      const record = this.deferredDiffLoadRefreshes.get(filePath);
+      if (
+        record?.fileElement !== fileElement ||
+        !fileElement.isConnected ||
+        this.fileDiffHasActiveLoadingContent(fileElement)
+      ) {
+        return false;
+      }
+      record.attributeObserver?.disconnect();
+      this.deferredDiffLoadRefreshes.delete(filePath);
+      this.restoreDiffMutationSuspendedReviewControls({
+        keepFilePaths: this.unsettledDiffLoadReviewSuspensionPaths(),
+      });
+      if (this.deferredDiffLoadRefreshes.size === 0 && !this.stopped) {
+        this.clearDeferredDiffLoadRefreshes();
+        this.scheduleRefresh({ immediate: true });
+      }
+      return true;
+    },
+
+    settleDeferredDiffLoadRefreshes() {
+      const status = this.deferredDiffLoadStatus();
+      if (this.stopped) {
+        return false;
+      }
+      if (this.deferredDiffLoadRefreshes.size === 0) {
+        if (status.pruned > 0) {
+          this.clearDeferredDiffLoadRefreshes();
+          this.scheduleRefresh({ immediate: true });
+          return true;
+        }
+        return false;
+      }
+      if (status.active) {
+        // Keep the bounded per-file queue intact while any loader remains.
+        // Clearing it on every quiet gap would bootstrap the same active
+        // batch repeatedly; the max timeout remains the fail-closed bound.
+        this.ensureDeferredDiffLoadRefreshTimeout();
+        this.cancelDeferredDiffLoadRefreshSettlement();
+        return false;
+      }
+      this.scheduleDeferredDiffLoadRefreshSettlement();
+      return true;
+    },
+
+    deferRefreshForActiveDiffLoads(
+      mutations,
+      expectedFileElements = [],
+    ) {
+      // GitHub can publish several structurally valid DOMs while one or more
+      // large files load. Track those files across root replacement so a
+      // whole-page discovery runs once after the loading contract settles.
+      const fileElements = this.diffLoadFileElementsForMutations(
+        mutations,
+        expectedFileElements,
+      );
+      if (!fileElements) {
+        this.clearDeferredDiffLoadRefreshes();
+        return false;
+      }
+      const directlyAffectedFilePaths = new Set(
+        Array.from(
+          fileElements,
+          (fileElement) => this.diffLoadFilePath(fileElement),
+        ).filter(Boolean),
+      );
+      this.activeDiffLoadFileElements().forEach((fileElement) =>
+        fileElements.add(fileElement),
+      );
+
+      const unsafeFilePaths = new Set();
+      for (const mutation of mutations) {
+        if (this.mutationCanWaitForDiffLoad(mutation)) {
+          continue;
+        }
+        const mutationFilePaths = new Set(
+          Array.from(
+            this.diffLoadFileElementsForMutation(mutation),
+            (fileElement) => this.diffLoadFilePath(fileElement),
+          ).filter(Boolean),
+        );
+        if (mutationFilePaths.size === 0) {
+          this.clearDeferredDiffLoadRefreshes();
+          return false;
+        }
+        mutationFilePaths.forEach((filePath) =>
+          unsafeFilePaths.add(filePath),
+        );
+      }
+
+      const fileElementsByPath = new Map();
+      for (const fileElement of fileElements) {
+        const filePath = this.diffLoadFilePath(fileElement);
+        if (!filePath) {
+          this.clearDeferredDiffLoadRefreshes();
+          return false;
+        }
+        const previous = fileElementsByPath.get(filePath);
+        if (
+          !previous ||
+          (!previous.isConnected && fileElement.isConnected)
+        ) {
+          fileElementsByPath.set(filePath, fileElement);
+        }
+      }
+      const files = Array.from(
+        fileElementsByPath,
+        ([filePath, fileElement]) => ({
+          active:
+            this.fileDiffHasActiveLoadingContent(fileElement) ||
+            Boolean(
+              this.fileRevealPrepaintRestores.get(fileElement)
+                ?.waitForResolvedContent &&
+                this.fileDiffHasUnresolvedContent(fileElement) &&
+                this.findHunkMarkers(fileElement).length === 0,
+            ),
+          fileElement,
+          filePath,
+          unsafe: unsafeFilePaths.has(filePath),
+        }),
+      );
+      this.pruneDisconnectedDeferredDiffLoadRefreshes();
+      const previouslyTrackedFilePaths = new Set(
+        this.deferredDiffLoadRefreshes.keys(),
+      );
+      const trackBatch =
+        this.deferredDiffLoadRefreshes.size > 0 ||
+        files.some(({ active }) => active);
+      if (!trackBatch) {
+        this.clearDeferredDiffLoadRefreshes();
+        return false;
+      }
+
+      files
+        .filter(
+          ({ fileElement }) =>
+            fileElement.isConnected ||
+            this.deferredDiffLoadRecordAwaitsReplacement(fileElement),
+        )
+        .forEach(({ fileElement, filePath }) =>
+          this.rememberDeferredDiffLoadRefresh(filePath, fileElement),
+        );
+      files.forEach(({ fileElement, filePath, unsafe }) => {
+        if (unsafe) {
+          this.resetDiffLoadFileControllers(filePath, fileElement);
+        }
+        if (
+          fileElement.isConnected &&
+          (directlyAffectedFilePaths.has(filePath) ||
+            !previouslyTrackedFilePaths.has(filePath))
+        ) {
+          this.scheduleDiffLoadFileHydration(filePath, fileElement);
+        }
+      });
+      if (this.deferredDiffLoadRefreshes.size === 0) {
+        return false;
+      }
+      if (this.deferredDiffLoadStatus().active) {
+        this.ensureDeferredDiffLoadRefreshTimeout();
+        this.cancelDeferredDiffLoadRefreshSettlement();
+        return true;
+      }
+
+      this.scheduleDeferredDiffLoadRefreshSettlement();
+      return true;
+    },
+
     scheduleRefresh({ immediate = false } = {}) {
       if (this.stopped) {
+        return;
+      }
+
+      if (this.diffLoadHydrationRunningStates.size > 0) {
+        this.refreshAfterDiffLoadHydrations = true;
         return;
       }
 
@@ -214,6 +820,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             this.refreshAgainImmediate = false;
             this.scheduleRefresh({ immediate: rerunImmediately });
           }
+          this.pumpDiffLoadFileHydrations();
         }
       };
       if (immediate) {
@@ -449,6 +1056,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return false;
       }
       this.cancelStickyHunkReturn();
+      this.cancelScheduledProgressUpdate();
+      this.deferredDiffLoadRefreshTimedOut = false;
+      this.refreshAfterDiffLoadHydrations = false;
+      this.clearDeferredDiffLoadRefreshes();
       this.lastObservedUrl = nextUrl;
       this.scheduleRefresh();
       return true;
@@ -479,25 +1090,89 @@ if (globalThis.HunkMarkContent?.extendApp) {
         // Host DOM outside the diff can still move every cached hunk origin.
         // Invalidate positions without paying for an unrelated rediscovery.
         this.invalidateVisibleStickyHunkOrigins();
+        this.scheduleViewportHydrationReflowPriority();
       }
+      const generationHostDiffMutations = hostMutations.filter((mutation) => {
+        if (expectedFileDiffVisibility.changed) {
+          const fileElements =
+            this.diffLoadFileElementsForMutation(mutation);
+          if (
+            fileElements.size > 0 &&
+            Array.from(fileElements).every((fileElement) =>
+              expectedFileDiffVisibility.fileElements.has(fileElement),
+            )
+          ) {
+            return false;
+          }
+        }
+        return this.mutationAffectsDiff(mutation);
+      });
       const hostDiffMutations = expectedFileDiffVisibility.changed
-        ? []
-        : hostMutations.filter(
-            (mutation) => this.mutationAffectsDiff(mutation),
-          );
+        ? generationHostDiffMutations.filter((mutation) => {
+            const fileElements =
+              this.diffLoadFileElementsForMutation(mutation);
+            return (
+              fileElements.size === 0 ||
+              Array.from(fileElements).some(
+                (fileElement) =>
+                  !expectedFileDiffVisibility.fileElements.has(fileElement),
+              )
+            );
+          })
+        : generationHostDiffMutations;
+      const expectedVisibilityHasHostMutation = Boolean(
+        expectedFileDiffVisibility.changed &&
+          hostMutations.some(
+            (mutation) =>
+              this.diffLoadFileElementsForMutation(mutation).size > 0,
+          ),
+      );
       if (
         expectedFileDiffVisibility.changed ||
         hostDiffMutations.length > 0
       ) {
+        const identityUnsafeMutation =
+          expectedVisibilityHasHostMutation ||
+          hostDiffMutations.some(
+            (mutation) => !this.mutationCanWaitForDiffLoad(mutation),
+          );
+        const mutationFileElements = new Set(
+          expectedFileDiffVisibility.fileElements,
+        );
+        let hasUnscopedDiffMutation = Boolean(
+          expectedFileDiffVisibility.changed &&
+            mutationFileElements.size === 0,
+        );
+        generationHostDiffMutations.forEach((mutation) => {
+          const fileElements = this.diffLoadFileElementsForMutation(mutation);
+          if (fileElements.size === 0) {
+            hasUnscopedDiffMutation = true;
+            return;
+          }
+          fileElements.forEach((fileElement) =>
+            mutationFileElements.add(fileElement),
+          );
+        });
+        let affectedFilePaths;
+        this.diffMutationGeneration += 1;
+        mutationFileElements.forEach((fileElement) => {
+          this.diffMutationGenerationByFileElement.set(
+            fileElement,
+            (this.diffMutationGenerationByFileElement.get(fileElement) ?? 0) +
+              1,
+          );
+        });
+        if (hasUnscopedDiffMutation) {
+          this.unscopedDiffMutationGeneration += 1;
+        }
         const activeHostContextExpansionIntents =
           this.activeHostContextExpansionIntents();
         let pendingHostContextExpansionIntents = [];
         if (activeHostContextExpansionIntents.length > 0) {
-          const affectedFilePaths =
-            this.hostContextExpansionMutationFilePaths(
-              hostDiffMutations,
-              expectedFileDiffVisibility.fileElements,
-            );
+          affectedFilePaths = this.hostContextExpansionMutationFilePaths(
+            hostDiffMutations,
+            expectedFileDiffVisibility.fileElements,
+          );
           pendingHostContextExpansionIntents =
             activeHostContextExpansionIntents.filter(
               (intent) =>
@@ -548,14 +1223,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
           restoreRoot !== this.document &&
           restored &&
           !this.fileRevealPrepaintRestores.has(restoreRoot);
-        this.scheduleRefresh({
-          immediate:
-            !expectedHideOnly &&
-            (hostContextExpansionPending ||
-              progressRemoved ||
-              (!canDeferRefresh &&
-                (expectedFileDiffVisibility.changed || restored))),
-        });
+        const diffLoadExpectedRoots =
+          uniqueExpectedRestoreRoots.length > 0
+            ? uniqueExpectedRestoreRoots
+            : expectedFileDiffVisibility.fileElements;
+        const refreshDeferredForDiffLoad =
+          !expectedHideOnly &&
+          !hostContextExpansionPending &&
+          this.deferRefreshForActiveDiffLoads(
+            hostDiffMutations,
+            diffLoadExpectedRoots,
+          );
+        if (identityUnsafeMutation) {
+          affectedFilePaths ??=
+            this.hostContextExpansionMutationFilePaths(
+              hostDiffMutations,
+              expectedFileDiffVisibility.fileElements,
+            );
+          this.suspendReviewControllersForDiffMutation(affectedFilePaths);
+        }
+        if (refreshDeferredForDiffLoad) {
+          this.suspendReviewControllersForDiffMutation(
+            this.unsettledDiffLoadReviewSuspensionPaths(),
+            { allowFileReveal: true },
+          );
+        }
+        if (expectedHideOnly || hostContextExpansionPending) {
+          this.clearDeferredDiffLoadRefreshes();
+        }
+        if (!refreshDeferredForDiffLoad) {
+          this.scheduleRefresh({
+            immediate:
+              !expectedHideOnly &&
+              (hostContextExpansionPending ||
+                progressRemoved ||
+                (!canDeferRefresh &&
+                  (expectedFileDiffVisibility.changed || restored))),
+          });
+        }
       }
     },
 
@@ -588,7 +1293,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.handleFileVisibilityClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
       this.boundNavigationChange = () => this.checkForNavigation();
-      this.boundStickyHunkLayout = () => this.scheduleStickyHunkLayout();
+      this.boundStickyHunkLayout = () => {
+        this.scheduleStickyHunkLayout();
+        this.scheduleViewportHydrationPriority();
+      };
       this.boundStickyHunkNavigationIntent = () => {
         if (this.hunkStickyStateByFile.size > 0) {
           this.cancelStickyHunkReturn();
@@ -604,7 +1312,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
           void this.finishLineDrag(true);
         }
       };
-
       this.chrome.storage.onChanged.addListener(this.boundStorageChanged);
       this.observer = new this.window.MutationObserver((mutations) => {
         try {
@@ -710,6 +1417,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.refreshQueued = false;
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;
+      this.refreshAfterDiffLoadHydrations = false;
+      this.cancelScheduledProgressUpdate();
+      this.clearDeferredDiffLoadRefreshes();
+      this.deferredDiffLoadRefreshTimedOut = false;
       this.reviewAppearancePersistenceCountByController.clear();
       this.clearAllHostContextExpansionIntents();
       this.observer?.disconnect();

@@ -773,6 +773,36 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
     },
 
+    cancelScheduledProgressUpdate() {
+      if (this.progressUpdateTimer !== null) {
+        this.window.clearTimeout(this.progressUpdateTimer);
+        this.progressUpdateTimer = null;
+      }
+      this.pendingProgressControllers.clear();
+    },
+
+    scheduleProgressUpdate(controllers) {
+      if (this.stopped) {
+        return;
+      }
+      Array.from(controllers).forEach((controller) =>
+        this.pendingProgressControllers.add(controller),
+      );
+      if (this.progressUpdateTimer !== null) {
+        return;
+      }
+      this.progressUpdateTimer = this.window.setTimeout(() => {
+        this.progressUpdateTimer = null;
+        if (!this.stopped) {
+          const pendingControllers = Array.from(
+            this.pendingProgressControllers,
+          ).filter((controller) => this.reviewControllerIsCurrent(controller));
+          this.pendingProgressControllers.clear();
+          this.updateProgressForControllers(pendingControllers);
+        }
+      }, this.constants.PROGRESS_UPDATE_DELAY_MS);
+    },
+
     updateProgressForControllers(controllers) {
       const affectedFileElements = new Set(
         Array.from(controllers, (controller) => controller.fileElement),

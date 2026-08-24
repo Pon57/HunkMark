@@ -119,14 +119,17 @@ if (globalThis.HunkMarkContent?.extendApp) {
         : this.constants.REVIEW_STORAGE_LOCK_NAME;
     },
 
-    async withReviewStorageLock(callback) {
+    async withReviewStorageLock(
+      callback,
+      { mode = "exclusive" } = {},
+    ) {
       const lockManager = this.window?.navigator?.locks;
       if (typeof lockManager?.request !== "function") {
         return callback();
       }
       return lockManager.request(
         this.reviewStorageLockName(),
-        { mode: "exclusive" },
+        { mode },
         () => callback(),
       );
     },
@@ -189,13 +192,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     async mutateReviewStorageUnlocked({
+      isCurrent = null,
       values = {},
       removals = [],
       scope = this.currentReviewScope,
       now = Date.now(),
     } = {}) {
+      const mutationIsCurrent = isCurrent ?? (() => true);
+      const cancellationPossible = isCurrent !== null;
       ({ now, values } =
         await this.sharedHunkCompletionMutationWithStoredState(values, now));
+      if (!mutationIsCurrent()) {
+        return false;
+      }
       const storedKeys = Object.keys(values);
       const invalidLineKey = storedKeys.find(
         (key) =>
@@ -214,33 +223,65 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (key) => typeof key === "string" && !storedKeySet.has(key),
       );
       const mutationKeySet = new Set([...storedKeys, ...removalKeys]);
-      if (storedKeys.length > 0 && removalKeys.length > 0) {
+      if (
+        storedKeys.length > 0 &&
+        (cancellationPossible || removalKeys.length > 0)
+      ) {
         const contextScope = this.Core.reviewContextScope(scope);
         if (contextScope) {
           mutationKeySet.add(
             await this.Core.reviewContextMetadataKey(contextScope),
           );
+          if (!mutationIsCurrent()) {
+            return false;
+          }
         }
       }
       const mutationKeys = [...mutationKeySet];
       const previousValues =
-        storedKeys.length > 0 && removalKeys.length > 0
+        mutationKeys.length > 0 &&
+        (cancellationPossible ||
+          (storedKeys.length > 0 && removalKeys.length > 0))
           ? await this.getLocalStorage(mutationKeys)
           : null;
+      if (!mutationIsCurrent()) {
+        return false;
+      }
       let valuesStored = false;
+      const rollbackCanceledMutation = async () => {
+        if (previousValues) {
+          await this.restoreReviewStorageSnapshotUnlocked(
+            previousValues,
+            mutationKeys,
+          );
+        }
+        return false;
+      };
 
       try {
         if (storedKeys.length > 0) {
-          await this.setReviewStorageUnlocked(
+          const stored = await this.setReviewStorageUnlocked(
             values,
             scope,
             now,
-            { prune: false },
+            { isCurrent: mutationIsCurrent, prune: false },
           );
+          if (!stored) {
+            return false;
+          }
           valuesStored = true;
+          if (!mutationIsCurrent()) {
+            return rollbackCanceledMutation();
+          }
         }
         if (removalKeys.length > 0) {
+          if (!mutationIsCurrent()) {
+            return rollbackCanceledMutation();
+          }
           await this.removeReviewStorageUnlocked(removalKeys);
+          if (!mutationIsCurrent()) {
+            return rollbackCanceledMutation();
+          }
         }
       } catch (error) {
         if (valuesStored && previousValues) {
@@ -282,6 +323,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
           }
         }
       }
+      if (!mutationIsCurrent()) {
+        return rollbackCanceledMutation();
+      }
+      return true;
     },
 
     async setReviewStorageValuesUnlocked(values) {
@@ -337,7 +382,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       values,
       scope = this.currentReviewScope,
       now = Date.now(),
-      { prune = true } = {},
+      { isCurrent = () => true, prune = true } = {},
     ) {
       const contextScope = this.Core.reviewContextScope(scope);
       const contextId = contextScope
@@ -346,6 +391,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const previousAccess = contextId
         ? this.reviewContextAccessedAtById.get(contextId)
         : null;
+      if (!isCurrent()) {
+        return false;
+      }
       const shouldRecordAccess =
         contextId &&
         (!Number.isFinite(previousAccess) ||
@@ -379,6 +427,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           now,
         });
       }
+      return true;
     },
 
     async touchReviewContextAccess(

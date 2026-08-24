@@ -93,6 +93,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
         event.stopPropagation(),
       );
       input.addEventListener("change", () => {
+        if (this.reviewControllerIsSuspended(controller)) {
+          input.checked = controller.marked;
+          input.disabled = true;
+          return;
+        }
         void this.setHunkViewed(controller, input.checked, {
           returnToOriginFromSticky:
             input.checked &&
@@ -102,6 +107,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         });
       });
       collapseButton.addEventListener("click", () => {
+        if (this.reviewControllerIsSuspended(controller)) {
+          collapseButton.disabled = true;
+          return;
+        }
         void this.setCollapsed(controller, !controller.collapsed);
       });
       returnButton.addEventListener("click", () => {
@@ -424,6 +433,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       event.stopPropagation();
       if (
         lineController.control.disabled ||
+        this.reviewControllerIsSuspended(lineController.controller) ||
         lineController.suppressPointerClick
       ) {
         event.preventDefault();
@@ -441,6 +451,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (
         event.button !== 0 ||
         lineController.control.disabled ||
+        this.reviewControllerIsSuspended(lineController.controller) ||
         (event.pointerType !== "mouse" && event.pointerType !== "pen")
       ) {
         return;
@@ -685,6 +696,133 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    reviewControllerIsSuspended(controller) {
+      return this.diffMutationSuspendedControllers.has(controller);
+    },
+
+    reviewControllerSuspensionAllowsFileReveal(controller) {
+      return Boolean(
+        this.diffMutationSuspendedControllers.get(controller)
+          ?.allowFileReveal,
+      );
+    },
+
+    suspendReviewControllersForDiffMutation(
+      filePaths = null,
+      { allowFileReveal = false } = {},
+    ) {
+      const affectedControllers = Array.from(
+        this.controllersByRow.values(),
+      ).filter(
+        (controller) => filePaths === null || filePaths.has(controller.filePath),
+      );
+      const affectedControllerSet = new Set(affectedControllers);
+      if (
+        this.dragState &&
+        Array.from(this.dragState.controllers).some((controller) =>
+          affectedControllerSet.has(controller),
+        )
+      ) {
+        void this.finishLineDrag(false);
+      }
+      affectedControllers.forEach((controller) => {
+        if (!this.diffMutationSuspendedControllers.has(controller)) {
+          const inputEnabled = !controller.input.disabled;
+          const linesToEnable = new Set(
+            controller.lines.filter((line) =>
+              line.control ? !line.control.disabled : inputEnabled,
+            ),
+          );
+          this.diffMutationSuspendedControllers.set(controller, {
+            allowFileReveal,
+            inputEnabled,
+            linesToEnable,
+          });
+        } else if (allowFileReveal) {
+          this.diffMutationSuspendedControllers.get(
+            controller,
+          ).allowFileReveal = true;
+        }
+        controller.input.disabled = true;
+        if (controller.collapseButton) {
+          controller.collapseButton.disabled = true;
+        }
+        controller.lines.forEach((line) => {
+          if (line.control) {
+            line.control.disabled = true;
+          }
+        });
+      });
+      return affectedControllers.length;
+    },
+
+    enableControllerInputWhenSafe(controller) {
+      const suspended = this.diffMutationSuspendedControllers.get(controller);
+      if (suspended) {
+        suspended.inputEnabled = true;
+        controller.input.disabled = true;
+        return false;
+      }
+      if (!this.reviewControllerIsCurrent(controller)) {
+        return false;
+      }
+      controller.input.disabled = false;
+      return true;
+    },
+
+    enableLineControlWhenSafe(lineController) {
+      const controller = lineController.controller;
+      const suspended = this.diffMutationSuspendedControllers.get(controller);
+      if (suspended) {
+        suspended.linesToEnable.add(lineController);
+        if (lineController.control) {
+          lineController.control.disabled = true;
+        }
+        return false;
+      }
+      if (!this.reviewControllerIsCurrent(controller)) {
+        return false;
+      }
+      if (lineController.control) {
+        lineController.control.disabled = false;
+      }
+      return true;
+    },
+
+    enableControllerReviewControlsWhenSafe(controller) {
+      this.enableControllerInputWhenSafe(controller);
+      controller.lines.forEach((line) =>
+        this.enableLineControlWhenSafe(line),
+      );
+    },
+
+    restoreDiffMutationSuspendedReviewControls(
+      { keepFilePaths = new Set() } = {},
+    ) {
+      this.diffMutationSuspendedControllers.forEach((state, controller) => {
+        if (keepFilePaths.has(controller.filePath)) {
+          state.allowFileReveal = true;
+          return;
+        }
+        if (!this.reviewControllerIsCurrent(controller)) {
+          this.diffMutationSuspendedControllers.delete(controller);
+          return;
+        }
+        controller.input.disabled = !state.inputEnabled;
+        controller.lines.forEach((line) => {
+          if (line.control) {
+            line.control.disabled = !state.linesToEnable.has(line);
+          }
+        });
+        if (controller.collapseButton) {
+          controller.collapseButton.disabled = Boolean(
+            controller.collapsePending || controller.input.disabled,
+          );
+        }
+        this.diffMutationSuspendedControllers.delete(controller);
+      });
+    },
+
     controllerLocalReviewRemovalKeys(controller) {
       return [
         controller.key,
@@ -822,6 +960,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     async setCollapsed(controller, collapsed) {
+      if (
+        !this.reviewControllerIsCurrent(controller) ||
+        this.reviewControllerIsSuspended(controller)
+      ) {
+        return false;
+      }
       const navigationGeneration = this.hunkStickyNavigationGeneration;
       const returnTarget =
         collapsed &&
@@ -913,6 +1057,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
       viewed,
       { returnToOriginFromSticky = false } = {},
     ) {
+      if (
+        !this.reviewControllerIsCurrent(controller) ||
+        this.reviewControllerIsSuspended(controller)
+      ) {
+        return false;
+      }
       const navigationGeneration = this.hunkStickyNavigationGeneration;
       const wasViewed = controller.marked;
       const wasSharedCompletion = controller.sharedCompletion;
@@ -1016,7 +1166,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           officialViewedPendingKeys,
         );
         if (!this.stopped) {
-          controller.input.disabled = false;
+          this.enableControllerInputWhenSafe(controller);
           controller.collapsePending = false;
           this.applyControllerAppearance(controller);
           if (reviewStateKnown) {
@@ -1044,6 +1194,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const affectedControllers = new Set(
         affectedLines.map((line) => line.controller),
       );
+      if (
+        Array.from(affectedControllers).some(
+          (controller) =>
+            !this.reviewControllerIsCurrent(controller) ||
+            this.reviewControllerIsSuspended(controller),
+        )
+      ) {
+        return false;
+      }
       const previousControllers = new Map(
         Array.from(affectedControllers, (affectedController) => [
           affectedController,
@@ -1183,9 +1342,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             this.applyControllerAppearance(affectedController);
           });
           affectedLines.forEach((line) => {
-            if (line.control) {
-              line.control.disabled = false;
-            }
+            this.enableLineControlWhenSafe(line);
           });
           if (reviewStateKnown) {
             this.syncOfficialViewedForControllers(affectedControllers);
@@ -1234,6 +1391,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     destroyController(controller) {
       controller.destroyed = true;
+      this.diffMutationSuspendedControllers.delete(controller);
       this.detachStickyHunkRow(controller);
       if (controller.groupRows.every((row) => !row.isConnected)) {
         this.unobserveLazyControllerLineControls(controller);
@@ -1259,6 +1417,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       Array.from(this.controllersByRow.values()).forEach((controller) =>
         this.destroyController(controller),
       );
+      this.diffMutationSuspendedControllers.clear();
       this.document
         .querySelectorAll(".hunkmark-file-progress")
         .forEach((element) => element.remove());
@@ -1273,6 +1432,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.fileProgressStateByKey.clear();
       this.fileReviewSnapshotsByKey.clear();
       this.fileIdentityByElement = new WeakMap();
+      this.diffMutationGenerationByFileElement = new WeakMap();
       this.lineControlVisibilityObserver?.disconnect();
       this.lineControlVisibilityObserver = null;
       this.cleanupStickyHunks();
