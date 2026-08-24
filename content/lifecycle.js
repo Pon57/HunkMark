@@ -432,10 +432,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return true;
     },
 
-    resetDiffLoadFileControllers(filePath) {
+    resetDiffLoadFileControllers(filePath, fileElement) {
       const affectedControllers = Array.from(
         this.controllersByRow.values(),
-      ).filter((controller) => controller.filePath === filePath);
+      ).filter(
+        (controller) =>
+          controller.filePath === filePath ||
+          controller.fileElement === fileElement,
+      );
       const fileElements = new Set(
         affectedControllers.map((controller) => controller.fileElement),
       );
@@ -745,7 +749,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       files.forEach(({ fileElement, filePath, unsafe }) => {
         if (unsafe) {
-          this.resetDiffLoadFileControllers(filePath);
+          this.resetDiffLoadFileControllers(filePath, fileElement);
         }
         if (
           fileElement.isConnected &&

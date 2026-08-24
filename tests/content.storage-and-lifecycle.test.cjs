@@ -1570,6 +1570,52 @@ test("restores prior review values and access metadata when a mixed mutation fai
   }
 });
 
+test("restores access metadata when a values-only mutation is canceled", async () => {
+  const { app, chrome, dom } = await startExtension(dragFixture());
+  try {
+    const line = controllerAt(app).lines[0];
+    const now = Date.now();
+    const previousAt =
+      now - app.constants.REVIEW_ACCESS_TOUCH_INTERVAL_MS - 1;
+    const contextId = await app.Core.reviewContextId(
+      app.currentReviewScope,
+    );
+    const metadataKey =
+      app.Core.reviewContextMetadataKeyForId(contextId);
+    const previousMetadata = { lastAccessedAt: previousAt };
+    await app.setLocalStorage({ [metadataKey]: previousMetadata });
+    app.rememberReviewContextAccess(metadataKey, previousMetadata);
+
+    let current = true;
+    const setReviewStorageValuesUnlocked =
+      app.setReviewStorageValuesUnlocked.bind(app);
+    app.setReviewStorageValuesUnlocked = async (values) => {
+      await setReviewStorageValuesUnlocked(values);
+      if (line.key in values) {
+        current = false;
+      }
+    };
+
+    const persisted = await app.withReviewStorageLock(() =>
+      app.mutateReviewStorageUnlocked({
+        isCurrent: () => current,
+        now,
+        scope: app.currentReviewScope,
+        values: {
+          [line.key]: app.lineReviewStorageValue(line, now),
+        },
+      }),
+    );
+
+    const stored = chrome.snapshot();
+    assert.equal(persisted, false);
+    assert.equal(line.key in stored, false);
+    assert.equal(stored[metadataKey].lastAccessedAt, previousAt);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
 test("reconciles a partial line mutation when its rollback also fails", async () => {
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
   try {
@@ -2267,6 +2313,51 @@ test("suspends file-header mutations only when path identity changes", async () 
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("removes stale review UI when an active diff changes path identity", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    app.observer.disconnect();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 5_000,
+    };
+    const controller = controllerForFile(app, "src/react-one.js");
+    const fileElement = controller.fileElement;
+    const fileGrid = fileGridFor(dom, "src/react-one.js");
+    const progress = fileElement.querySelector(".hunkmark-file-progress");
+    assert.ok(progress);
+
+    appendDiffLoader(dom, fileGrid);
+    fileGrid.setAttribute("aria-label", "Diff for: src/renamed-one.js");
+    const previousHunkRow = controller.hunkRow;
+    const previousLineRow = controller.lines[0].row;
+    const replacementHunkRow = previousHunkRow.cloneNode(true);
+    const diffBody = previousHunkRow.parentElement;
+    previousHunkRow.replaceWith(replacementHunkRow);
+    app.handleMutations([
+      {
+        addedNodes: [replacementHunkRow],
+        removedNodes: [previousHunkRow],
+        target: diffBody,
+      },
+    ]);
+
+    assert.equal(
+      previousHunkRow.querySelector(".hunkmark-hunk-actions"),
+      null,
+    );
+    assert.equal(
+      previousLineRow.querySelector(".hunkmark-line-control"),
+      null,
+    );
+    assert.equal(fileElement.querySelector(".hunkmark-file-progress"), null);
+  } finally {
+    stopExtensions({ app, dom });
   }
 });
 

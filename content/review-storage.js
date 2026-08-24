@@ -223,7 +223,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (key) => typeof key === "string" && !storedKeySet.has(key),
       );
       const mutationKeySet = new Set([...storedKeys, ...removalKeys]);
-      if (storedKeys.length > 0 && removalKeys.length > 0) {
+      if (
+        storedKeys.length > 0 &&
+        (cancellationPossible || removalKeys.length > 0)
+      ) {
         const contextScope = this.Core.reviewContextScope(scope);
         if (contextScope) {
           mutationKeySet.add(
