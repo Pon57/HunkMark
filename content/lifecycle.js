@@ -593,7 +593,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           if (this.deferredDiffLoadRefreshes.get(filePath) !== record) {
             return;
           }
-          this.settleDeferredDiffLoadRefreshes();
+          this.scheduleDeferredDiffLoadRefreshSettlement();
         });
         record.attributeObserver.observe(fileElement, {
           attributeFilter: ["aria-label"],
