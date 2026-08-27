@@ -2103,6 +2103,66 @@ test("does not retry a stale refresh while diff loading remains unsettled", asyn
   }
 });
 
+test("restores unrelated files after loading interrupts a refresh", async () => {
+  const { app, dom } = await startExtension(manyFileHunkFixture(3));
+  const refreshYielded = createDeferred();
+  const resumeRefresh = createDeferred();
+  try {
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 100,
+    };
+    const originalControllers = controllersFor(app);
+    let paused = false;
+    const yieldForRefresh = app.yieldForLargeRefreshInteraction.bind(app);
+    app.yieldForLargeRefreshInteraction = async (...args) => {
+      if (!paused) {
+        paused = true;
+        refreshYielded.resolve();
+        await resumeRefresh.promise;
+      }
+      await yieldForRefresh(...args);
+    };
+    app.scheduleRefresh({ immediate: true });
+    await refreshYielded.promise;
+    assert.equal(app.diffMutationSuspendedControllers.size, 3);
+
+    const loaders = [0, 1].map((index) =>
+      appendDiffLoader(dom, fileGridFor(dom, `src/chunk-${index}.js`)),
+    );
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 2);
+    });
+    resumeRefresh.resolve();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+    });
+
+    loaders[0].remove();
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.has("src/chunk-0.js"), false);
+      assert.equal(app.deferredDiffLoadRefreshes.has("src/chunk-1.js"), true);
+    });
+    assert.deepEqual(controllersFor(app), originalControllers);
+    originalControllers.forEach((controller) => {
+      const loading = controller.filePath === "src/chunk-1.js";
+      assert.equal(app.reviewControllerIsSuspended(controller), loading);
+      assert.equal(controller.input.disabled, loading);
+      assert.equal(controller.collapseButton.disabled, loading);
+      controller.lines.forEach((line) => {
+        assert.equal(line.control.disabled, loading);
+      });
+    });
+  } finally {
+    resumeRefresh.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("discards unreconciled controllers from a stale refresh retry", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
@@ -3325,7 +3385,7 @@ test("does not restart an initial batch while its loader stays active", async ()
     assert.equal(refreshes, 1);
     assert.equal(app.deferredDiffLoadRefreshes.size, 1);
     assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
-    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+    assert.notEqual(app.deferredDiffLoadRefreshSettleTimer, null);
     const stableHydrations = hydrateCounts.get("src/react-one.js");
     assert.equal(stableHydrations, 1);
 
@@ -3338,6 +3398,7 @@ test("does not restart an initial batch while its loader stays active", async ()
     await new Promise((resolve) => setTimeout(resolve, 80));
     assert.equal(hydrateCounts.get("src/react-one.js"), stableHydrations);
     assert.equal(app.deferredDiffLoadRefreshes.size, 1);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
   } finally {
     app.stop();
     dom.window.close();
@@ -3565,6 +3626,116 @@ test("coalesces concurrent file loads until every diff settles", async () => {
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("restores settled controllers across mixed file roots", async (t) => {
+  const scenarios = ["React outer", "legacy outer", "direct and nested"];
+  for (const scenario of scenarios) {
+    await t.test(scenario, async () => {
+      const fixture = new JSDOM(currentReactContextExpansionFixture());
+      const fixtureRegions = Array.from(
+        fixture.window.document.querySelectorAll('[role="region"]'),
+      );
+      fixtureRegions.forEach((region, index) => {
+        if (scenario === "direct and nested") {
+          if (index > 0) {
+            return;
+          }
+          const nestedGrid = region
+            .querySelector('[role="grid"]')
+            .cloneNode(true);
+          nestedGrid.querySelector(".diff-hunk-cell").textContent =
+            "@@ -20 +20 @@";
+          const nestedLine = nestedGrid.querySelector("[data-line-anchor]");
+          nestedLine.dataset.lineAnchor = "diff-one-R20";
+          nestedLine.querySelector("code").textContent = "+nested";
+          const nestedRoot = fixture.window.document.createElement("div");
+          nestedRoot.className = "js-file";
+          nestedRoot.dataset.filePath = "src/react-one.js";
+          nestedRoot.append(nestedGrid);
+          region.append(nestedRoot);
+          return;
+        }
+        const legacyRoot = fixture.window.document.createElement("div");
+        legacyRoot.className = "js-file";
+        legacyRoot.dataset.filePath =
+          index === 0 ? "src/react-one.js" : "src/react-two.js";
+        if (scenario === "legacy outer") {
+          region.replaceWith(legacyRoot);
+          legacyRoot.append(region);
+          return;
+        }
+        const grid = region.querySelector('[role="grid"]');
+        grid.replaceWith(legacyRoot);
+        legacyRoot.append(grid);
+      });
+      const html = fixture.serialize();
+      fixture.window.close();
+
+      const { app, dom } = await startExtension(html);
+      try {
+        app.observer.disconnect();
+        const filePaths = ["src/react-one.js", "src/react-two.js"];
+        const regions = Array.from(
+          dom.window.document.querySelectorAll('[role="region"]'),
+        );
+        const grids = regions.map((region) =>
+          region.querySelector('[role="grid"]'),
+        );
+        const loaders = grids.map((grid) => appendDiffLoader(dom, grid));
+        filePaths.forEach((filePath, index) =>
+          app.rememberDeferredDiffLoadRefresh(filePath, regions[index]),
+        );
+        app.suspendReviewControllersForDiffMutation(new Set(filePaths));
+        const settledControllers = controllersForFile(app, filePaths[0]);
+        const loadingControllers = controllersForFile(app, filePaths[1]);
+        assert.equal(
+          settledControllers.length,
+          scenario === "direct and nested" ? 2 : 1,
+        );
+        assert.equal(
+          [...settledControllers, ...loadingControllers].every(
+            (controller) => app.reviewControllerIsSuspended(controller),
+          ),
+          true,
+        );
+
+        let refreshes = 0;
+        app.scheduleRefresh = () => {
+          refreshes += 1;
+        };
+
+        loaders[0].remove();
+        assert.equal(
+          app.settleDeferredDiffLoadFile(filePaths[0], regions[0]),
+          true,
+        );
+
+        assert.equal(app.deferredDiffLoadRefreshes.has(filePaths[0]), false);
+        assert.equal(app.deferredDiffLoadRefreshes.has(filePaths[1]), true);
+        assert.equal(
+          settledControllers.every(
+            (controller) =>
+              !app.reviewControllerIsSuspended(controller) &&
+              !controller.input.disabled,
+          ),
+          true,
+        );
+        assert.equal(
+          loadingControllers.every(
+            (controller) =>
+              app.reviewControllerIsSuspended(controller) &&
+              controller.input.disabled,
+          ),
+          true,
+        );
+        assert.equal(refreshes, 0);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
   }
 });
 
@@ -4670,6 +4841,136 @@ test("settles a deferred React diff load from its aria label", async () => {
     await waitFor(() => assert.equal(refreshes, 1));
     assert.equal(app.deferredDiffLoadRefreshes.size, 0);
     assert.equal(app.deferredDiffLoadRefreshTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("coalesces simultaneous deferred diff aria-label settlement", async () => {
+  const { app, dom } = await startExtension(
+    "<!doctype html><html><body></body></html>",
+  );
+  try {
+    app.observer.disconnect();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 100,
+    };
+    const fileCount = 100;
+    const fileElements = Array.from({ length: fileCount }, (_, index) => {
+      const fileElement = dom.window.document.createElement("section");
+      fileElement.id = `diff-coalesced-${index}`;
+      fileElement.className = "Diff-module__diff__coalesced";
+      fileElement.setAttribute("role", "region");
+      fileElement.setAttribute("aria-label", `Loading file-${index}.js`);
+      dom.window.document.body.append(fileElement);
+      app.rememberDeferredDiffLoadRefresh(`file-${index}.js`, fileElement);
+      return fileElement;
+    });
+    let activeChecks = 0;
+    const fileDiffHasActiveLoadingContent =
+      app.fileDiffHasActiveLoadingContent.bind(app);
+    app.fileDiffHasActiveLoadingContent = (...args) => {
+      activeChecks += 1;
+      return fileDiffHasActiveLoadingContent(...args);
+    };
+    let statusEvaluations = 0;
+    const deferredDiffLoadStatus = app.deferredDiffLoadStatus.bind(app);
+    app.deferredDiffLoadStatus = (...args) => {
+      statusEvaluations += 1;
+      return deferredDiffLoadStatus(...args);
+    };
+    let refreshes = 0;
+    app.scheduleRefresh = () => {
+      refreshes += 1;
+    };
+
+    fileElements.forEach((fileElement, index) =>
+      fileElement.setAttribute("aria-label", `Diff for: file-${index}.js`),
+    );
+
+    await waitFor(() => {
+      assert.notEqual(app.deferredDiffLoadRefreshSettleTimer, null);
+    });
+    assert.equal(statusEvaluations, 0);
+    assert.equal(activeChecks, 0);
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+      assert.equal(refreshes, 1);
+    });
+    assert.equal(statusEvaluations, 1);
+    assert.equal(activeChecks, fileCount);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("coalesces status scans across completed file hydrations", async () => {
+  const { app, dom } = await startExtension(
+    "<!doctype html><html><body></body></html>",
+  );
+  try {
+    app.observer.disconnect();
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_CONCURRENCY: 2,
+      DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_CONCURRENCY: 1,
+      DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS: 0,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 0,
+      DIFF_LOAD_REFRESH_MAX_WAIT_MS: 10_000,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 100,
+    };
+    const fileCount = 20;
+    let hydrations = 0;
+    app.hydrateDiffLoadFile = async () => {
+      hydrations += 1;
+      return 0;
+    };
+    let activeChecks = 0;
+    const fileDiffHasActiveLoadingContent =
+      app.fileDiffHasActiveLoadingContent.bind(app);
+    app.fileDiffHasActiveLoadingContent = (...args) => {
+      activeChecks += 1;
+      return fileDiffHasActiveLoadingContent(...args);
+    };
+    let statusEvaluations = 0;
+    const deferredDiffLoadStatus = app.deferredDiffLoadStatus.bind(app);
+    app.deferredDiffLoadStatus = (...args) => {
+      statusEvaluations += 1;
+      return deferredDiffLoadStatus(...args);
+    };
+    let refreshes = 0;
+    app.scheduleRefresh = () => {
+      refreshes += 1;
+    };
+
+    for (let index = 0; index < fileCount; index += 1) {
+      const fileElement = dom.window.document.createElement("section");
+      const filePath = `hydration-${index}.js`;
+      fileElement.id = `diff-hydration-${index}`;
+      fileElement.className = "Diff-module__diff__hydration";
+      fileElement.setAttribute("role", "region");
+      fileElement.setAttribute("aria-label", `Loading ${filePath}`);
+      fileElement.getBoundingClientRect = () => ({ bottom: 100, top: 0 });
+      dom.window.document.body.append(fileElement);
+      app.rememberDeferredDiffLoadRefresh(filePath, fileElement);
+      app.scheduleDiffLoadFileHydration(filePath, fileElement);
+    }
+
+    await waitFor(() => {
+      assert.equal(hydrations, fileCount);
+      assert.equal(app.diffLoadHydrations.size, 0);
+      assert.equal(app.diffLoadHydrationRunningStates.size, 0);
+      assert.equal(statusEvaluations, 1);
+    });
+    assert.equal(app.deferredDiffLoadRefreshes.size, fileCount);
+    assert.equal(app.deferredDiffLoadRefreshSettleTimer, null);
+    assert.notEqual(app.deferredDiffLoadRefreshTimer, null);
+    assert.equal(activeChecks, fileCount * 2);
+    assert.equal(refreshes, 0);
   } finally {
     app.stop();
     dom.window.close();

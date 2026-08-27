@@ -560,7 +560,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
                   state.fileElement,
                 );
               }
-              this.settleDeferredDiffLoadRefreshes();
+              if (this.deferredDiffLoadRefreshes.size > 0) {
+                this.scheduleDeferredDiffLoadRefreshSettlement();
+              }
             }
           }
           this.pumpDiffLoadFileHydrations();
