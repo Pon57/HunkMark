@@ -18,7 +18,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     abortRefreshForStaleDiff(
       cacheGeneration = null,
-      { discardControllers = [] } = {},
+      {
+        discardControllers = [],
+        hostContextExpansionIntentsByFilePath = null,
+      } = {},
     ) {
       if (cacheGeneration !== null) {
         this.Core.abortIdentifierCacheGeneration(cacheGeneration);
@@ -28,10 +31,26 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
       discardControllers.forEach((controller) => {
         if (this.reviewControllerIsCurrent(controller)) {
+          const fileIntents =
+            hostContextExpansionIntentsByFilePath?.get(controller.filePath) ?? [];
+          fileIntents.forEach((intent) => {
+            if (this.hostContextExpansionIntentIsActive(intent)) {
+              intent.refreshDiscardedLineKeys ??= new Set();
+              controller.lines.forEach((line) =>
+                intent.refreshDiscardedLineKeys.add(line.key),
+              );
+            }
+          });
           this.destroyController(controller);
         }
       });
-      if (this.unsettledDiffLoadReviewSuspensionPaths().size > 0) {
+      if (
+        this.unsettledDiffLoadReviewSuspensionPaths().size > 0 &&
+        this.activeHostContextExpansionIntents().length === 0
+      ) {
+        // Ready files still need reconciliation after the full refresh was
+        // interrupted, even when its expansion intent is no longer active.
+        this.bootstrapRenderedDiffLoadHydrations();
         return;
       }
       this.scheduleRefresh({ immediate: true });
@@ -441,11 +460,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
     bootstrapRenderedDiffLoadHydrations() {
       this.diffLoadHydrationBatchBootstrapped = true;
       const fileElementsByPath = new Map();
+      const hasContextExpansion =
+        this.activeHostContextExpansionIntents().length > 0;
       this.renderedDiffLoadFileElements().forEach((fileElement) => {
         const filePath = this.diffLoadFilePath(fileElement);
-        if (filePath) {
-          fileElementsByPath.set(filePath, fileElement);
+        // Full reconciliation handles ready files during native expansion.
+        // Keep existing deferred paths, including files still in quiet settle.
+        if (
+          !filePath ||
+          (hasContextExpansion &&
+            !this.deferredDiffLoadRefreshes.has(filePath) &&
+            !this.fileDiffHasActiveLoadingContent(fileElement))
+        ) {
+          return;
         }
+        fileElementsByPath.set(filePath, fileElement);
       });
       let scheduled = 0;
       const activeFilePaths = new Set();
@@ -660,8 +689,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.deferredDiffLoadRefreshes.size > 0
       ) {
         this.ensureDeferredDiffLoadRefreshTimeout();
-        this.settleDeferredDiffLoadRefreshes();
-        return;
+        if (this.activeHostContextExpansionIntents().length === 0) {
+          this.settleDeferredDiffLoadRefreshes();
+          return;
+        }
       }
 
       const refreshSnapshot = this.hunkDiscoverySnapshot(this.document);
@@ -905,6 +936,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {
           discardControllers: newControllers,
+          hostContextExpansionIntentsByFilePath,
         });
         return;
       }
@@ -916,18 +948,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
             this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot),
           newControllers,
         });
-      if (!reconciliationCompleted) {
-        if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
-          this.abortRefreshForStaleDiff(null, {
-            discardControllers: newControllers,
-          });
-        }
-        return;
-      }
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {
           discardControllers: newControllers,
+          hostContextExpansionIntentsByFilePath,
         });
+        return;
+      }
+      if (!reconciliationCompleted) {
         return;
       }
 
@@ -936,6 +964,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       this.updateProgress();
       hostContextExpansionIntents.forEach((hostContextExpansionIntent) => {
+        hostContextExpansionIntent.refreshDiscardedLineKeys = null;
         if (
           observedHostContextExpansionIntents.has(
             hostContextExpansionIntent,

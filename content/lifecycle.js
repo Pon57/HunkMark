@@ -1248,8 +1248,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
             { allowFileReveal: true },
           );
         }
-        if (expectedHideOnly || hostContextExpansionPending) {
+        if (
+          expectedHideOnly &&
+          activeHostContextExpansionIntents.length === 0
+        ) {
           this.clearDeferredDiffLoadRefreshes();
+        } else if (hostContextExpansionPending || expectedHideOnly) {
+          this.cancelDiffLoadHydrations();
+          this.diffLoadHydrationBatchBootstrapped = false;
         }
         if (!refreshDeferredForDiffLoad) {
           this.scheduleRefresh({
