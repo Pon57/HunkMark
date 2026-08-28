@@ -131,6 +131,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const expandedByHost =
         this.hostContextExpansionExpandedByHost(previous, hunk);
       return {
+        fileIntents,
         hostRevealedRowsCanExpand:
           fileIntents.length === 0 || trustedHostExpansion,
         opensHunk:

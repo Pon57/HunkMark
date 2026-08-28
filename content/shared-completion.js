@@ -471,6 +471,22 @@ if (globalThis.HunkMarkContent?.extendApp) {
         });
       }
       if (!assessment?.opensHunk) {
+        // Unchanged hunks can lose their controllers during a retry too.
+        // Restore only exact source identities, without authorizing migration.
+        if (!previousPreservesSources) {
+          (assessment?.fileIntents ?? []).forEach((intent) => {
+            (intent.capture.cachedHunkGroups ?? [])
+              .filter((group) =>
+                this.controllerPreservesSharedCompletionSources(
+                  controller,
+                  group,
+                ),
+              )
+              .forEach((group) => {
+                sources.push(...(group.sharedCompletionSources ?? []));
+              });
+          });
+        }
         return this.mergeSharedHunkCompletionSources(sources);
       }
       const changedAnchors = new Set(

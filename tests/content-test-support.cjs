@@ -334,12 +334,12 @@ function stopExtensions(...extensions) {
   });
 }
 
-async function startSharedExtensions(html) {
+async function startSharedExtensions(html, secondHtml = html) {
   const chrome = createChromeApi();
   const locks = createExclusiveLockManager();
   const options = { chromeInstance: chrome, lockManager: locks };
   const first = await startExtension(html, {}, options);
-  const second = await startExtension(html, {}, options);
+  const second = await startExtension(secondHtml, {}, options);
   return { chrome, first, locks, second };
 }
 

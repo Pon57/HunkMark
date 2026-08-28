@@ -2,6 +2,7 @@ const {
   test,
   assert,
   JSDOM,
+  createDeferred,
   delayReviewStorageSet,
   delayReviewStorageRemove,
   controllersFor,
@@ -21,6 +22,87 @@ const {
   replaceCurrentReactDirectionalRegion,
 } = require("./content-test-support.cjs");
 
+function controllerFor(app, filePath) {
+  return controllersFor(app).find((controller) => controller.filePath === filePath);
+}
+
+function assertExpandedReview(current, originalLine, marked = true) {
+  const line = current.lines[0];
+  assert.notEqual(line.contextFingerprint, originalLine.contextFingerprint);
+  assert.equal(line.marked, marked);
+  assert.equal(current.input.disabled, false);
+  return line;
+}
+
+function trailingNativeExpansionFixture() {
+  return currentReactContextExpansionFixture().replace(
+    "</tbody></table>",
+    `<tr class="diff-line-row"><td role="gridcell" class="diff-hunk-cell">
+      <button class="ExpandableHunkHeaderDiffLine-module__expand-button-line__one"
+        aria-label="Expand file down from line 10">Expand down</button>
+    </td></tr></tbody></table>`,
+  );
+}
+
+function appendNativeFile(document, suffix, id) {
+  const region = document.querySelectorAll('[role="region"]')[1].cloneNode(true);
+  if (id) region.id = id;
+  region.innerHTML = region.innerHTML
+    .replaceAll("react-two", `react-${suffix}`)
+    .replaceAll("diff-two", `diff-${suffix}`)
+    .replaceAll("+two", `+${suffix}`);
+  document.body.append(region);
+}
+
+function nativeContextRow(document, text) {
+  const row = document.createElement("tr");
+  row.className = "diff-line-row";
+  row.dataset.lineType = "context";
+  row.innerHTML = '<td role="gridcell" class="diff-text-cell right-side-diff-cell">' +
+    `<code class="diff-text" data-diff-side="right">${text}</code></td>`;
+  return row;
+}
+
+async function reviewFirstWithBackgroundLoader(app, chrome, dom) {
+  app.constants = {
+    ...app.constants,
+    DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+    DIFF_LOAD_REFRESH_SETTLE_MS: 50,
+  };
+  const first = controllerFor(app, "src/react-one.js");
+  const second = controllerFor(app, "src/react-two.js");
+  const originalLine = first.lines[0];
+  changeCheckbox(dom, first.input);
+  await waitFor(() => {
+    assert.equal(originalLine.marked, true);
+    assert.equal(first.collapsed, true);
+    assert.equal(first.input.disabled, false);
+    assert.ok(chrome.snapshot()[originalLine.key]);
+  });
+  const loader = dom.window.document.createElement("tr");
+  loader.dataset.component = "loadingSpinner";
+  loader.innerHTML = '<td role="progressbar">Loading another file</td>';
+  second.fileElement.querySelector("tbody").append(loader);
+  await waitFor(() => assert.equal(second.input.disabled, true));
+  assert.equal(first.input.disabled, false);
+  return { first, second, originalLine, loader };
+}
+
+function expandNativeContext(dom, first, control, changesContent = false) {
+  if (changesContent) {
+    first.lines[0].element.querySelector("code").textContent = "+replacement";
+  }
+  const headerText = Array.from(first.hunkCell.childNodes).find(
+    (node) => node.nodeType === 3 && node.nodeValue.includes("@@"),
+  );
+  headerText.nodeValue = "@@ -10,3 +10,3 @@";
+  const controlRow = control.closest("tr");
+  for (let index = 0; index < 2; index += 1) {
+    controlRow.before(nativeContextRow(dom.window.document, `expanded context ${index}`));
+  }
+  controlRow.remove();
+}
+
 test("does not authorize context migration from a rejected activation", async () => {
   const { app, dom } = await startExtension(semanticMergeableHunkFixture());
   try {
@@ -36,6 +118,302 @@ test("does not authorize context migration from a rejected activation", async ()
         ...activation,
       });
       assert.equal(app.hostContextExpansionIntents.size, 0);
+    });
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "preserves partial reviews through context expansion and background loading",
+    pauseDuringStorage: true,
+  },
+  {
+    name: "preserves partial reviews when a staged expansion has another hunk in its file",
+    stagedSource: true,
+  },
+  {
+    name: "does not retain reviews when captured context changes during expansion",
+    changesContext: true,
+  },
+  {
+    name: "keeps ready files usable when expansion rejects changed lines",
+    changesContent: true,
+    pauseDuringStorage: true,
+  },
+  {
+    name: "keeps ready files usable when a pending expansion expires",
+    expiresIntent: true,
+  },
+]) {
+  test(scenario.name, async () => {
+    const fixture = new JSDOM(trailingNativeExpansionFixture());
+    const fixtureDocument = fixture.window.document;
+    const firstRow = fixtureDocument.querySelector(
+      '[data-line-type="addition"]',
+    );
+    const unreviewedRow = firstRow.cloneNode(true);
+    unreviewedRow.querySelector("[data-line-anchor]").dataset.lineAnchor =
+      "diff-oneR11";
+    unreviewedRow.querySelector("code").textContent = "+one-unreviewed";
+    firstRow.after(unreviewedRow);
+    firstRow.before(nativeContextRow(fixtureDocument, "original context"));
+    if (scenario.stagedSource) {
+      firstRow.parentElement.insertAdjacentHTML("beforeend", `
+        <tr class="diff-line-row"><td role="gridcell" class="diff-hunk-cell">@@ -40 +40 @@</td></tr>
+        <tr class="diff-line-row" data-line-type="addition">
+          <td role="gridcell" class="diff-text-cell right-side-diff-cell" data-line-anchor="diff-oneR40">
+            <code class="addition" data-diff-side="right">+later-hunk</code>
+          </td>
+        </tr>`);
+    }
+    appendNativeFile(fixtureDocument, "three");
+    const html = fixture.serialize()
+      .replace("@@ -10 +10 @@", "@@ -9,2 +9,3 @@")
+      .replaceAll(
+        "Expand file down from line 10",
+        "Expand file down from line 11",
+      );
+    fixture.window.close();
+    const { app, chrome, dom } = await startExtension(html);
+    const resume = createDeferred();
+    try {
+      const { first, second, originalLine, loader } =
+        await reviewFirstWithBackgroundLoader(app, chrome, dom);
+      const ready = controllerFor(app, "src/react-three.js");
+      if (scenario.expiresIntent) {
+        ready.fileElement.getBoundingClientRect = () => ({
+          top: 5_000,
+          bottom: 5_200,
+        });
+      }
+      first.lines[1].control.click();
+      await waitFor(() => {
+        assert.deepEqual(
+          Array.from(first.lines, (line) => line.marked),
+          [true, false],
+        );
+        assert.equal(first.collapsed, false);
+        assert.equal(first.input.disabled, false);
+        assert.notEqual(
+          chrome.snapshot()[first.sharedCompletionKey]?.viewed,
+          true,
+        );
+      });
+      app.constants = {
+        ...app.constants,
+        LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+      };
+      let yields = 0;
+      let storagePaused = false;
+      // Interrupt the host update either before discovery or during restoration.
+      const interruptionYield = scenario.expiresIntent ? 1 : 2;
+      const yieldForRefresh = app.yieldForLargeRefreshInteraction.bind(app);
+      app.yieldForLargeRefreshInteraction = async (...args) => {
+        yields += 1;
+        if (yields === interruptionYield && !scenario.pauseDuringStorage) {
+          await resume.promise;
+        }
+        await yieldForRefresh(...args);
+      };
+      const getLocalStorage = app.getLocalStorage.bind(app);
+      app.getLocalStorage = async (keys) => {
+        const stored = await getLocalStorage(keys);
+        if (
+          scenario.pauseDuringStorage &&
+          !storagePaused &&
+          yields === 2 &&
+          keys.includes(
+            app.controllersByRow.get(first.hunkRow)?.lines[0]?.key,
+          )
+        ) {
+          storagePaused = true;
+          await resume.promise;
+        }
+        return stored;
+      };
+      const control = first.fileElement.querySelector(
+        '[aria-label="Expand file down from line 11"]',
+      );
+      const controlRow = control.closest("tr");
+      const controlParent = controlRow.parentElement;
+      const controlNextSibling = controlRow.nextSibling;
+      app.handleHostContextExpansionClick({ isTrusted: true, target: control });
+      const intent = contextExpansionIntentFor(app, first.filePath);
+      assert.ok(intent);
+      expandNativeContext(dom, first, control, scenario.changesContent);
+      if (scenario.stagedSource) {
+        controlParent.insertBefore(controlRow, controlNextSibling);
+      }
+      const headerText = Array.from(first.hunkCell.childNodes).find(
+        (node) => node.nodeType === 3 && node.nodeValue.includes("@@"),
+      );
+      headerText.nodeValue = "@@ -9,4 +9,5 @@";
+      await waitFor(() => {
+        assert.equal(yields, interruptionYield);
+        if (scenario.pauseDuringStorage) {
+          assert.equal(storagePaused, true);
+        }
+      });
+      assert.equal(controllerFor(app, first.filePath).input.disabled, true);
+      const generation = app.diffMutationGeneration;
+      const replacementLoader = loader.cloneNode(true);
+      loader.replaceWith(replacementLoader);
+      if (scenario.changesContext) {
+        first.fileElement.querySelector(
+          '[data-line-type="context"] code',
+        ).textContent = "replaced original context";
+      }
+      if (scenario.expiresIntent) {
+        intent.createdAt -=
+          app.constants.HOST_CONTEXT_EXPANSION_MAX_LIFETIME_MS + 1;
+      }
+      await waitFor(() => assert.ok(app.diffMutationGeneration > generation));
+      resume.resolve();
+      if (scenario.stagedSource) {
+        await waitFor(() => assert.equal(app.refreshRunning, false));
+        assert.equal(
+          chrome.snapshot()[originalLine.key].contextFingerprint,
+          originalLine.contextFingerprint,
+        );
+        controlRow.remove();
+      }
+      const preservesReviews = !(
+        scenario.changesContent ||
+        scenario.changesContext ||
+        scenario.expiresIntent
+      );
+      await waitFor(() => {
+        for (const filePath of [first.filePath, ready.filePath]) {
+          const current = controllerFor(app, filePath);
+          assert.equal(current.input.disabled, false);
+          assert.equal(current.collapseButton.disabled, false);
+          current.lines.forEach((line) => assert.equal(line.control.disabled, false));
+        }
+        assert.deepEqual(
+          Array.from(controllerFor(app, first.filePath).lines, (line) => line.marked),
+          [preservesReviews, false],
+        );
+      });
+      assert.equal(replacementLoader.isConnected, true);
+      assert.equal(controllerFor(app, second.filePath).input.disabled, true);
+      replacementLoader.remove();
+      await waitFor(() => {
+        assert.equal(app.refreshRunning, false);
+        assert.equal(app.refreshQueued, false);
+        const current = controllerFor(app, first.filePath);
+        assert.ok(current);
+        assert.deepEqual(
+          Array.from(current.lines, (line) => line.marked),
+          [preservesReviews, false],
+        );
+        const line = assertExpandedReview(current, originalLine, preservesReviews);
+        assert.equal(current.collapsed, false);
+        if (preservesReviews) {
+          assert.equal(line.key, originalLine.key);
+        }
+        assert.equal(
+          chrome.snapshot()[originalLine.key].contextFingerprint,
+          (preservesReviews ? line : originalLine).contextFingerprint,
+        );
+        if (scenario.changesContent) {
+          assert.equal(chrome.snapshot()[line.key], undefined);
+        }
+        assert.equal(controllerFor(app, second.filePath).input.disabled, false);
+      });
+    } finally {
+      resume.resolve();
+      stopExtensions({ app, dom });
+    }
+  });
+}
+
+test("keeps each file usable only when ready through expansion hide and reveal", async () => {
+  const fixture = new JSDOM(trailingNativeExpansionFixture());
+  for (const suffix of ["three", "four"]) {
+    appendNativeFile(fixture.window.document, suffix, `diff-${suffix}`);
+  }
+  const html = fixture.serialize();
+  fixture.window.close();
+  const { app, chrome, dom } = await startExtension(html);
+  try {
+    const { first, second, originalLine, loader } =
+      await reviewFirstWithBackgroundLoader(app, chrome, dom);
+    const quiet = controllerFor(app, "src/react-three.js");
+    const ready = controllerFor(app, "src/react-four.js");
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS: 5_000,
+    };
+    [quiet, ready].forEach((controller) => {
+      controller.fileElement.getBoundingClientRect = () => ({
+        top: 5_000,
+        bottom: 5_200,
+      });
+    });
+    second.fileElement.id = "diff-aria-background";
+    second.fileElement.setAttribute("aria-label", `Loading ${second.filePath}`);
+    loader.remove();
+    const quietLoader = loader.cloneNode(true);
+    quiet.fileElement.querySelector("tbody").append(quietLoader);
+    await waitFor(() => assert.equal(quiet.input.disabled, true));
+    quietLoader.remove();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+    const assertOtherFilesGuarded = () => {
+      for (const [filePath, disabled] of [
+        [quiet.filePath, true],
+        [second.filePath, true],
+        [ready.filePath, false],
+      ]) {
+        const current = controllerFor(app, filePath);
+        assert.equal(current.input.disabled, disabled, filePath);
+        assert.equal(current.collapseButton.disabled, disabled, filePath);
+        current.lines.forEach((line) =>
+          assert.equal(line.control.disabled, disabled, filePath),
+        );
+      }
+    };
+    const control = first.fileElement.querySelector(
+      '[aria-label="Expand file down from line 10"]',
+    );
+    app.handleHostContextExpansionClick({ isTrusted: true, target: control });
+    const intent = contextExpansionIntentFor(app, first.filePath);
+    const table = first.hunkRow.closest("table");
+    const tableParent = table.parentElement;
+    app.expectFileDiffVisibility(first.fileElement, false);
+    table.remove();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(intent.fileHiddenWhilePending, true);
+      assertOtherFilesGuarded();
+    });
+    app.expectFileDiffVisibility(first.fileElement, true);
+    tableParent.append(table);
+    expandNativeContext(dom, first, control);
+
+    await waitFor(() => {
+      const current = controllerFor(app, first.filePath);
+      assertExpandedReview(current, originalLine);
+      assert.equal(current.collapsed, false);
+      assertOtherFilesGuarded();
+    });
+
+    second.fileElement.setAttribute("aria-label", `Diff file ${second.filePath}`);
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(
+        controllersFor(app).every((controller) => !controller.input.disabled),
+        true,
+      );
+      const current = controllerFor(app, first.filePath);
+      assert.equal(current.lines[0].marked, true);
+      assert.equal(
+        chrome.snapshot()[originalLine.key].contextFingerprint,
+        current.lines[0].contextFingerprint,
+      );
     });
   } finally {
     stopExtensions({ app, dom });

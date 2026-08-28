@@ -45,6 +45,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
           currentControllers,
           filePath,
         );
+        // Retain source hunks even if a refresh discards their controllers.
+        cachedHunkGroups = fileSnapshot.hunks;
         fileLineKeys = fileSnapshot.lineKeys;
         fileContextAnchors = fileSnapshot.contextAnchors;
         lineReviewSnapshot = new Map(
@@ -130,6 +132,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         filePath,
         origin,
         phase: "awaiting",
+        refreshDiscardedLineKeys: null,
         reviewScope: this.currentReviewScope,
         source: Object.freeze({
           ...source,
@@ -173,8 +176,22 @@ if (globalThis.HunkMarkContent?.extendApp) {
             intent.capture.contextAnchors,
             discoveredSnapshot.contextAnchors,
           );
+        // Account only for prior lines this refresh discarded itself. The
+        // surviving sequence and the complete new file must still match.
+        let previousMatches = matchesCapturedLines(previousLineKeys);
+        if (!previousMatches && intent.refreshDiscardedLineKeys) {
+          const previousLineKeySet = new Set(previousLineKeys);
+          previousMatches = this.sameHostContextExpansionSequence(
+            intent.capture.lineKeys.filter(
+              (key) =>
+                previousLineKeySet.has(key) ||
+                !intent.refreshDiscardedLineKeys.has(key),
+            ),
+            previousLineKeys,
+          );
+        }
         const unchanged =
-          matchesCapturedLines(previousLineKeys) &&
+          previousMatches &&
           matchesCapturedLines(discoveredLineKeys);
         // A collapsed React file has no rendered lines or anchors, so defer
         // that decision until GitHub reveals a complete changed-line set.
@@ -416,6 +433,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!intent) {
         return;
       }
+      intent.refreshDiscardedLineKeys = null;
       this.hostContextExpansionIntents.delete(intent);
       this.cancelHostContextExpansionSettlement(intent);
       this.cancelHostContextExpansionExpiry(intent);
