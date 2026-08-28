@@ -224,6 +224,7 @@ for (const scenario of [
           scenario.pauseDuringStorage &&
           !storagePaused &&
           yields === 2 &&
+          Array.isArray(keys) &&
           keys.includes(
             app.controllersByRow.get(first.hunkRow)?.lines[0]?.key,
           )
