@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.1.2](https://github.com/Pon57/HunkMark/compare/v3.1.1...v3.1.2) - 2026-09-01
+
+### Bug Fixes
+- perf: avoid full refresh for file comments by @Pon57 in https://github.com/Pon57/HunkMark/pull/36
+- perf: keep large diff loading responsive by @Pon57 in https://github.com/Pon57/HunkMark/pull/38
+- fix: coalesce large diff settlement scans by @Pon57 in https://github.com/Pon57/HunkMark/pull/40
+- fix: preserve context expansion reviews during diff loading by @Pon57 in https://github.com/Pon57/HunkMark/pull/41
+### Enhancements
+- refactor: unify diff discovery preparation by @Pon57 in https://github.com/Pon57/HunkMark/pull/39
+### Dependency Updates
+- chore(deps): update songmu/tagpr action to v1.20.2 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/42
+
 ## [v3.1.1](https://github.com/Pon57/HunkMark/compare/v3.1.0...v3.1.1) - 2026-08-22
 
 ### Enhancements
