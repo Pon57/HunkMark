@@ -1,6 +1,6 @@
 {
   "name": "hunkmark",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "description": "A Chrome extension for reviewing GitHub pull request diffs by hunk or line.",
   "license": "MIT",
   "author": "Pon",
