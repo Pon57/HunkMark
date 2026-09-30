@@ -3027,12 +3027,20 @@ test("clears ranges only from previously prepared rows when a large file exits",
     const installed = controllers.filter((c) => c.stickyHunkTimelineSignature);
     assert.ok(installed.length > state.preparedControllers.size);
     assert.ok(installed.length < 80);
+    const cleanupTargets = [];
+    const clearTimeline = app.clearStickyHunkTimeline.bind(app);
+    app.clearStickyHunkTimeline = (controller) => {
+      cleanupTargets.push(controller);
+      return clearTimeline(controller);
+    };
     let removals = 0;
     controllers.forEach((c) => {
       const remove = c.hunkRow.style.removeProperty.bind(c.hunkRow.style);
       c.hunkRow.style.removeProperty = (...args) => { removals += 1; return remove(...args); };
     });
     observer.callback([{ target: state.fileElement, isIntersecting: false }]);
+    assert.equal(cleanupTargets.length, installed.length);
+    assert.deepEqual(new Set(cleanupTargets), new Set(installed));
     assert.equal(removals, installed.length * 9);
     assert.equal(state.preparedControllers.size, 0);
     installed.forEach((c) => {
@@ -3090,6 +3098,39 @@ test("does not retain a pointer-focused outgoing hunk over the current header", 
     app.updateStickyHunkState(state);
     assert.equal(state.activeController, controllers[1]);
     assert.equal(state.preparedControllers.has(controllers[0]), false);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("keeps pointer-focused collapse and line controls visible without hover", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const sheet = installContentStyles(dom).sheet;
+    // This scenario uses a hover-capable pointer, so exclude the touch fallback.
+    for (let index = sheet.cssRules.length - 1; index >= 0; index -= 1) {
+      if (sheet.cssRules[index].conditionText === '(hover: none)') sheet.deleteRule(index);
+    }
+    const [controller] = app.controllersByRow.values();
+    for (const control of [controller.collapseButton, controller.lines[0].control]) {
+      control.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+      control.focus();
+      control.dispatchEvent(new dom.window.MouseEvent('mouseout', {
+        bubbles: true, relatedTarget: dom.window.document.body,
+      }));
+      dom.window.document.body.dispatchEvent(new dom.window.MouseEvent('mouseover', {
+        bubbles: true, relatedTarget: control,
+      }));
+      // Invalidate jsdom's computed-style cache after changing pointer state.
+      control.setAttribute('data-style-check', 'pointer-left');
+      assert.equal(dom.window.document.activeElement, control);
+      assert.equal(control.matches(':focus-visible'), false);
+      assert.equal(control.matches(':hover'), false);
+      assert.equal(control.parentElement.matches(':hover'), false);
+      const style = dom.window.getComputedStyle(control);
+      assert.equal(style.opacity, '1');
+      assert.equal(style.pointerEvents, 'auto');
+    }
   } finally {
     app.stop(); dom.window.close();
   }

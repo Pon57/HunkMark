@@ -327,7 +327,7 @@
   pointer-events: none;
 }
 
-.hunkmark-sticky-hunk-row:is(:hover, :is(:focus-visible, :has(:focus-visible)))
+.hunkmark-sticky-hunk-row:is(:hover, :focus-within)
   .hunkmark-collapse-button,
 .hunkmark-sticky-hunk-row .hunkmark-collapse-button.is-collapsed {
   opacity: 1;
@@ -380,7 +380,7 @@
 }
 
 .hunkmark-line-cell:hover > .hunkmark-line-control,
-.hunkmark-line-cell:is(:focus-visible, :has(:focus-visible)) > .hunkmark-line-control,
+.hunkmark-line-cell:focus-within > .hunkmark-line-control,
 .hunkmark-line-drag-touched > .hunkmark-line-control {
   opacity: 1;
   pointer-events: auto;

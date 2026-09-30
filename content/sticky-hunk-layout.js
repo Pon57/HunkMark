@@ -17,6 +17,8 @@
 
   Object.assign(App.prototype, {
     clearStickyHunkTimeline(controller) {
+      this.hunkStickyStateByFile.get(controller.stickyHunkFileElement ?? controller.fileElement)
+        ?.controllersWithRanges.delete(controller);
       const prepared = controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared");
       if (!prepared && !controller.stickyHunkTimelineSignature) {
         return;
@@ -162,6 +164,7 @@
         ["--hunkmark-sticky-hunk-push-end", pushEnd],
       ]);
       controller.stickyHunkTimelineSignature = signature;
+      this.hunkStickyStateByFile.get(controller.fileElement)?.controllersWithRanges.add(controller);
     },
 
     stickyHunkControllerIndexAt(

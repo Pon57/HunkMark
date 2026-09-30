@@ -224,9 +224,10 @@
       );
       this.detachStickyHunkHeader(state);
       this.hunkStickyVisibleStates.delete(state);
-      state.controllers.forEach((controller) =>
+      state.controllersWithRanges.forEach((controller) =>
         this.clearStickyHunkTimeline(controller),
       );
+      state.controllersWithRanges.clear();
       state.preparedControllers.clear();
       state.activeController?.hunkRow.classList.remove(
         "hunkmark-sticky-hunk-active",
@@ -336,6 +337,7 @@
         contentLayoutGeneration: 0,
         contentLayoutDirtyControllers: new Set(),
         controllers: new Set(),
+        controllersWithRanges: new Set(),
         fileElement,
         fileOriginDirty: true,
         fileOriginDocumentTop: null,
@@ -575,6 +577,7 @@
       }
       state?.controllers.delete(controller);
       state?.preparedControllers.delete(controller);
+      state?.controllersWithRanges.delete(controller);
       if (state) {
         state.contentLayoutDirtyControllers.delete(controller);
         state.orderDirty = true;
