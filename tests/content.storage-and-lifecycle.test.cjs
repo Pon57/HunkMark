@@ -2545,7 +2545,8 @@ test("restores unrelated files after loading interrupts a refresh", async () => 
     };
     app.scheduleRefresh({ immediate: true });
     await refreshYielded.promise;
-    assert.equal(app.diffMutationSuspendedControllers.size, 3);
+    assert.equal(app.diffMutationSuspendedControllers.size, 0);
+    assert.equal(originalControllers.every((controller) => !controller.input.disabled), true);
 
     const loaders = [0, 1].map((index) =>
       appendDiffLoader(dom, fileGridFor(dom, `src/chunk-${index}.js`)),
@@ -6194,3 +6195,45 @@ test("inherits sticky visibility for actual rows moved out of a connected root",
     app.stop(); dom.window.close();
   }
 });
+
+for (const changedAndUnsettled of [false, true]) {
+  test(`keeps confirmed review controls usable across chunk yields (changed/unsettled peers: ${changedAndUnsettled})`, async () => {
+    const { app, dom } = await startExtension(manyFileHunkFixture(3));
+    try {
+      app.observer.disconnect();
+      app.constants = { ...app.constants, LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1 };
+      const original = controllersFor(app);
+      if (changedAndUnsettled) {
+        original[1].lines[0].element.querySelector('code').textContent = '+changed';
+        app.rememberDeferredDiffLoadRefresh(original[2].filePath, original[2].fileElement);
+        app.deferredDiffLoadRefreshTimedOut = true;
+      }
+      let yields = 0;
+      app.yieldForLargeRefreshInteraction = async () => {
+        yields += 1;
+        assert.equal(app.reviewControllerIsSuspended(original[0]), false);
+        assert.equal(original[0].input.disabled, false);
+        assert.equal(original[0].collapseButton.disabled, false);
+        assert.equal(original[0].lines[0].control.disabled, false);
+        if (changedAndUnsettled) {
+          const changed = controllersFor(app).find((c) => c.filePath === original[1].filePath);
+          if (changed) {
+            assert.equal(changed.input.disabled, true);
+            assert.equal(changed.collapseButton.disabled, true);
+          }
+          assert.equal(original[2].input.disabled, true);
+          assert.equal(app.reviewControllerIsSuspended(original[2]), true);
+        }
+        if (yields === 2) await app.setLineViewed(original[0].lines[0], true);
+      };
+      app.refreshRunning = true;
+      await app.refresh();
+      assert.equal(yields, 4);
+      assert.equal(original[0].marked, true);
+      assert.equal(original[0].input.disabled, false);
+    } finally {
+      app.refreshRunning = false;
+      app.stop(); dom.window.close();
+    }
+  });
+}

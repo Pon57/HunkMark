@@ -561,6 +561,7 @@
         stickyHunkOriginDocumentTop: null,
         stickyHunkOriginFileDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
+        stickyHunkOrderIndex: null,
       });
       if (controller.returnButton) {
         controller.returnButton.hidden = true;

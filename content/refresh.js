@@ -610,6 +610,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return true;
     },
 
+    confirmedReviewControllersForRefresh(discovered, previousControllers) {
+      const blockedPaths = this.unsettledDiffLoadReviewSuspensionPaths();
+      this.activeHostContextExpansionIntents().forEach((intent) => blockedPaths.add(intent.filePath));
+      const previousCounts = new Map();
+      previousControllers.forEach((controller) => {
+        previousCounts.set(controller.filePath, (previousCounts.get(controller.filePath) ?? 0) + 1);
+      });
+      const byPath = new Map();
+      discovered.forEach((hunk) => {
+        const hunks = byPath.get(hunk.filePath) ?? [];
+        hunks.push(hunk);
+        byPath.set(hunk.filePath, hunks);
+      });
+      const confirmed = new Set();
+      byPath.forEach((hunks, path) => {
+        if (blockedPaths.has(path) || previousCounts.get(path) !== hunks.length) return;
+        const controllers = hunks.map((hunk) => this.controllersByRow.get(hunk.hunkRow));
+        if (hunks.every((hunk, index) => {
+          const controller = controllers[index];
+          const suspension = this.diffMutationSuspendedControllers.get(controller);
+          return this.reviewControllerIsCurrent(controller) &&
+            !controller.collapsePending &&
+            (!suspension || (suspension.inputEnabled &&
+              controller.lines.every((line) => suspension.linesToEnable.has(line)))) &&
+            controller.fileElement === hunk.fileElement && controller.filePath === hunk.filePath &&
+            this.controllerMatchesHunk(controller, hunk) &&
+            controller.hunkCell.contains(controller.actions) &&
+            [controller.input, controller.collapseButton, controller.returnButton].every((control) =>
+              controller.actions.contains(control),
+            ) &&
+            controller.lines.every((line) => !line.control || line.row.contains(line.control)) &&
+            controller.groupRows.length === hunk.groupRows.length &&
+            controller.groupRows.every((row, rowIndex) => row === hunk.groupRows[rowIndex]);
+        })) controllers.forEach((controller) => confirmed.add(controller));
+      });
+      return confirmed;
+    },
+
     async refresh() {
       const forceFullRefreshAfterDiffLoadTimeout =
         this.deferredDiffLoadRefreshTimedOut;
@@ -740,6 +778,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         discovered.length,
       );
       this.suspendReviewControllersForDiffMutation();
+      const confirmedControllers = this.confirmedReviewControllersForRefresh(discovered, previousControllers);
+      if (this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
+        this.restoreDiffMutationSuspendedReviewControls({ onlyControllers: confirmedControllers });
+      }
       await this.yieldForLargeRefreshInteraction(refreshControllerCount);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(cacheGeneration);
@@ -914,6 +956,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             newControllerOptionsByHunk.get(hunk),
           );
           newControllers.push(controller);
+          this.suspendReviewControllersForDiffMutation(null, { controllers: [controller] });
           expansionAssessmentByController.set(
             controller,
             expansionAssessmentByHunk.get(hunk),
@@ -1028,7 +1071,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       this.refreshStickyLayoutReady = true;
 
-      this.suspendReviewControllersForDiffMutation();
+      const unsettledPaths = this.unsettledDiffLoadReviewSuspensionPaths();
+      this.suspendReviewControllersForDiffMutation(null, {
+        controllers: Array.from(this.controllersByRow.values()).filter((controller) =>
+          !confirmedControllers.has(controller) || unsettledPaths.has(controller.filePath),
+        ),
+      });
       await this.yieldForLargeRefreshInteraction(refreshInteractionWork);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {

@@ -3135,3 +3135,35 @@ test("keeps pointer-focused collapse and line controls visible without hover", a
     app.stop(); dom.window.close();
   }
 });
+
+test("installs ranges and clears a never-prepared focused hunk outside the window", async () => {
+  class TestIntersectionObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() {} unobserve() {} disconnect() {}
+  }
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(512, 48, { hunkSize: 1 }), {},
+    { intersectionObserverClass: TestIntersectionObserver, scopeWaitTimeoutMs: 15000 },
+  );
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const tops = controllers.map((_, index) => 500 + index * 100);
+    const viewport = mockStickyRows(dom, controllers, tops);
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    const focused = controllers[450];
+    assert.equal(focused.stickyHunkTimelineSignature, undefined);
+    focused.input.focus();
+    const observer = app.hunkStickyFileVisibilityObserver;
+    observer.callback([{ target: state.fileElement, isIntersecting: true }]);
+    app.updateStickyHunkLayouts();
+    assert.ok(state.preparedControllers.has(focused));
+    assert.ok(state.controllersWithRanges.has(focused));
+    assert.equal(focused.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-push-end'), `${tops[451] - 100}px`);
+    observer.callback([{ target: state.fileElement, isIntersecting: false }]);
+    assert.equal(focused.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'), false);
+    assert.equal(state.controllersWithRanges.size, 0);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});

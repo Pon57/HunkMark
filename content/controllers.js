@@ -711,10 +711,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     suspendReviewControllersForDiffMutation(
       filePaths = null,
-      { allowFileReveal = false } = {},
+      { allowFileReveal = false, controllers = null } = {},
     ) {
       const affectedControllers = Array.from(
-        this.controllersByRow.values(),
+        controllers ?? this.controllersByRow.values(),
       ).filter(
         (controller) => filePaths === null || filePaths.has(controller.filePath),
       );
@@ -799,9 +799,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     restoreDiffMutationSuspendedReviewControls(
-      { keepFilePaths = new Set() } = {},
+      { keepFilePaths = new Set(), onlyControllers = null } = {},
     ) {
       this.diffMutationSuspendedControllers.forEach((state, controller) => {
+        if (onlyControllers && !onlyControllers.has(controller)) {
+          return;
+        }
         if (keepFilePaths.has(controller.filePath)) {
           state.allowFileReveal = true;
           return;

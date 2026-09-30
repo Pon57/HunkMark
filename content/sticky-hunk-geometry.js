@@ -86,6 +86,9 @@
             controller !== state.orderedControllers[index],
         );
       state.orderedControllers = orderedControllers;
+      orderedControllers.forEach((controller, index) => {
+        controller.stickyHunkOrderIndex = index;
+      });
       state.orderDirty = false;
       return orderedControllers;
     },
@@ -107,6 +110,9 @@
       state.orderDirty = false;
       state.orderChanged ||= orderChanged;
       if (orderChanged) {
+        currentControllers.forEach((controller, index) => {
+          controller.stickyHunkOrderIndex = index;
+        });
         this.markStickyHunkOriginsDirty(state);
       }
     },

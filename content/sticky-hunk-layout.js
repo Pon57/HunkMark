@@ -119,15 +119,25 @@
           naturalTops.set(controllers[last + 1], naturalTopFor(controllers[last + 1]));
         }
         const focused = this.focusedStickyHunkController(state);
+        let focusedNext;
         if (focused) {
-          naturalTopFor(focused);
+          naturalTops.set(focused, naturalTopFor(focused));
           contentFor(focused);
+          focusedNext = controllers[focused.stickyHunkOrderIndex + 1];
+          if (focusedNext) {
+            naturalTops.set(focusedNext, naturalTopFor(focusedNext));
+          }
         }
         this.applyStickyHunkStateMeasurements(state, contentMeasurements);
         for (let index = first; index <= last; index += 1) {
           this.syncStickyHunkTimelineRanges(
             controllers[index], naturalTops.get(controllers[index]),
             naturalTops.get(controllers[index + 1]), state.fileOriginDocumentTop,
+          );
+        }
+        if (focused) {
+          this.syncStickyHunkTimelineRanges(
+            focused, naturalTops.get(focused), naturalTops.get(focusedNext), state.fileOriginDocumentTop,
           );
         }
         state.preparedOriginLayoutGeneration = state.originLayoutGeneration;
