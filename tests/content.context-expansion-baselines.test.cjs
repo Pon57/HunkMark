@@ -25,6 +25,36 @@ const {
   currentReactMergedContextEvidenceTable,
 } = require("./content-test-support.cjs");
 
+test("avoids DOM validation when cached review state adds nothing", async () => {
+  const extension = await startExtension(currentReactContextEvidenceFixture());
+  const { app } = extension;
+  try {
+    const controllers = controllersFor(app);
+    const discovered = app.discoverCachedHunks();
+    const readAnchors = app.hostContextExpansionContextAnchorsForRows.bind(app);
+    let reads = 0;
+    app.hostContextExpansionContextAnchorsForRows = (...args) => {
+      reads += 1;
+      return readAnchors(...args);
+    };
+
+    assert.equal(app.attachCachedHostContextExpansionBaselines(discovered), false);
+    assert.equal(reads, 0);
+    discovered.forEach((hunk, index) => {
+      const sources = app.mergeSharedHunkCompletionSources([
+        {
+          key: hunk.sharedCompletionKey,
+          lineKeys: hunk.lines.map((line) => line.key),
+        },
+        ...(hunk.sharedCompletionSources ?? []),
+      ]);
+      assert.deepEqual(sources, controllers[index].sharedCompletionSources);
+    });
+  } finally {
+    stopExtensions(extension);
+  }
+});
+
 test("rejects an ambiguous cached hunk mapping", async () => {
   const { app, dom } = await startExtension(
     currentReactContextEvidenceFixture(),

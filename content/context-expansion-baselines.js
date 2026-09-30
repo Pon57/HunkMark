@@ -289,6 +289,30 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (!snapshot || snapshot.hunks.length !== fileHunks.length) {
           return;
         }
+        // Fresh hunks already provide their own completion source. Without
+        // baseline aliases or additional sources, the cache adds no state.
+        const needsCachedState = snapshot.hunks.some((cached, hunkIndex) => {
+          const hunk = fileHunks[hunkIndex];
+          return (
+            hunk.sharedCompletionSources !== undefined ||
+            cached.lines.some(
+              (line) => line.baselineContextFingerprint !== null,
+            ) ||
+            !Array.isArray(cached.sharedCompletionSources) ||
+            cached.sharedCompletionSources.some(
+              (source) =>
+                !source?.key ||
+                source.key !== hunk.sharedCompletionKey ||
+                !this.sameHostContextExpansionSequence(
+                  source.lineKeys,
+                  hunk.lines.map((line) => line.key),
+                ),
+            )
+          );
+        });
+        if (!needsCachedState) {
+          return;
+        }
         const exactCachedFile = fileHunks.every((hunk, hunkIndex) => {
           const cached = snapshot.hunks[hunkIndex];
           const currentAnchors =
