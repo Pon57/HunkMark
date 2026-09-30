@@ -155,7 +155,13 @@
             if (entry.target === this.document.body) {
               bodyResized = true;
             } else if (this.hunkStickyStateByFile.has(entry.target)) {
-              resizedFileElements.add(entry.target);
+              // Nested content can move enclosing hunks while its ancestors'
+              // own box sizes stay fixed.
+              for (let fileElement = entry.target; fileElement; fileElement = fileElement.parentElement) {
+                if (this.hunkStickyStateByFile.has(fileElement)) {
+                  resizedFileElements.add(fileElement);
+                }
+              }
             }
           });
           if (!bodyResized && resizedFileElements.size === 0) {
@@ -487,6 +493,16 @@
         this.detachStickyHunkHeader(state);
         if (state.visible) {
           this.syncStickyHunkHeader(state);
+        }
+      }
+      if (!rowWasAttached) {
+        state.preparedControllers.delete(controller);
+        if (state.activeController === controller) {
+          state.activeController = null;
+          if (controller.returnButton) {
+            controller.returnButton.hidden = true;
+            controller.returnButton.tabIndex = -1;
+          }
         }
       }
       const controllerAdded = !state.controllers.has(controller);
