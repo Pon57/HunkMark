@@ -75,6 +75,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
       ".hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary",
     ).style;
     assert.match(auxiliary.animationTimeline, /scroll\(root block\)/);
+    assert.match(auxiliary.animation, /disable-auxiliary 1ms steps\(1, start\) both/);
     assert.match(auxiliary.animationRange, /--hunkmark-sticky-hunk-auxiliary-end/);
     assert.match(
       auxiliary.animationRange,
@@ -85,6 +86,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
     );
     assert.ok(reducedMotion);
     assert.match(reducedMotion.cssText, /steps\(1, end\)/);
+    assert.match(reducedMotion.cssText, /steps\(1, end\), steps\(1, start\)/);
     assert.doesNotMatch(style.textContent, /aria-label\^="Expand "/);
     assert.doesNotMatch(style.textContent, /class\*="expand-button"/);
   } finally {

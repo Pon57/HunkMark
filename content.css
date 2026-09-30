@@ -100,6 +100,11 @@
   }
 }
 
+@keyframes hunkmark-sticky-hunk-disable-auxiliary {
+  from { pointer-events: auto; }
+  to { pointer-events: none; }
+}
+
 .hunkmark-sticky-hunk-prepared {
   position: sticky;
   top: calc(
@@ -156,7 +161,9 @@
 }
 
 .hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
-  animation: hunkmark-sticky-hunk-fade-auxiliary 1ms linear both;
+  animation:
+    hunkmark-sticky-hunk-fade-auxiliary 1ms linear both,
+    hunkmark-sticky-hunk-disable-auxiliary 1ms steps(1, start) both;
   animation-timeline: scroll(root block);
   animation-range:
     calc(
@@ -697,7 +704,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
-    animation-timing-function: steps(1, end);
+    animation-timing-function: steps(1, end), steps(1, start);
   }
 
   .hunkmark-sticky-hunk-prepared {
