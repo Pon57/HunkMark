@@ -5223,31 +5223,54 @@ test("checks every affected root before deferring a multi-file refresh", async (
   const scenarios = [
     { name: "every file restored", allRestored: true },
     { name: "only the first file restored", allRestored: false },
-    { name: "expected file reveals", allRestored: true, expectedVisibility: true },
+    { name: "expected file reveals", allRestored: true, expectedFileCount: 2 },
+    {
+      name: "file reveal with another file update",
+      allRestored: true,
+      expectedFileCount: 1,
+    },
+    {
+      name: "only the revealing file restored",
+      allRestored: false,
+      expectedFileCount: 1,
+    },
+    {
+      name: "file hide with another file update",
+      allRestored: true,
+      expectedFileCount: 1,
+      hideFirst: true,
+    },
   ];
-  for (const { name, allRestored, expectedVisibility } of scenarios) {
+  for (const { name, allRestored, expectedFileCount, hideFirst } of scenarios) {
     await t.test(name, async () => {
       const { app, dom } = await startExtension(manyFileHunkFixture(3));
       try {
         app.observer.disconnect();
         const controllers = controllersFor(app);
         const files = controllers.map((controller) => controller.fileElement);
-        if (expectedVisibility) {
-          files.slice(0, 2).forEach((file) => app.expectFileDiffVisibility(file, true));
+        if (expectedFileCount) {
+          files.slice(0, expectedFileCount).forEach((file) =>
+            app.expectFileDiffVisibility(file, !hideFirst),
+          );
         }
         const restoreRoots = [];
         app.finishCleanCachedFileReveal = (root) => {
           restoreRoots.push(root);
-          return allRestored || root === files[0];
+          return (!hideFirst || root !== files[0]) &&
+            (allRestored || root === files[0]);
         };
         app.preserveOfficialViewedRestoredState = () => false;
         app.restoreCachedFileControllers = () => false;
         const refreshes = [];
         app.scheduleRefresh = (options) => refreshes.push(options);
         const mutations = captureMutationBatch(dom, () => {
-          controllers.slice(0, 2).forEach((controller) => {
-            const code = controller.lines[0].element.querySelector("code");
-            code.textContent += " updated";
+          controllers.slice(0, 2).forEach((controller, index) => {
+            if (hideFirst && index === 0) {
+              controller.hunkRow.closest("tbody").replaceChildren();
+            } else {
+              const code = controller.lines[0].element.querySelector("code");
+              code.textContent += " updated";
+            }
           });
         });
 
@@ -5256,7 +5279,7 @@ test("checks every affected root before deferring a multi-file refresh", async (
         assert.deepEqual(restoreRoots, files.slice(0, 2));
         assert.deepEqual(
           refreshes.map(({ immediate }) => immediate),
-          [!allRestored],
+          [Boolean(hideFirst || !allRestored)],
         );
       } finally {
         app.stop();

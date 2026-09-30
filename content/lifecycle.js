@@ -1209,17 +1209,22 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const uniqueExpectedRestoreRoots = [
           ...new Set(expectedRestoreRoots),
         ];
+        const scopedRestoreRoots = new Set(mutationFileElements);
+        if (expectedFileDiffVisibility.changed) {
+          uniqueExpectedRestoreRoots.forEach((root) =>
+            scopedRestoreRoots.add(root),
+          );
+        }
         const restoreRoots = hasUnscopedDiffMutation
           ? [this.document]
-          : expectedFileDiffVisibility.changed
-            ? uniqueExpectedRestoreRoots
-            : Array.from(mutationFileElements).filter(
-                (fileElement) => fileElement.isConnected,
-              );
+          : Array.from(scopedRestoreRoots).filter(
+              (fileElement) => fileElement.isConnected,
+            );
         const expectedHideOnly =
           expectedFileDiffVisibility.changed &&
           !expectedFileDiffVisibility.revealed &&
-          this.fileRevealPrepaintRestores.size === 0;
+          this.fileRevealPrepaintRestores.size === 0 &&
+          hostDiffMutations.length === 0;
         // Removing a diff cannot expose review state that needs restoring.
         // Avoid rediscovering every still-rendered file before the host can
         // paint its Viewed/collapse update; the queued refresh handles cleanup.
