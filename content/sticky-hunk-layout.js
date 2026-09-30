@@ -161,6 +161,8 @@
       const signature = [start, tailStart, inset, bottomInset, distance, pushEnd].join(":");
       // The host can rewrite inline styles while retaining the row and its
       // geometry. Per-property guards restore missing ranges without rewrites.
+      setPixelStyle(controller.hunkRow, "--hunkmark-sticky-hunk-content-inset", inset, true);
+      setPixelStyle(controller.hunkRow, "--hunkmark-sticky-hunk-bottom-inset", bottomInset, true);
       setPixelStyles(controller.hunkRow, [
         ["--hunkmark-sticky-hunk-compress-start", start],
         ["--hunkmark-sticky-hunk-compress-end", start + Math.max(inset, 1)],

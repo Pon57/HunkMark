@@ -2870,6 +2870,8 @@ test("restores rewritten animation styles even when row geometry stays cached", 
     const controller = controllers[0];
     const state = app.hunkStickyStateByFile.get(controller.fileElement);
     mockStickyRows(dom, controllers, [200, 400]);
+    app.measureStickyHunkContentInset = () => ({ inset: 12, bottomInset: 24, compactHeight: 24 });
+    app.markStickyHunkContentDirty(state);
     app.invalidateStickyHunkOrigins(state.fileElement);
     app.updateStickyHunkState(state);
     const style = controller.hunkRow.style;
@@ -2884,6 +2886,8 @@ test("restores rewritten animation styles even when row geometry stays cached", 
     await app.refresh();
     assert.equal(controller.stickyHunkTimelineSignature, signature);
     assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
+    assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-content-inset'), '12px');
+    assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-bottom-inset'), '24px');
     assert.equal(style.color, 'red');
     style.setProperty('--hunkmark-sticky-hunk-push-end', '999px');
     let rangeWrites = 0;

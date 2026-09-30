@@ -39,7 +39,9 @@
 
   function setPixelStyle(element, property, value, removeZero = false) {
     if (removeZero && value === 0) {
-      element.style.removeProperty(property);
+      if (element.style.getPropertyValue(property) !== "") {
+        element.style.removeProperty(property);
+      }
       return;
     }
     const nextValue = `${Math.round(value * 100) / 100}px`;
