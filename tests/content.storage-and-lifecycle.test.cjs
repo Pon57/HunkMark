@@ -5118,6 +5118,154 @@ test("checks only the mutated file when removing stale progress", async () => {
   }
 });
 
+function captureMutationBatch(dom, mutate) {
+  const observer = new dom.window.MutationObserver(() => {});
+  try {
+    observer.observe(dom.window.document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    mutate();
+    return observer.takeRecords();
+  } finally {
+    observer.disconnect();
+  }
+}
+
+test("restores only the affected files in a multi-file mutation batch", async () => {
+  const fixture = manyFileHunkFixture(3).replaceAll(
+    'class="Diff-module__diffHeaderWrapper__chunk"',
+    'data-diff-header-wrapper class="Diff-module__diffHeaderWrapper__chunk"',
+  );
+  const { app, dom } = await startExtension(fixture);
+  try {
+    app.observer.disconnect();
+    const controllers = controllersFor(app);
+    const files = controllers.map((controller) => controller.fileElement);
+    files.forEach((file) =>
+      assert.ok(file.querySelector(".hunkmark-file-progress")),
+    );
+    const restoreRoots = [];
+    const restoreCachedFileControllers =
+      app.restoreCachedFileControllers.bind(app);
+    app.restoreCachedFileControllers = (root) => {
+      restoreRoots.push(root);
+      return restoreCachedFileControllers(root);
+    };
+    const mutations = captureMutationBatch(dom, () => {
+      controllers.slice(0, 2).forEach((controller) =>
+        controller.hunkRow.closest("tbody").replaceChildren(),
+      );
+    });
+
+    app.handleMutations(mutations);
+
+    assert.deepEqual(restoreRoots, files.slice(0, 2));
+    assert.equal(files[0].querySelector(".hunkmark-file-progress"), null);
+    assert.equal(files[1].querySelector(".hunkmark-file-progress"), null);
+    assert.ok(files[2].querySelector(".hunkmark-file-progress"));
+    assert.equal(controllers[2].destroyed, false);
+    assert.equal(controllers[2].actions.isConnected, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("retains document-wide restoration when a batch includes an unowned diff mutation", async (t) => {
+  for (const expectedVisibility of [false, true]) {
+    const name = expectedVisibility ? "during a file reveal" : "ordinary mutation";
+    await t.test(name, async () => {
+      const { app, dom } = await startExtension(manyFileHunkFixture(3));
+      try {
+        app.observer.disconnect();
+        const controllers = controllersFor(app);
+        const restoreRoots = [];
+        const restoreCachedFileControllers =
+          app.restoreCachedFileControllers.bind(app);
+        app.restoreCachedFileControllers = (root) => {
+          restoreRoots.push(root);
+          return restoreCachedFileControllers(root);
+        };
+        if (expectedVisibility) {
+          app.expectFileDiffVisibility(controllers[0].fileElement, true);
+        }
+        const mutations = captureMutationBatch(dom, () => {
+          if (expectedVisibility) {
+            const code = controllers[0].lines[0].element.querySelector("code");
+            code.textContent += " updated";
+          } else {
+            controllers[0].hunkRow.closest("tbody").replaceChildren();
+          }
+          const table = dom.window.document.createElement("table");
+          table.innerHTML = `
+            <tbody><tr>
+              <td class="blob-code-hunk">@@ -100 +100 @@</td>
+            </tr></tbody>`;
+          dom.window.document.body.append(table);
+        });
+        const unscopedGeneration = app.unscopedDiffMutationGeneration;
+
+        app.handleMutations(mutations);
+
+        assert.equal(app.unscopedDiffMutationGeneration, unscopedGeneration + 1);
+        assert.deepEqual(restoreRoots, [dom.window.document]);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("checks every affected root before deferring a multi-file refresh", async (t) => {
+  const scenarios = [
+    { name: "every file restored", allRestored: true },
+    { name: "only the first file restored", allRestored: false },
+    { name: "expected file reveals", allRestored: true, expectedVisibility: true },
+  ];
+  for (const { name, allRestored, expectedVisibility } of scenarios) {
+    await t.test(name, async () => {
+      const { app, dom } = await startExtension(manyFileHunkFixture(3));
+      try {
+        app.observer.disconnect();
+        const controllers = controllersFor(app);
+        const files = controllers.map((controller) => controller.fileElement);
+        if (expectedVisibility) {
+          files.slice(0, 2).forEach((file) => app.expectFileDiffVisibility(file, true));
+        }
+        const restoreRoots = [];
+        app.finishCleanCachedFileReveal = (root) => {
+          restoreRoots.push(root);
+          return allRestored || root === files[0];
+        };
+        app.preserveOfficialViewedRestoredState = () => false;
+        app.restoreCachedFileControllers = () => false;
+        const refreshes = [];
+        app.scheduleRefresh = (options) => refreshes.push(options);
+        const mutations = captureMutationBatch(dom, () => {
+          controllers.slice(0, 2).forEach((controller) => {
+            const code = controller.lines[0].element.querySelector("code");
+            code.textContent += " updated";
+          });
+        });
+
+        app.handleMutations(mutations);
+
+        assert.deepEqual(restoreRoots, files.slice(0, 2));
+        assert.deepEqual(
+          refreshes.map(({ immediate }) => immediate),
+          [!allRestored],
+        );
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),

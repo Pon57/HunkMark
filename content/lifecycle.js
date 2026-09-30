@@ -1096,12 +1096,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (expectedFileDiffVisibility.changed) {
           const fileElements =
             this.diffLoadFileElementsForMutation(mutation);
-          if (
-            fileElements.size > 0 &&
-            Array.from(fileElements).every((fileElement) =>
-              expectedFileDiffVisibility.fileElements.has(fileElement),
-            )
-          ) {
+          // Expected visibility also identifies older host containers that
+          // do not match the current diff-region selectors.
+          const expectedMutation = fileElements.size > 0
+            ? Array.from(fileElements).every((fileElement) =>
+                expectedFileDiffVisibility.fileElements.has(fileElement),
+              )
+            : Array.from(expectedFileDiffVisibility.fileElements).some(
+                (fileElement) =>
+                  mutation.target === fileElement ||
+                  fileElement.contains(mutation.target),
+              );
+          if (expectedMutation) {
             return false;
           }
         }
@@ -1165,20 +1171,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (hasUnscopedDiffMutation) {
           this.unscopedDiffMutationGeneration += 1;
         }
-        const connectedMutationFileElements = Array.from(
-          mutationFileElements,
-        ).filter((fileElement) => fileElement.isConnected);
-        let mutationRestoreRoot = null;
-        if (!hasUnscopedDiffMutation) {
-          if (connectedMutationFileElements.length === 1) {
-            [mutationRestoreRoot] = connectedMutationFileElements;
-          } else if (
-            connectedMutationFileElements.length === 0 &&
-            mutationFileElements.size === 1
-          ) {
-            mutationRestoreRoot = mutationFileElements.values().next().value;
-          }
-        }
         const activeHostContextExpansionIntents =
           this.activeHostContextExpansionIntents();
         let pendingHostContextExpansionIntents = [];
@@ -1217,12 +1209,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const uniqueExpectedRestoreRoots = [
           ...new Set(expectedRestoreRoots),
         ];
-        const restoreRoot = expectedFileDiffVisibility.changed
-          ? uniqueExpectedRestoreRoots.length === 1
-            ? uniqueExpectedRestoreRoots[0]
-            : this.document
-          : mutationRestoreRoot ??
-            this.fileRevealRestoreRootForMutations(hostDiffMutations);
+        const restoreRoots = hasUnscopedDiffMutation
+          ? [this.document]
+          : expectedFileDiffVisibility.changed
+            ? uniqueExpectedRestoreRoots
+            : Array.from(mutationFileElements).filter(
+                (fileElement) => fileElement.isConnected,
+              );
         const expectedHideOnly =
           expectedFileDiffVisibility.changed &&
           !expectedFileDiffVisibility.revealed &&
@@ -1230,16 +1223,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
         // Removing a diff cannot expose review state that needs restoring.
         // Avoid rediscovering every still-rendered file before the host can
         // paint its Viewed/collapse update; the queued refresh handles cleanup.
-        const restored = expectedHideOnly || hostContextExpansionPending
-          ? false
-          : this.finishCleanCachedFileReveal(restoreRoot) ||
-            this.preserveOfficialViewedRestoredState(restoreRoot) ||
-            this.restoreCachedFileControllers(restoreRoot);
+        // Visit every affected root even when an earlier file was restored.
+        const restorationResults = restoreRoots.map((root) =>
+          expectedHideOnly || hostContextExpansionPending
+            ? false
+            : this.finishCleanCachedFileReveal(root) ||
+              this.preserveOfficialViewedRestoredState(root) ||
+              this.restoreCachedFileControllers(root),
+        );
+        const restored = restorationResults.some(Boolean);
         this.finishReadyFileRevealPrepaintRestores();
         const canDeferRefresh =
-          restoreRoot !== this.document &&
-          restored &&
-          !this.fileRevealPrepaintRestores.has(restoreRoot);
+          restoreRoots.length > 0 &&
+          restoreRoots.every((root, index) =>
+            root !== this.document &&
+            restorationResults[index] &&
+            !this.fileRevealPrepaintRestores.has(root),
+          );
         const diffLoadExpectedRoots =
           uniqueExpectedRestoreRoots.length > 0
             ? uniqueExpectedRestoreRoots

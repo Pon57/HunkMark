@@ -1016,28 +1016,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
-    fileRevealRestoreRootForMutations(mutations) {
-      const roots = Array.from(this.fileRevealPrepaintRestores.keys()).filter(
-        (fileElement) =>
-          fileElement.isConnected &&
-          mutations.some(
-            (mutation) =>
-              mutation.target === fileElement ||
-              fileElement.contains(mutation.target),
-          ),
-      );
-      if (roots.length !== 1) {
-        return this.document;
-      }
-      const [root] = roots;
-      return mutations.every(
-        (mutation) =>
-          mutation.target === root || root.contains(mutation.target),
-      )
-        ? root
-        : this.document;
-    },
-
     preserveOfficialViewedRestoredState(searchRoot = this.document) {
       if (this.officialViewedRestoreGuards.size === 0) {
         return false;
