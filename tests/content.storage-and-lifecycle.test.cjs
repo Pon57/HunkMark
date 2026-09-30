@@ -5959,6 +5959,185 @@ test("refreshes when an untracked context identity changes", async () => {
   }
 });
 
+for (const [layout, fixture] of [
+  ["split", currentReactSplitContextExpansionFixture],
+  ["unified", currentReactContextExpansionFixture],
+]) {
+  for (const initiallyCommented of [true, false]) {
+    test(`reserves native comment space in ${layout} lines ${initiallyCommented ? "on startup" : "after comment changes"}`, async () => {
+      const fixtureDom = new JSDOM(fixture());
+      const cells = fixtureDom.window.document.querySelectorAll('.diff-text-cell');
+      cells.forEach((cell) => { cell.style.cssText = 'line-height: 24px; padding-right: 24px'; });
+      const target = fixtureDom.window.document.querySelector('.right-side-diff-cell');
+      const badgeHtml = '<div aria-hidden="true" data-width="24" class="SimpleDiff-module__comment-indicator__iwZDp"><span class="commentIndicatorText">1</span></div>' +
+        '<div><div data-width="190" class="ActionBar-module__action-bar-position__QToB4">Nested comment actions</div></div>' +
+        '<div data-width="69" class="ActionBar-module__action-bar-position__QToB4"><button aria-label="View comments">1</button><button aria-label="More actions">▼</button></div>';
+      if (initiallyCommented) {
+        target.style.paddingRight = '80px';
+        target.insertAdjacentHTML('beforeend', badgeHtml);
+      } else {
+        target.insertAdjacentHTML('beforeend', '<div data-width="24" class="ActionBar-module__action-bar-position__QToB4"><button aria-label="More actions">▼</button></div>');
+      }
+      const nativeStyles = fixtureDom.window.document.createElement('style');
+      nativeStyles.textContent = '[class*="ActionBar-module__action-bar-position__"] { position: absolute; right: 0; }' +
+        '[class*="SimpleDiff-module__comment-indicator__"] { position: absolute; right: 27px; }';
+      fixtureDom.window.document.head.append(nativeStyles);
+      const html = fixtureDom.serialize();
+      fixtureDom.window.close();
+      class TestResizeObserver {
+        constructor(callback) { this.callback = callback; this.observed = new Set(); }
+        observe(element) { this.observed.add(element); }
+        unobserve(element) { this.observed.delete(element); }
+        disconnect() { this.observed.clear(); }
+      }
+      const subscriptions = [];
+      let responsiveRight = null;
+      const { app, dom } = await startExtension(html, {}, {
+        resizeObserverClass: TestResizeObserver,
+        setupWindow(window) {
+          window.scrollTo = () => {};
+          const computedStyle = window.getComputedStyle.bind(window);
+          window.getComputedStyle = (element, pseudoElement) => {
+            const style = computedStyle(element, pseudoElement);
+            return responsiveRight !== null && element.matches('[class*="ActionBar-module__action-bar-position__"]')
+              ? { right: `${responsiveRight}px`, marginRight: style.marginRight } : style;
+          };
+          const NativeMutationObserver = window.MutationObserver;
+          window.MutationObserver = class extends NativeMutationObserver {
+            observe(target, options) {
+              subscriptions.push({ target, options });
+              return super.observe(target, options);
+            }
+          };
+          const rect = window.Element.prototype.getBoundingClientRect;
+          window.Element.prototype.getBoundingClientRect = function () {
+            if (this.matches('[class*="ActionBar-module__action-bar-position__"]')) {
+              const width = Number(this.dataset.width);
+              return { left: 400 - width, right: 400, width, height: 24, top: 0 };
+            }
+            if (this.matches('[class*="SimpleDiff-module__comment-indicator__"]')) {
+              const width = Number(this.dataset.width);
+              return { left: 400 - 27 - width, right: 373, width, height: 24, top: 0 };
+            }
+            if (this.matches('.diff-text-cell')) return { left: 0, right: 400, width: 400, height: 24, top: 0 };
+            return rect.call(this);
+          };
+        },
+      });
+      let observer;
+      try {
+        const lines = controllersFor(app).flatMap((controller) => controller.lines);
+        const line = lines.find((entry) => entry.side === 'right');
+        const control = line.control;
+        const key = line.key;
+        const inset = () => line.element.style.getPropertyValue('--hunkmark-host-line-action-inset');
+        assert.equal(inset(), initiallyCommented ? '69px' : '24px');
+        installContentStyles(dom);
+        let refreshes = 0;
+        app.refresh = async () => { refreshes += 1; };
+        const measured = [];
+        const measure = app.measureLineHostLayout.bind(app);
+        app.measureLineHostLayout = (entry) => { measured.push(entry); return measure(entry); };
+        if (!initiallyCommented) {
+          const menu = line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]');
+          const menuObserver = app.lineControlHostLayoutObserver;
+          assert.ok(menuObserver.observed.has(menu));
+          menu.dataset.width = '30';
+          menuObserver.callback([{ target: menu }]);
+          assert.equal(inset(), '30px');
+          menu.remove();
+          await app.setLineViewed(line, true);
+          line.element.style.paddingRight = '80px';
+          line.element.insertAdjacentHTML('beforeend', badgeHtml);
+          await waitFor(() => assert.equal(inset(), '69px'));
+          assert.equal(line.marked, true);
+          assert.equal(line.control, control);
+          assert.equal(line.key, key);
+        }
+        const badge = line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]');
+        observer = app.lineControlHostLayoutObserver;
+        assert.equal(dom.window.getComputedStyle(control).right,
+          'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
+        assert.ok(observer.observed.has(badge));
+        assert.equal(observer.observed.has(line.element), false);
+        badge.dataset.width = '83';
+        observer.callback([{ target: badge }]);
+        assert.equal(inset(), '83px');
+        const readsBeforeResize = measured.length;
+        responsiveRight = 16;
+        dom.window.dispatchEvent(new dom.window.Event('resize'));
+        assert.equal(inset(), '99px');
+        assert.ok(measured.length > readsBeforeResize);
+        responsiveRight = null;
+        dom.window.dispatchEvent(new dom.window.Event('resize'));
+        assert.equal(inset(), '83px');
+        measured.length = 0;
+        line.element.style.paddingRight = '24px';
+        badge.remove();
+        line.element.querySelector('[class*="comment-indicator"]').remove();
+        await waitFor(() => assert.equal(inset(), '24px'));
+        assert.equal(dom.window.getComputedStyle(control).right,
+          'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
+        assert.equal(observer.observed.has(badge), false);
+        line.element.style.paddingRight = '40px';
+        await waitFor(() => assert.equal(inset(), '40px'));
+        const hostStyle = dom.window.document.createElement('style');
+        hostStyle.textContent = '.native-comment-gutter { padding-right: 64px !important; }';
+        dom.window.document.head.append(hostStyle);
+        line.element.classList.add('native-comment-gutter');
+        await waitFor(() => assert.equal(inset(), '64px'));
+        line.element.classList.remove('hunkmark-line-cell');
+        await waitFor(() => assert.ok(line.element.classList.contains('hunkmark-line-cell')));
+        const readsBeforeOwnChange = measured.length;
+        line.element.classList.add('hunkmark-line-drag-touched');
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+        assert.equal(measured.length, readsBeforeOwnChange);
+        assert.ok(measured.length > 0);
+        assert.ok(measured.every((entry) => lines.includes(entry)));
+        assert.equal(refreshes, 0);
+        lines.filter((entry) => entry !== line).forEach((entry) => {
+          assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '24px');
+        });
+        line.element.insertAdjacentHTML('beforeend', badgeHtml);
+        await waitFor(() => assert.equal(inset(), '69px'));
+        hostStyle.textContent += '.native-action-offset [class*="ActionBar-module__action-bar-position__"] { right: 12px; }';
+        const fileState = app.hunkStickyStateByFile.get(line.controller.fileElement);
+        line.controller.fileElement.classList.add('native-action-offset');
+        await waitFor(() => assert.equal(inset(), '81px'));
+        assert.ok(measured.every((entry) => entry.controller.fileElement === line.controller.fileElement));
+        assert.equal(subscriptions.some(({ target, options }) =>
+          target === dom.window.document.documentElement && options.attributes && options.subtree), false);
+        const unrelated = dom.window.document.createElement('div');
+        dom.window.document.body.append(unrelated);
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+        let attributeCallbacks = 0;
+        const handleAttributes = app.updateLineControlHostLayoutsForAttributes.bind(app);
+        app.updateLineControlHostLayoutsForAttributes = (...args) => {
+          attributeCallbacks += 1;
+          return handleAttributes(...args);
+        };
+        unrelated.className = 'other-github-ui';
+        unrelated.style.width = '30px';
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+        assert.equal(attributeCallbacks, 0);
+        app.setStickyHunkStateVisibility(fileState, false);
+        assert.equal(fileState.lineAttributeObserver, null);
+        line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]').style.right = '20px';
+        app.setStickyHunkStateVisibility(fileState, true);
+        assert.equal(inset(), '89px');
+        assert.ok(fileState.lineAttributeObserver);
+        line.controller.fileElement.remove();
+        app.destroyController(line.controller);
+        assert.equal(observer.observed.size, 0);
+        assert.equal(fileState.lineAttributeObserver, null);
+      } finally {
+        app.stop(); dom.window.close();
+        assert.equal(observer?.observed.size ?? 0, 0);
+      }
+    });
+  }
+}
+
 test("supports GitHub's current React diff with persistent controls visible", async () => {
   const { app, dom } = await startExtension(modernGridFixture());
   try {

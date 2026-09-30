@@ -223,8 +223,10 @@
         this.markStickyHunkContentDirty(state);
         this.markStickyHunkOriginsDirty(state);
         this.hunkStickyVisibleStates.add(state);
+        this.ensureLineControlAttributeObserver(state, { refresh: true });
         return;
       }
+      this.stopLineControlAttributeObserver(state);
       state.controllers.forEach((controller) =>
         this.unobserveStickyHunkRow(controller),
       );
@@ -349,6 +351,8 @@
         fileOriginDocumentTop: null,
         header: null,
         headerAttributeObserver: null,
+        lineAttributeObserver: null,
+        lineAttributeAncestors: [],
         orderDirty: true,
         orderedControllers: [],
         originLayoutGeneration: 0,
@@ -540,6 +544,7 @@
       );
       controller.stickyHunkFocusOutHandler ??= () => this.scheduleStickyHunkLayout();
       controller.hunkRow.addEventListener("focusout", controller.stickyHunkFocusOutHandler);
+      this.ensureLineControlAttributeObserver(state);
       if (layoutChanged) {
         this.scheduleStickyHunkLayout();
       }
@@ -599,6 +604,7 @@
         return;
       }
       this.detachStickyHunkHeader(state);
+      this.stopLineControlAttributeObserver(state);
       fileElement.style.removeProperty("--hunkmark-sticky-hunk-top");
       fileElement.style.removeProperty("--hunkmark-sticky-hunk-file-start");
       this.hunkStickyFileLayoutObserver?.unobserve?.(fileElement);
@@ -612,6 +618,7 @@
 
     cleanupStickyHunks() {
       this.hunkStickyStateByFile.forEach((state) => {
+        this.stopLineControlAttributeObserver(state);
         state.controllers.forEach((controller) => {
           controller.stickyHunkRowObserved = false;
           this.clearStickyHunkTimeline(controller);

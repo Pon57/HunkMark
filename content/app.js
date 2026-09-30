@@ -141,6 +141,7 @@
       this.controllersByRow = new Map();
       this.lineControllersByElement = new WeakMap();
       this.lineControlVisibilityObserver = null;
+      this.lineControlHostLayoutObserver = null;
       this.hunkStickyHeaderObserver = null;
       this.hunkStickyRowObserver = null;
       this.hunkStickyControllerByRow = new WeakMap();
