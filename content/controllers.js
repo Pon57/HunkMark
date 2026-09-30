@@ -597,7 +597,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       controller.groupRows = nextRows;
       if (hostRevealedRows && hostRevealedRowsCanExpand) {
-        void this.setCollapsed(controller, false);
+        void this.setCollapsed(controller, false, {
+          allowWhileSuspended: true,
+        });
       } else {
         this.applyControllerAppearance(controller);
       }
@@ -709,10 +711,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     suspendReviewControllersForDiffMutation(
       filePaths = null,
-      { allowFileReveal = false } = {},
+      { allowFileReveal = false, controllers = null } = {},
     ) {
       const affectedControllers = Array.from(
-        this.controllersByRow.values(),
+        controllers ?? this.controllersByRow.values(),
       ).filter(
         (controller) => filePaths === null || filePaths.has(controller.filePath),
       );
@@ -797,9 +799,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     restoreDiffMutationSuspendedReviewControls(
-      { keepFilePaths = new Set() } = {},
+      { keepFilePaths = new Set(), onlyControllers = null } = {},
     ) {
       this.diffMutationSuspendedControllers.forEach((state, controller) => {
+        if (onlyControllers && !onlyControllers.has(controller)) {
+          return;
+        }
         if (keepFilePaths.has(controller.filePath)) {
           state.allowFileReveal = true;
           return;
@@ -959,10 +964,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return null;
     },
 
-    async setCollapsed(controller, collapsed) {
+    async setCollapsed(
+      controller,
+      collapsed,
+      { allowWhileSuspended = false } = {},
+    ) {
       if (
         !this.reviewControllerIsCurrent(controller) ||
-        this.reviewControllerIsSuspended(controller)
+        (!allowWhileSuspended &&
+          this.reviewControllerIsSuspended(controller))
       ) {
         return false;
       }

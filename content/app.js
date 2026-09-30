@@ -205,6 +205,7 @@
       this.progressUpdateTimer = null;
       this.refreshQueued = false;
       this.refreshRunning = false;
+      this.refreshStickyLayoutReady = false;
       this.refreshAfterDiffLoadHydrations = false;
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;

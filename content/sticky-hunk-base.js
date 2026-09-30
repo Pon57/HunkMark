@@ -12,18 +12,12 @@
   const styleNames = (...suffixes) => Object.freeze(
     suffixes.map((suffix) => `--hunkmark-sticky-hunk-${suffix}`),
   );
-  const TIMELINE_CLASSES = classNames("compressing", "phase-a", "phase-b");
   const TIMELINE_STYLES = styleNames(
     "compress-start", "compress-end", "tail-start", "tail-end",
-    "auxiliary-start", "auxiliary-end",
+    "auxiliary-start", "auxiliary-end", "push-distance", "push-start", "push-end",
   );
-  const PUSH_CLASSES = classNames("pushing", "push-phase-a", "push-phase-b");
-  const PUSH_STYLES = styleNames("push-distance", "push-start", "push-end");
   const CONTENT_STYLES = styleNames("content-inset", "bottom-inset");
-  const ROW_CLASSES = classNames(
-    "active", "candidate", "past", "row", "compressing", "phase-a",
-    "phase-b", "pushing", "push-phase-a", "push-phase-b",
-  );
+  const ROW_CLASSES = classNames("active", "row", "prepared");
 
   function clearClasses(element, classes) {
     element?.classList.remove(...classes);
@@ -43,15 +37,11 @@
     return 0;
   }
 
-  function setAnimationPhase(element, activeClass, phasePrefix, phase) {
-    element.classList.add(activeClass);
-    element.classList.toggle(`${phasePrefix}-a`, phase === "a");
-    element.classList.toggle(`${phasePrefix}-b`, phase === "b");
-  }
-
   function setPixelStyle(element, property, value, removeZero = false) {
     if (removeZero && value === 0) {
-      element.style.removeProperty(property);
+      if (element.style.getPropertyValue(property) !== "") {
+        element.style.removeProperty(property);
+      }
       return;
     }
     const nextValue = `${Math.round(value * 100) / 100}px`;
@@ -72,20 +62,15 @@
       ".hunk-kebab-icon",
       namespace.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
     ].join(", "),
-    PUSH_CLASSES,
-    PUSH_STYLES,
     ROW_CLASSES,
     ROW_STYLES: Object.freeze([
       ...CONTENT_STYLES,
       ...TIMELINE_STYLES,
-      ...PUSH_STYLES,
     ]),
-    TIMELINE_CLASSES,
     TIMELINE_STYLES,
     clearClasses,
     clearStyles,
     firstPositiveNumber,
-    setAnimationPhase,
     setPixelStyle,
     setPixelStyles,
   });

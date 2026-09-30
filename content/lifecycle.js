@@ -805,6 +805,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           return;
         }
         this.refreshRunning = true;
+        this.refreshStickyLayoutReady = false;
         try {
           await this.refresh();
         } catch (error) {
@@ -814,11 +815,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
           }
         } finally {
           this.refreshRunning = false;
+          this.refreshStickyLayoutReady = false;
           if (!this.stopped && this.refreshAgain) {
             const rerunImmediately = this.refreshAgainImmediate;
             this.refreshAgain = false;
             this.refreshAgainImmediate = false;
             this.scheduleRefresh({ immediate: rerunImmediately });
+          } else {
+            this.scheduleStickyHunkLayout();
           }
           this.pumpDiffLoadFileHydrations();
         }
@@ -1087,9 +1091,18 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (mutation) => !this.mutationIsExtensionOnly(mutation),
       );
       if (hostMutations.length > 0) {
-        // Host DOM outside the diff can still move every cached hunk origin.
-        // Invalidate positions without paying for an unrelated rediscovery.
-        this.invalidateVisibleStickyHunkOrigins();
+        // Host DOM can translate every file. Diff-owned mutation targets also
+        // invalidate the internal geometry of their ancestor file states.
+        if (this.hunkStickyFileLayoutObserver) {
+          this.invalidateVisibleStickyHunkOrigins({
+            translationOnly: true,
+          });
+          this.invalidateStickyHunkOriginsForMutations(
+            hostMutations,
+          );
+        } else {
+          this.invalidateVisibleStickyHunkOrigins();
+        }
         this.scheduleViewportHydrationReflowPriority();
       }
       const generationHostDiffMutations = hostMutations.filter((mutation) => {
@@ -1341,9 +1354,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.scheduleStickyHunkLayout();
         this.scheduleViewportHydrationPriority();
       };
-      this.boundStickyHunkNavigationIntent = () => {
+      this.boundStickyHunkNavigationIntent = (event) => {
         if (this.hunkStickyStateByFile.size > 0) {
-          this.cancelStickyHunkReturn();
+          if (event.type !== "click" || event.isTrusted) {
+            this.cancelStickyHunkReturn();
+          }
+          // CSS may have crossed a hunk boundary before the scroll callback.
+          // Synchronize interaction state before an activation, not on wheel.
+          if (event.type !== "wheel") {
+            const controller = this.stickyHunkControllerForInteractionTarget(event.target);
+            if (controller) {
+              this.updateStickyHunkInteractionsForControllers([controller]);
+            }
+          }
         }
       };
       this.boundStickyHunkResize = () => {
@@ -1390,6 +1413,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
       this.document.addEventListener(
         "keydown",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
+      this.document.addEventListener(
+        "click",
         this.boundStickyHunkNavigationIntent,
         true,
       );
@@ -1534,6 +1562,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.document.removeEventListener("pjax:end", this.boundScheduleRefresh);
       this.window.removeEventListener("popstate", this.boundScheduleRefresh);
       this.window.removeEventListener("scroll", this.boundStickyHunkLayout);
+      this.document.removeEventListener(
+        "click",
+        this.boundStickyHunkNavigationIntent,
+        true,
+      );
       this.window.removeEventListener(
         "wheel",
         this.boundStickyHunkNavigationIntent,

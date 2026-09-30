@@ -14,6 +14,7 @@ const {
   waitFor,
   startExtension,
   semanticMergeableHunkFixture,
+  largeChangedBlockFixture,
   replaceSemanticMergeFixtureRows,
   currentReactContextExpansionFixture,
   currentReactContextEvidenceFixture,
@@ -207,7 +208,7 @@ for (const scenario of [
       };
       let yields = 0;
       let storagePaused = false;
-      // Interrupt the host update either before discovery or during restoration.
+      // A collapsed-layout anchor suppresses controller-chunk yields.
       const interruptionYield = scenario.expiresIntent ? 1 : 2;
       const yieldForRefresh = app.yieldForLargeRefreshInteraction.bind(app);
       app.yieldForLargeRefreshInteraction = async (...args) => {
@@ -223,7 +224,6 @@ for (const scenario of [
         if (
           scenario.pauseDuringStorage &&
           !storagePaused &&
-          yields === 2 &&
           Array.isArray(keys) &&
           keys.includes(
             app.controllersByRow.get(first.hunkRow)?.lines[0]?.key,
@@ -252,9 +252,10 @@ for (const scenario of [
       );
       headerText.nodeValue = "@@ -9,4 +9,5 @@";
       await waitFor(() => {
-        assert.equal(yields, interruptionYield);
         if (scenario.pauseDuringStorage) {
           assert.equal(storagePaused, true);
+        } else {
+          assert.equal(yields, interruptionYield);
         }
       });
       assert.equal(controllerFor(app, first.filePath).input.disabled, true);
@@ -329,6 +330,45 @@ for (const scenario of [
     }
   });
 }
+
+test("does not yield between controller attachment and collapsed-layout restoration", async () => {
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(103, 48, { hunkSize: 1 }),
+  );
+  try {
+    app.constants = {
+      ...app.constants,
+      LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+    };
+    let attached = 0;
+    const events = [];
+    const attachStickyHunkRow = app.attachStickyHunkRow.bind(app);
+    app.attachStickyHunkRow = (...args) => {
+      attached += 1;
+      return attachStickyHunkRow(...args);
+    };
+    const anchor = {};
+    app.hostContextExpansionCollapsedLayoutAnchor = () => anchor;
+    app.restoreHostContextExpansionCollapsedLayout = (candidate) => {
+      assert.equal(candidate, anchor);
+      events.push(["restore", attached]);
+      return true;
+    };
+    app.yieldForLargeRefreshInteraction = async () => {
+      events.push(["yield", attached]);
+    };
+
+    await app.refresh();
+
+    assert.deepEqual(events, [
+      ["yield", 0],
+      ["restore", 103],
+      ["yield", 103],
+    ]);
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
 
 test("keeps each file usable only when ready through expansion hide and reveal", async () => {
   const fixture = new JSDOM(trailingNativeExpansionFixture());
@@ -1242,6 +1282,10 @@ test("anchors only the collapsed layout opened by a directional expansion", asyn
         top: sourceTop,
       };
     };
+    app.markStickyHunkOriginsDirty(
+      app.hunkStickyStateByFile.get(third.fileElement),
+    );
+    app.updateStickyHunkLayouts();
     const scrollCalls = [];
     dom.window.scrollBy = (options) => scrollCalls.push(options);
     app.handleHostContextExpansionClick({

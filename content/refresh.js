@@ -610,6 +610,44 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return true;
     },
 
+    confirmedReviewControllersForRefresh(discovered, previousControllers) {
+      const blockedPaths = this.unsettledDiffLoadReviewSuspensionPaths();
+      this.activeHostContextExpansionIntents().forEach((intent) => blockedPaths.add(intent.filePath));
+      const previousCounts = new Map();
+      previousControllers.forEach((controller) => {
+        previousCounts.set(controller.filePath, (previousCounts.get(controller.filePath) ?? 0) + 1);
+      });
+      const byPath = new Map();
+      discovered.forEach((hunk) => {
+        const hunks = byPath.get(hunk.filePath) ?? [];
+        hunks.push(hunk);
+        byPath.set(hunk.filePath, hunks);
+      });
+      const confirmed = new Set();
+      byPath.forEach((hunks, path) => {
+        if (blockedPaths.has(path) || previousCounts.get(path) !== hunks.length) return;
+        const controllers = hunks.map((hunk) => this.controllersByRow.get(hunk.hunkRow));
+        if (hunks.every((hunk, index) => {
+          const controller = controllers[index];
+          const suspension = this.diffMutationSuspendedControllers.get(controller);
+          return this.reviewControllerIsCurrent(controller) &&
+            !controller.collapsePending &&
+            (!suspension || (suspension.inputEnabled &&
+              controller.lines.every((line) => suspension.linesToEnable.has(line)))) &&
+            controller.fileElement === hunk.fileElement && controller.filePath === hunk.filePath &&
+            this.controllerMatchesHunk(controller, hunk) &&
+            controller.hunkCell.contains(controller.actions) &&
+            [controller.input, controller.collapseButton, controller.returnButton].every((control) =>
+              controller.actions.contains(control),
+            ) &&
+            controller.lines.every((line) => !line.control || line.row.contains(line.control)) &&
+            controller.groupRows.length === hunk.groupRows.length &&
+            controller.groupRows.every((row, rowIndex) => row === hunk.groupRows[rowIndex]);
+        })) controllers.forEach((controller) => confirmed.add(controller));
+      });
+      return confirmed;
+    },
+
     async refresh() {
       const forceFullRefreshAfterDiffLoadTimeout =
         this.deferredDiffLoadRefreshTimedOut;
@@ -697,6 +735,25 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       const refreshSnapshot = this.hunkDiscoverySnapshot(this.document);
       const previousControllers = Array.from(this.controllersByRow.values());
+      // Keep the states, rather than a visibility snapshot: observer callbacks
+      // during discovery/yields remain authoritative even after replacement.
+      const previousStickyHunkStatesByFileElement =
+        this.hunkStickyFileVisibilityObserver
+          ? new Map(this.hunkStickyStateByFile)
+          : null;
+      const previousStickyHunkStatesByFilePath = new Map();
+      const previousStickyHunkStatesByRow = new Map();
+      if (previousStickyHunkStatesByFileElement) {
+        previousControllers.forEach((controller) => {
+          const state = previousStickyHunkStatesByFileElement.get(controller.fileElement);
+          if (state) {
+            const states = previousStickyHunkStatesByFilePath.get(controller.filePath) ?? new Set();
+            states.add(state);
+            previousStickyHunkStatesByFilePath.set(controller.filePath, states);
+            previousStickyHunkStatesByRow.set(controller.hunkRow, state);
+          }
+        });
+      }
       const cacheGeneration =
         this.Core.beginIdentifierCacheGeneration();
       let discovered;
@@ -721,14 +778,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         discovered.length,
       );
       this.suspendReviewControllersForDiffMutation();
+      const confirmedControllers = this.confirmedReviewControllersForRefresh(discovered, previousControllers);
+      if (this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
+        this.restoreDiffMutationSuspendedReviewControls({ onlyControllers: confirmedControllers });
+      }
       await this.yieldForLargeRefreshInteraction(refreshControllerCount);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(cacheGeneration);
         return;
       }
-      this.restoreDiffMutationSuspendedReviewControls({
-        keepFilePaths: this.unsettledDiffLoadReviewSuspensionPaths(),
-      });
       this.Core.commitIdentifierCacheGeneration(cacheGeneration);
       this.attachCachedHostContextExpansionBaselines(discovered);
       const hostContextExpansionIntents =
@@ -872,7 +930,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       });
 
-      discovered.forEach((hunk) => {
+      const controllerChunkSize = Math.max(
+        1,
+        this.constants.LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD,
+      );
+      for (let index = 0; index < discovered.length; index += 1) {
+        const hunk = discovered[index];
         let controller = this.controllersByRow.get(hunk.hunkRow);
         if (controller) {
           controller.fileElement = hunk.fileElement;
@@ -889,6 +952,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             newControllerOptionsByHunk.get(hunk),
           );
           newControllers.push(controller);
+          this.suspendReviewControllersForDiffMutation(null, { controllers: [controller] });
           expansionAssessmentByController.set(
             controller,
             expansionAssessmentByHunk.get(hunk),
@@ -901,7 +965,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
           stickyControllersByFile.get(hunk.fileElement) ?? [];
         stickyControllers.push(controller);
         stickyControllersByFile.set(hunk.fileElement, stickyControllers);
-      });
+        if (
+          !collapsedLayoutAnchor &&
+          refreshControllerCount >= controllerChunkSize &&
+          (index + 1) % controllerChunkSize === 0 &&
+          index + 1 < discovered.length
+        ) {
+          await this.yieldForLargeRefreshInteraction(
+            refreshControllerCount,
+          );
+          if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
+            this.abortRefreshForStaleDiff(null, {
+              discardControllers: newControllers,
+              hostContextExpansionIntentsByFilePath,
+            });
+            return;
+          }
+        }
+      }
 
       const orderedControllers = discovered
         .map((hunk) => this.controllersByRow.get(hunk.hunkRow))
@@ -924,14 +1005,74 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.syncStickyHunkHeader(state);
         }
       });
+      const previouslyVisibleStickyHunkFileElements = new Set();
+      if (previousStickyHunkStatesByFileElement) {
+        const sourceStatesByFileElement = new Map();
+        discovered.forEach((hunk) => {
+          const states = sourceStatesByFileElement.get(hunk.fileElement) ?? new Set();
+          const rowState = previousStickyHunkStatesByRow.get(hunk.hunkRow);
+          if (rowState) {
+            states.add(rowState);
+          } else {
+            (previousByHunk.get(hunk) ?? []).forEach((controller) => {
+              const state = previousStickyHunkStatesByRow.get(controller.hunkRow);
+              if (state && !state.fileElement.isConnected) {
+                states.add(state);
+              }
+            });
+          }
+          sourceStatesByFileElement.set(hunk.fileElement, states);
+        });
+        stickyControllersByFile.forEach((controllers, fileElement) => {
+          let previousState = previousStickyHunkStatesByFileElement.get(fileElement);
+          if (!previousState) {
+            const sourceStates = sourceStatesByFileElement.get(fileElement);
+            const pathStates = new Set(controllers.flatMap((controller) =>
+              Array.from(previousStickyHunkStatesByFilePath.get(controller.filePath) ?? []),
+            ).filter((state) =>
+              !state.fileElement.isConnected || sourceStates?.has(state),
+            ));
+            const idMatches = fileElement.id ? Array.from(pathStates).filter(
+              (state) => state.fileElement.id === fileElement.id,
+            ) : [];
+            const detachedStates = Array.from(pathStates).filter((state) => !state.fileElement.isConnected);
+            // Surviving roots and stable root IDs take precedence over path
+            // matches. Shared paths alone cannot identify a replacement.
+            if (idMatches.length === 1) {
+              [previousState] = idMatches;
+            } else if (sourceStates?.size === 1) {
+              [previousState] = sourceStates;
+            } else if (pathStates.size === 1) {
+              [previousState] = pathStates;
+            } else if (detachedStates.length === 1) {
+              [previousState] = detachedStates;
+            }
+          }
+          if (previousState?.visible) {
+            previouslyVisibleStickyHunkFileElements.add(fileElement);
+          }
+        });
+      }
       // GitHub has already completed the host mutation. Correct only the
       // additional synchronous displacement caused by HunkMark revealing
       // previously collapsed rows, before any asynchronous storage read.
       this.restoreHostContextExpansionCollapsedLayout(
         collapsedLayoutAnchor,
       );
+      this.updateStickyHunkLayouts({
+        allowDuringRefresh: true,
+        includeFileElements: previousStickyHunkStatesByFileElement
+          ? previouslyVisibleStickyHunkFileElements
+          : null,
+      });
+      this.refreshStickyLayoutReady = true;
 
-      this.suspendReviewControllersForDiffMutation();
+      const unsettledPaths = this.unsettledDiffLoadReviewSuspensionPaths();
+      this.suspendReviewControllersForDiffMutation(null, {
+        controllers: Array.from(this.controllersByRow.values()).filter((controller) =>
+          !confirmedControllers.has(controller) || unsettledPaths.has(controller.filePath),
+        ),
+      });
       await this.yieldForLargeRefreshInteraction(refreshControllerCount);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {

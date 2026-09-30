@@ -31,7 +31,9 @@ const {
   loadDiffFixture,
   currentReactContextExpansionFixture,
   currentReactContextEvidenceFixture,
+  currentReactOverlappingContextExpansionFixture,
   currentReactSplitContextExpansionFixture,
+  replaceCurrentReactDirectionalRegion,
   contextualLineFixture,
 } = require("./content-test-support.cjs");
 
@@ -1940,51 +1942,392 @@ test("does not inspect DOM mutations while outside a pull request diff", async (
   }
 });
 
-test("yields between interaction-sensitive phases of a large refresh", async () => {
+test("yields before, between, and after stable and cold controller refreshes", async () => {
+  const frames = new Map();
+  const intersectionObservers = [];
+  let nextFrameId = 1;
+  class TestIntersectionObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = new Set();
+      intersectionObservers.push(this);
+    }
+
+    observe(element) {
+      this.observed.add(element);
+    }
+
+    unobserve(element) {
+      this.observed.delete(element);
+    }
+
+    disconnect() {
+      this.observed.clear();
+    }
+  }
   const { app, dom } = await startExtension(
-    currentReactContextExpansionFixture(),
+    currentReactOverlappingContextExpansionFixture(),
+    {},
+    {
+      intersectionObserverClass: TestIntersectionObserver,
+      setupWindow(window) {
+        window.requestAnimationFrame = (callback) => {
+          const id = nextFrameId;
+          nextFrameId += 1;
+          frames.set(id, callback);
+          return id;
+        };
+        window.cancelAnimationFrame = (id) => frames.delete(id);
+      },
+    },
   );
   try {
-    let yields = 0;
-    Object.defineProperty(dom.window, "scheduler", {
-      configurable: true,
-      value: {
-        async yield() {
-          yields += 1;
-        },
-      },
-    });
-    await app.yieldForLargeRefreshInteraction(
-      app.constants.LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD - 1,
+    assert.equal(frames.size, 0);
+    const [visibilityObserver] = intersectionObservers;
+    visibilityObserver.callback(
+      Array.from(visibilityObserver.observed, (target) => ({
+        isIntersecting: true,
+        target,
+      })),
     );
-    assert.equal(yields, 0);
-
+    assert.equal(app.hunkStickyVisibleStates.size, 1);
+    assert.equal(frames.size, 1);
+    const [initialLayout] = frames.values();
+    frames.clear();
+    initialLayout(0);
     app.constants = {
       ...app.constants,
       LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
     };
+    let stableYields = 0;
+    app.yieldForLargeRefreshInteraction = async () => {
+      stableYields += 1;
+    };
     await app.refresh();
 
-    assert.equal(yields, 2);
+    assert.equal(stableYields, 4);
     assert.equal(app.refreshQueued, false);
     assert.equal(app.refreshRunning, false);
-    assert.equal(controllersFor(app).length, 2);
+    assert.equal(controllersFor(app).length, 3);
+    app.observer.disconnect();
 
-    controllersFor(app).forEach((controller) =>
-      app.destroyController(controller),
-    );
-    assert.equal(controllersFor(app).length, 0);
-    yields = 0;
+    const cancelStickyFrame = () => {
+      if (app.hunkStickyLayoutFrameId !== null) {
+        dom.window.cancelAnimationFrame(app.hunkStickyLayoutFrameId);
+        app.hunkStickyLayoutFrameId = null;
+      }
+      assert.equal(frames.size, 0);
+    };
+    const runReplacementRefresh = async ({ replaceRoot }) => {
+      cancelStickyFrame();
+      const previousControllers = controllersFor(app);
+      assert.equal(previousControllers.length, 3);
+      if (replaceRoot) {
+        replaceCurrentReactDirectionalRegion(dom.window.document);
+      } else {
+        previousControllers.forEach((controller, index) => {
+          const headerText = Array.from(controller.hunkCell.childNodes).find(
+            (node) => node.nodeType === 3 && node.nodeValue.includes("@@"),
+          );
+          const line = 100 + index * 10;
+          headerText.nodeValue = `@@ -${line} +${line} @@ refreshed${index}()`;
+        });
+      }
 
-    await app.refresh();
+      const fileElement = dom.window.document.querySelector(
+        '[role="region"].Diff-module__diff__overlap',
+      );
+      fileElement.getBoundingClientRect = () => ({ top: 100 });
+      const rowTops = new Map();
+      fileElement.querySelectorAll(".diff-hunk-cell").forEach((cell, index) => {
+        const row = cell.closest("tr");
+        const top = 340 + index * 200;
+        rowTops.set(row, top);
+        row.getBoundingClientRect = () => ({ height: 24, top });
+      });
 
-    assert.equal(yields, 2);
-    assert.equal(controllersFor(app).length, 2);
+      const resumeStorage = createDeferred();
+      const storageEntered = createDeferred();
+      const restoreCollapsedLayout =
+        app.restoreHostContextExpansionCollapsedLayout.bind(app);
+      const stickyHunkNaturalDocumentTop =
+        app.stickyHunkNaturalDocumentTop.bind(app);
+      const stickyHunkTopForHeader = app.stickyHunkTopForHeader.bind(app);
+      const getLocalStorage = app.getLocalStorage.bind(app);
+      let collapsedLayoutRestored = false;
+      let storagePaused = false;
+      let stickyOriginReads = 0;
+      let visibleStatesBeforeForcedFlush = null;
+      let yields = 0;
+      const stickyReadPhases = [];
+      const yieldSnapshots = [];
+      app.restoreHostContextExpansionCollapsedLayout = (...args) => {
+        const restored = restoreCollapsedLayout(...args);
+        visibleStatesBeforeForcedFlush = app.hunkStickyVisibleStates.size;
+        collapsedLayoutRestored = true;
+        return restored;
+      };
+      app.stickyHunkNaturalDocumentTop = (...args) => {
+        stickyOriginReads += 1;
+        const states = Array.from(app.hunkStickyStateByFile.values());
+        stickyReadPhases.push({
+          collapsedLayoutRestored,
+          orderSynchronized: states.every(
+            (state) =>
+              !state.orderDirty &&
+              state.orderedControllers.length === state.controllers.size,
+          ),
+          yields,
+        });
+        return stickyHunkNaturalDocumentTop(...args);
+      };
+      app.stickyHunkTopForHeader = (header) => (header ? 88 : 0);
+      app.getLocalStorage = async (keys) => {
+        if (!storagePaused && collapsedLayoutRestored) {
+          storagePaused = true;
+          storageEntered.resolve();
+          await resumeStorage.promise;
+        }
+        return getLocalStorage(keys);
+      };
+      app.yieldForLargeRefreshInteraction = async () => {
+        yields += 1;
+        yieldSnapshots.push({
+          collapsedLayoutRestored,
+          controllers: controllersFor(app).length,
+          stickyOriginReads,
+        });
+      };
+
+      try {
+        app.scheduleRefresh({ immediate: true });
+        await storageEntered.promise;
+        try {
+          assert.equal(app.refreshRunning, true);
+          assert.deepEqual(
+            yieldSnapshots.slice(0, 3).map(({ stickyOriginReads: reads }) => reads),
+            [0, 0, 0],
+          );
+          assert.deepEqual(
+            yieldSnapshots.map(({ controllers }) => controllers),
+            [3, 1, 2, 3],
+          );
+          assert.equal(yieldSnapshots[3].collapsedLayoutRestored, true);
+          assert.equal(yieldSnapshots[3].stickyOriginReads, 3);
+          assert.equal(stickyOriginReads, 3);
+          assert.equal(stickyReadPhases.length, 3);
+          assert.equal(
+            stickyReadPhases.every(
+              (phase) =>
+                phase.collapsedLayoutRestored &&
+                phase.orderSynchronized &&
+                phase.yields === 3,
+            ),
+            true,
+          );
+          const states = Array.from(app.hunkStickyStateByFile.values());
+          assert.equal(states.length, 1);
+          assert.equal(visibleStatesBeforeForcedFlush, 0);
+          assert.equal(app.hunkStickyVisibleStates.size, 1);
+          assert.equal(
+            previousControllers.every((controller) => controller.destroyed),
+            true,
+          );
+          assert.equal(
+            states.every(
+              (state) =>
+                state.stickyTop === 88 &&
+                Array.from(state.preparedControllers).every((controller) =>
+                  controller.stickyHunkOriginLayoutGeneration === state.originLayoutGeneration &&
+                  controller.stickyHunkContentLayoutGeneration === state.contentLayoutGeneration),
+            ),
+            true,
+          );
+          assert.equal(
+            fileElement.style.getPropertyValue(
+              "--hunkmark-sticky-hunk-file-start",
+            ),
+            "12px",
+          );
+          controllersFor(app).forEach((controller) => {
+            const rowTop = rowTops.get(controller.hunkRow);
+            assert.equal(controller.stickyHunkOriginDocumentTop, rowTop);
+            assert.equal(
+              controller.hunkRow.style.getPropertyValue(
+                "--hunkmark-sticky-hunk-compress-start",
+              ),
+              `${rowTop - 100}px`,
+            );
+          });
+          const generations = states.map((state) =>
+            state.originLayoutGeneration,
+          );
+          visibilityObserver.callback([
+            { isIntersecting: true, target: fileElement },
+          ]);
+          assert.deepEqual(
+            states.map((state) => state.originLayoutGeneration),
+            generations,
+          );
+          assert.equal(stickyOriginReads, 3);
+          assert.equal(frames.size, 1);
+          const [sameVisibleFrame] = frames.values();
+          frames.clear();
+          sameVisibleFrame(0);
+          assert.equal(stickyOriginReads, 3);
+          visibilityObserver.callback([
+            { isIntersecting: false, target: fileElement },
+          ]);
+          visibilityObserver.callback([
+            { isIntersecting: true, target: fileElement },
+          ]);
+          assert.equal(frames.size, 1);
+          const [reentryFrame] = frames.values();
+          frames.clear();
+          reentryFrame(0);
+          assert.equal(app.refreshRunning, true);
+          assert.equal(stickyOriginReads, 6);
+          assert.equal(controllersFor(app).every((controller) =>
+            controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared"),
+          ), true);
+        } finally {
+          resumeStorage.resolve();
+        }
+
+        await waitFor(() => {
+          assert.equal(app.refreshRunning, false);
+          assert.equal(app.refreshQueued, false);
+        });
+        assert.equal(frames.size, 1);
+        const readsBeforeFinalLayout = stickyOriginReads;
+        const [finalLayout] = frames.values();
+        frames.clear();
+        finalLayout(0);
+        assert.equal(stickyOriginReads, readsBeforeFinalLayout);
+        assert.equal(controllersFor(app).length, 3);
+      } finally {
+        resumeStorage.resolve();
+        app.restoreHostContextExpansionCollapsedLayout =
+          restoreCollapsedLayout;
+        app.stickyHunkNaturalDocumentTop =
+          stickyHunkNaturalDocumentTop;
+        app.stickyHunkTopForHeader = stickyHunkTopForHeader;
+        app.getLocalStorage = getLocalStorage;
+      }
+    };
+
+    await runReplacementRefresh({ replaceRoot: false });
+    await runReplacementRefresh({ replaceRoot: true });
+    const [state] = app.hunkStickyVisibleStates;
+    const previouslyVisibleFiles = new Set([state.fileElement]);
+    visibilityObserver.callback([
+      { target: state.fileElement, isIntersecting: false },
+    ]);
+    app.updateStickyHunkLayouts({
+      allowDuringRefresh: true,
+      includeFileElements: previouslyVisibleFiles,
+    });
+    assert.equal(state.visible, false);
+    assert.equal(app.hunkStickyVisibleStates.size, 0);
+    assert.equal(Array.from(state.controllers).every((controller) =>
+      !controller.stickyHunkRowObserved &&
+      !controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared"),
+    ), true);
   } finally {
     app.stop();
     dom.window.close();
   }
 });
+
+for (const scenario of [
+  { initiallyVisible: true, notification: false, atYield: 1 },
+  { initiallyVisible: true, notification: false, atYield: 2 },
+  { initiallyVisible: false, notification: true, atYield: 1 },
+].flatMap((scenario) => [
+  { ...scenario, replaceRoot: false },
+  { ...scenario, replaceRoot: true },
+])) {
+  test(`preserves visibility ${scenario.notification} at yield ${scenario.atYield} across sticky state replacement (root replacement: ${scenario.replaceRoot})`, async () => {
+    const observers = [];
+    class TestIntersectionObserver {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const { app, dom } = await startExtension(
+      currentReactOverlappingContextExpansionFixture(),
+      {},
+      {
+        intersectionObserverClass: TestIntersectionObserver,
+        setupWindow(window) {
+          window.requestAnimationFrame = () => 1;
+          window.cancelAnimationFrame = () => {};
+        },
+      },
+    );
+    try {
+      app.observer.disconnect();
+      const [observer] = observers;
+      const [oldState] = app.hunkStickyStateByFile.values();
+      let fileElement = oldState.fileElement;
+      observer.callback([
+        { target: fileElement, isIntersecting: scenario.initiallyVisible },
+      ]);
+      app.updateStickyHunkLayouts();
+      const oldControllers = controllersFor(app);
+      oldControllers.forEach((controller, index) => {
+        const headerText = Array.from(controller.hunkCell.childNodes).find(
+          (node) => node.nodeType === 3 && node.nodeValue.includes("@@"),
+        );
+        const line = 100 + index * 10;
+        headerText.nodeValue = `@@ -${line} +${line} @@ refreshed${index}()`;
+      });
+      if (scenario.replaceRoot) {
+        ({ replacementRegion: fileElement } =
+          replaceCurrentReactDirectionalRegion(dom.window.document));
+      }
+      app.constants = {
+        ...app.constants,
+        LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1,
+      };
+      let yields = 0;
+      app.yieldForLargeRefreshInteraction = async () => {
+        yields += 1;
+        if (yields === scenario.atYield) {
+          observer.callback([
+            {
+              target: yields === 1 ? oldState.fileElement : fileElement,
+              isIntersecting: scenario.notification,
+            },
+          ]);
+        }
+      };
+      await app.refresh();
+
+      const state = app.hunkStickyStateByFile.get(fileElement);
+      assert.notEqual(state, oldState);
+      assert.equal(oldControllers.every((controller) => controller.destroyed), true);
+      assert.equal(state.visible, scenario.notification);
+      assert.equal(app.hunkStickyVisibleStates.has(state), scenario.notification);
+      assert.equal(controllersFor(app).length, 3);
+      controllersFor(app).forEach((controller) => {
+        assert.equal(controller.stickyHunkRowObserved, scenario.notification);
+        assert.equal(
+          controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared"),
+          scenario.notification,
+        );
+      });
+      assert.equal(Boolean(state.header), scenario.notification);
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  });
+}
 
 test("keeps stable controller DOM connected across a stale refresh retry", async () => {
   const { app, dom } = await startExtension(
@@ -2000,11 +2343,15 @@ test("keeps stable controller DOM connected across a stale refresh retry", async
       (controller) => controller.actions,
     );
     let invalidated = false;
+    let invalidatedAtYield = null;
+    let yields = 0;
     const yieldForRefresh =
       app.yieldForLargeRefreshInteraction.bind(app);
     app.yieldForLargeRefreshInteraction = async (...args) => {
-      if (!invalidated) {
+      yields += 1;
+      if (!invalidated && yields === 2) {
         invalidated = true;
+        invalidatedAtYield = yields;
         app.diffMutationGeneration += 1;
       }
       await yieldForRefresh(...args);
@@ -2029,11 +2376,81 @@ test("keeps stable controller DOM connected across a stale refresh retry", async
     });
 
     assert.equal(connectedAtAbort, true);
+    assert.equal(invalidatedAtYield, 2);
     assert.deepEqual(controllersFor(app), originalControllers);
     assert.equal(
       originalActions.every((actions) => actions.isConnected),
       true,
     );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("defers sticky layout until the final scheduled refresh completes", async () => {
+  const frames = new Map();
+  let nextFrameId = 1;
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+    {},
+    {
+      setupWindow(window) {
+        window.requestAnimationFrame = (callback) => {
+          const id = nextFrameId;
+          nextFrameId += 1;
+          frames.set(id, callback);
+          return id;
+        };
+        window.cancelAnimationFrame = (id) => frames.delete(id);
+      },
+    },
+  );
+  try {
+    assert.equal(frames.size, 1);
+    let layoutUpdates = 0;
+    app.updateStickyHunkLayouts = () => {
+      layoutUpdates += 1;
+    };
+    app.suspendReviewControllersForDiffMutation();
+    app.refreshRunning = true;
+    const [queuedBeforeRefresh] = frames.values();
+    frames.clear();
+    queuedBeforeRefresh(0);
+    assert.equal(layoutUpdates, 0);
+    assert.equal(frames.size, 0);
+    app.refreshRunning = false;
+
+    app.scheduleStickyHunkLayout();
+    assert.equal(frames.size, 1);
+    app.refreshQueued = true;
+    const [queuedBeforeRerun] = frames.values();
+    frames.clear();
+    queuedBeforeRerun(0);
+    assert.equal(layoutUpdates, 0);
+    assert.equal(frames.size, 0);
+    app.refreshQueued = false;
+
+    let refreshes = 0;
+    app.refresh = async () => {
+      refreshes += 1;
+      app.scheduleStickyHunkLayout();
+      assert.equal(frames.size, 0);
+      if (refreshes === 1) {
+        app.scheduleRefresh({ immediate: true });
+      }
+    };
+    app.scheduleRefresh({ immediate: true });
+    await waitFor(() => {
+      assert.equal(refreshes, 2);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+    });
+    assert.equal(frames.size, 1);
+    const [finalLayout] = frames.values();
+    frames.clear();
+    finalLayout(0);
+    assert.equal(layoutUpdates, 1);
   } finally {
     app.stop();
     dom.window.close();
@@ -2127,7 +2544,8 @@ test("restores unrelated files after loading interrupts a refresh", async () => 
     };
     app.scheduleRefresh({ immediate: true });
     await refreshYielded.promise;
-    assert.equal(app.diffMutationSuspendedControllers.size, 3);
+    assert.equal(app.diffMutationSuspendedControllers.size, 0);
+    assert.equal(originalControllers.every((controller) => !controller.input.disabled), true);
 
     const loaders = [0, 1].map((index) =>
       appendDiffLoader(dom, fileGridFor(dom, `src/chunk-${index}.js`)),
@@ -2208,7 +2626,7 @@ test("discards unreconciled controllers from a stale refresh retry", async () =>
       );
     });
 
-    assert.equal(firstAttemptControllers.length, 2);
+    assert.equal(firstAttemptControllers.length, 1);
     assert.equal(
       firstAttemptControllers.every(
         (controller) =>
@@ -2782,11 +3200,10 @@ test("preserves known changed-line identity across auxiliary descendants", async
     const originalInvalidate =
       app.invalidateVisibleStickyHunkOrigins.bind(app);
     let stickyInvalidations = 0;
-    app.invalidateVisibleStickyHunkOrigins = () => {
+    app.invalidateVisibleStickyHunkOrigins = (...args) => {
       stickyInvalidations += 1;
-      return originalInvalidate();
+      return originalInvalidate(...args);
     };
-
     const auxiliaryContent = dom.window.document.createElement("div");
     auxiliaryContent.dataset.hostAuxiliary = "true";
     auxiliaryContent.innerHTML = `
@@ -2872,11 +3289,10 @@ test("preserves untracked context identity across auxiliary descendants", async 
     const originalInvalidate =
       app.invalidateVisibleStickyHunkOrigins.bind(app);
     let stickyInvalidations = 0;
-    app.invalidateVisibleStickyHunkOrigins = () => {
+    app.invalidateVisibleStickyHunkOrigins = (...args) => {
       stickyInvalidations += 1;
-      return originalInvalidate();
+      return originalInvalidate(...args);
     };
-
     const primaryAuxiliary = dom.window.document.createElement("div");
     primaryAuxiliary.dataset.hostAuxiliary = "primary";
     primaryAuxiliary.append(dom.window.document.createElement("button"));
@@ -2939,9 +3355,9 @@ test("skips non-structural file UI only while tracked identity matches", async (
     const originalInvalidate =
       app.invalidateVisibleStickyHunkOrigins.bind(app);
     let stickyInvalidations = 0;
-    app.invalidateVisibleStickyHunkOrigins = () => {
+    app.invalidateVisibleStickyHunkOrigins = (...args) => {
       stickyInvalidations += 1;
-      return originalInvalidate();
+      return originalInvalidate(...args);
     };
     const resolveFilePath = app.resolveFilePath.bind(app);
     app.resolveFilePath = () => {
@@ -5657,3 +6073,166 @@ test("supports GitHub's current React diff with persistent controls visible", as
     dom.window.close();
   }
 });
+
+for (const { outerVisible, replaceNested } of [true, false].flatMap((outerVisible) =>
+  [true, false].map((replaceNested) => ({ outerVisible, replaceNested })),
+)) {
+  test(`keeps duplicate-path sticky visibility independent on root replacement (outer visible: ${outerVisible}, nested replaced: ${replaceNested})`, async () => {
+    const fixture = new JSDOM(manyFileHunkFixture(2));
+    const [outer, inner] = fixture.window.document.querySelectorAll('[role="region"]');
+    inner.classList.add('js-file');
+    inner.dataset.filePath = 'src/chunk-0.js';
+    inner.querySelector('[role="grid"]').setAttribute('aria-label', 'Diff for: src/chunk-0.js');
+    outer.append(inner);
+    const html = fixture.serialize();
+    fixture.window.close();
+    const observers = [];
+    class TestIntersectionObserver {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} unobserve() {} disconnect() {}
+    }
+    const { app, dom } = await startExtension(html, {}, {
+      intersectionObserverClass: TestIntersectionObserver,
+      setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+    });
+    try {
+      app.observer.disconnect();
+      const outerRoot = dom.window.document.getElementById('diff-chunk-0');
+      const innerRoot = dom.window.document.getElementById('diff-chunk-1');
+      assert.equal(app.hunkStickyStateByFile.size, 2);
+      assert.equal(new Set(controllersFor(app).map((controller) => controller.filePath)).size, 1);
+      observers[0].callback([
+        { target: outerRoot, isIntersecting: outerVisible },
+        { target: innerRoot, isIntersecting: !outerVisible },
+      ]);
+      app.updateStickyHunkLayouts();
+      const replacement = outerRoot.cloneNode(replaceNested);
+      if (replaceNested) {
+        replacement.querySelectorAll('[data-hunkmark-ui], .hunkmark-file-progress').forEach((element) => element.remove());
+      } else {
+        replacement.append(...outerRoot.childNodes);
+      }
+      outerRoot.replaceWith(replacement);
+      await app.refresh();
+      assert.equal(app.hunkStickyStateByFile.get(replacement).visible, outerVisible);
+      const currentInnerRoot = dom.window.document.getElementById('diff-chunk-1');
+      assert.equal(app.hunkStickyStateByFile.get(currentInnerRoot).visible, !outerVisible);
+      assert.equal(app.hunkStickyVisibleStates.has(app.hunkStickyStateByFile.get(replacement)), outerVisible);
+    } finally {
+      app.stop(); dom.window.close();
+    }
+  });
+}
+
+for (const cloneId of [true, false]) {
+  test(`does not inherit sticky visibility for an added same-path root (cloned ID: ${cloneId})`, async () => {
+    const observers = [];
+    class TestIntersectionObserver {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} unobserve() {} disconnect() {}
+    }
+    const { app, dom } = await startExtension(manyFileHunkFixture(1), {}, {
+      intersectionObserverClass: TestIntersectionObserver,
+      setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+    });
+    try {
+      app.observer.disconnect();
+      const root = dom.window.document.getElementById('diff-chunk-0');
+      observers[0].callback([{ target: root, isIntersecting: true }]);
+      app.updateStickyHunkLayouts();
+      const added = root.cloneNode(true);
+      added.querySelectorAll('[data-hunkmark-ui], .hunkmark-file-progress').forEach((element) => element.remove());
+      if (!cloneId) added.id = 'diff-added';
+      dom.window.document.body.append(added);
+      await app.refresh();
+      assert.equal(root.isConnected, true);
+      assert.equal(app.hunkStickyStateByFile.get(root).visible, true);
+      const addedState = app.hunkStickyStateByFile.get(added);
+      assert.equal(addedState.visible, false);
+      assert.equal(addedState.visibilityObserved, false);
+      assert.equal(addedState.preparedControllers.size, 0);
+      addedState.controllers.forEach((controller) => {
+        assert.equal(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'), false);
+      });
+      observers[0].callback([{ target: added, isIntersecting: true }]);
+      app.updateStickyHunkLayouts();
+      assert.equal(addedState.visible, true);
+      assert.ok(addedState.preparedControllers.size > 0);
+    } finally {
+      app.stop(); dom.window.close();
+    }
+  });
+}
+
+test("inherits sticky visibility for actual rows moved out of a connected root", async () => {
+  const observers = [];
+  class TestIntersectionObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe() {} unobserve() {} disconnect() {}
+  }
+  const { app, dom } = await startExtension(manyFileHunkFixture(1), {}, {
+    intersectionObserverClass: TestIntersectionObserver,
+    setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+  });
+  try {
+    app.observer.disconnect();
+    const root = dom.window.document.getElementById('diff-chunk-0');
+    const [controller] = controllersFor(app);
+    observers[0].callback([{ target: root, isIntersecting: true }]);
+    app.updateStickyHunkLayouts();
+    const added = root.cloneNode(false);
+    added.id = 'diff-moved';
+    added.append(...root.childNodes);
+    dom.window.document.body.append(added);
+    await app.refresh();
+    assert.equal(root.isConnected, true);
+    assert.equal(controllersFor(app)[0], controller);
+    assert.equal(controller.fileElement, added);
+    assert.equal(app.hunkStickyStateByFile.get(added).visible, true);
+    assert.ok(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+for (const changedAndUnsettled of [false, true]) {
+  test(`keeps confirmed review controls usable across chunk yields (changed/unsettled peers: ${changedAndUnsettled})`, async () => {
+    const { app, dom } = await startExtension(manyFileHunkFixture(3));
+    try {
+      app.observer.disconnect();
+      app.constants = { ...app.constants, LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD: 1 };
+      const original = controllersFor(app);
+      if (changedAndUnsettled) {
+        original[1].lines[0].element.querySelector('code').textContent = '+changed';
+        app.rememberDeferredDiffLoadRefresh(original[2].filePath, original[2].fileElement);
+        app.deferredDiffLoadRefreshTimedOut = true;
+      }
+      let yields = 0;
+      app.yieldForLargeRefreshInteraction = async () => {
+        yields += 1;
+        assert.equal(app.reviewControllerIsSuspended(original[0]), false);
+        assert.equal(original[0].input.disabled, false);
+        assert.equal(original[0].collapseButton.disabled, false);
+        assert.equal(original[0].lines[0].control.disabled, false);
+        if (changedAndUnsettled) {
+          const changed = controllersFor(app).find((c) => c.filePath === original[1].filePath);
+          if (changed) {
+            assert.equal(changed.input.disabled, true);
+            assert.equal(changed.collapseButton.disabled, true);
+          }
+          assert.equal(original[2].input.disabled, true);
+          assert.equal(app.reviewControllerIsSuspended(original[2]), true);
+        }
+        if (yields === 2) await app.setLineViewed(original[0].lines[0], true);
+      };
+      app.refreshRunning = true;
+      await app.refresh();
+      assert.equal(yields, 4);
+      assert.equal(original[0].marked, true);
+      assert.equal(original[0].input.disabled, false);
+    } finally {
+      app.refreshRunning = false;
+      app.stop(); dom.window.close();
+    }
+  });
+}
