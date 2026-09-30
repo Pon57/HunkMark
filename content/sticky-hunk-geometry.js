@@ -284,13 +284,12 @@
         this.updateStickyHunkFileOrigin(state);
       }
       const cachedTop = this.cachedStickyHunkNaturalDocumentTop(controller);
+      const currentGeneration = state?.originLayoutGeneration ?? originLayoutGeneration;
       if (
         !refreshLayout &&
         Number.isFinite(cachedTop) &&
-        (row.classList.contains("hunkmark-sticky-hunk-prepared") ||
-          (Number.isInteger(originLayoutGeneration) &&
-            controller.stickyHunkOriginLayoutGeneration ===
-              originLayoutGeneration))
+        Number.isInteger(currentGeneration) &&
+        controller.stickyHunkOriginLayoutGeneration === currentGeneration
       ) {
         return cachedTop;
       }
@@ -307,7 +306,7 @@
         return cacheStickyHunkOrigin(
           controller,
           naturalTop,
-          originLayoutGeneration,
+          currentGeneration,
           this.hunkStickyStateByFile.get(controller.fileElement)?.fileOriginDocumentTop,
         );
       }

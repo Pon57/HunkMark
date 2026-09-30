@@ -2884,3 +2884,39 @@ test("does not apply file translation twice after an explicit origin measurement
     app.stop(); dom.window.close();
   }
 });
+
+for (const navigation of ['focus reveal', 'automatic return']) {
+  test(`remeasures a prepared stale origin before ${navigation}`, async () => {
+    const { app, dom } = await startExtension(duplicateHunkFixture());
+    try {
+      const controllers = Array.from(app.controllersByRow.values());
+      const controller = controllers[1];
+      const tops = [500, 700];
+      const viewport = mockStickyRows(dom, controllers, tops);
+      const state = app.hunkStickyStateByFile.get(controller.fileElement);
+      state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+      state.stickyTop = 40;
+      viewport.scrollY = 700;
+      app.invalidateStickyHunkOrigins(state.fileElement);
+      app.updateStickyHunkState(state);
+      assert.ok(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
+      tops[1] = 900;
+      app.markStickyHunkOriginsDirty(state);
+      const scrollCalls = [];
+      dom.window.scrollTo = (options) => scrollCalls.push(options);
+      controller.input.getBoundingClientRect = () => ({ top: 0 });
+      if (navigation === 'focus reveal') {
+        app.revealFocusedStickyHunk(controller, controller.input);
+      } else {
+        app.scrollStickyHunkToOrigin(controller);
+      }
+      assert.equal(scrollCalls[0].top, 859);
+      assert.equal(controller.stickyHunkOriginLayoutGeneration, state.originLayoutGeneration);
+      assert.equal(controller.fileElement.classList.contains('hunkmark-sticky-file-measuring'), false);
+      controller.hunkRow.getBoundingClientRect = () => { throw new Error('reuse the newly measured origin'); };
+      assert.equal(app.stickyHunkNaturalDocumentTop(controller), tops[1]);
+    } finally {
+      app.stop(); dom.window.close();
+    }
+  });
+}
