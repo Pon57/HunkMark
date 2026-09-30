@@ -26,12 +26,11 @@
     return documentTop;
   };
 
-  const readStickyHunkNaturalLayout = (controller, refreshLayout, readLayout) => {
+  const readStickyHunkNaturalLayout = (controller, readLayout) => {
     const fileElement = controller.fileElement;
     const measureFile =
       fileElement &&
-      (refreshLayout ||
-        controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared")) &&
+      controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared") &&
       !fileElement.classList.contains("hunkmark-sticky-file-measuring");
     if (measureFile) {
       fileElement.classList.add("hunkmark-sticky-file-measuring");
@@ -278,7 +277,6 @@
       // explicit remeasurement temporarily restores the whole file's flow.
       const rowRect = readStickyHunkNaturalLayout(
         controller,
-        refreshLayout,
         () => row.getBoundingClientRect(),
       );
       const rowTop = Number(rowRect.top);

@@ -718,7 +718,9 @@ test("keeps prepared rows in place and reserves active state for return controls
 
     const scrollCalls = [];
     dom.window.scrollTo = (options) => scrollCalls.push(options);
-    app.stickyHunkNaturalDocumentTop = () => 400;
+    const naturalTop = app.stickyHunkNaturalDocumentTop.bind(app);
+    app.stickyHunkNaturalDocumentTop = (target, options) =>
+      options?.refreshLayout ? naturalTop(target, options) : 400;
     const hostButton = dom.window.document.createElement("button");
     hostButton.textContent = "Host action";
     controller.hunkCell.append(hostButton);
@@ -980,7 +982,7 @@ test("keeps a prepared table hunk's natural origin for returning and explicit re
 });
 
 
-test("bounds animated hunks while retaining cached ranges without scroll-time measurements or style writes", async () => {
+test("bounds animated hunks and reuses geometry and ranges within a prepared window", async () => {
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(128, 48, { hunkSize: 1 }),
   );
@@ -1025,55 +1027,135 @@ test("bounds animated hunks while retaining cached ranges without scroll-time me
     assert.ok(events.includes("read"));
     assert.ok(events.includes("write"));
     assert.ok(events.lastIndexOf("read") < events.indexOf("write"));
-    const styles = controllers.map((controller, index) => {
-      assert.equal(controller.stickyHunkOriginDocumentTop, tops[index]);
-      assert.equal(
-        controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-compress-start"),
-        (tops[index] - state.fileOriginDocumentTop) + "px",
-      );
-      return controller.hunkRow.style.cssText;
-    });
     const preparedControllers = () => controllers.filter((controller) =>
       controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared"),
     );
     assert.equal(preparedControllers().includes(controllers[0]), true);
     assert.equal(preparedControllers().includes(controllers.at(-1)), false);
     assert.ok(preparedControllers().length <= 30);
-    assert.equal(
-      controllers.at(-1).hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-push-distance"),
-      "0px",
-    );
-
-    events.length = 0;
+    const assertPreparedRanges = () => {
+      preparedControllers().forEach((controller) => {
+        const index = controllers.indexOf(controller);
+        assert.equal(controller.stickyHunkOriginDocumentTop, tops[index]);
+        assert.equal(
+          controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-compress-start"),
+          (tops[index] - state.fileOriginDocumentTop) + "px",
+        );
+      });
+    };
+    assertPreparedRanges();
     for (scrollY of [460, 600, 12_000, 800, 0]) {
       app.updateStickyHunkState(state);
-      assert.deepEqual(controllers.map((controller) => controller.hunkRow.style.cssText), styles);
       assert.ok(preparedControllers().length > 0);
       assert.ok(preparedControllers().length <= 30);
+      assertPreparedRanges();
       if (state.activeController) {
         assert.equal(preparedControllers().includes(state.activeController), true);
       }
       if (scrollY === 12_000) {
         assert.equal(preparedControllers().includes(controllers[0]), false);
       }
+      const styles = controllers.map((controller) => controller.hunkRow.style.cssText);
+      events.length = 0;
+      app.updateStickyHunkState(state);
+      assert.deepEqual(events, []);
+      assert.deepEqual(controllers.map((controller) => controller.hunkRow.style.cssText), styles);
     }
     assert.equal(preparedControllers().includes(controllers[0]), true);
     assert.equal(preparedControllers().includes(controllers.at(-1)), false);
-    assert.deepEqual(events, []);
 
     tops.forEach((top, index) => { tops[index] = top + 200; });
     app.invalidateStickyHunkOrigins(state.fileElement);
     app.updateStickyHunkState(state);
     assert.ok(events.includes("read"));
     assert.ok(events.includes("write"));
-    controllers.forEach((controller, index) => {
-      assert.equal(controller.stickyHunkOriginDocumentTop, tops[index]);
-      assert.equal(
-        controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-compress-start"),
-        (tops[index] - state.fileOriginDocumentTop) + "px",
-      );
-    });
+    assert.ok(events.lastIndexOf("read") < events.indexOf("write"));
+    assertPreparedRanges();
+    scrollY = tops.at(-1);
+    app.updateStickyHunkState(state);
+    assert.equal(state.activeController, controllers.at(-1));
+    assert.equal(
+      controllers.at(-1).hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-push-distance"), "0px",
+    );
     assert.equal(state.fileElement.classList.contains("hunkmark-sticky-file-measuring"), false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("bounds geometry reads and range writes after large-file invalidation and jumps", async () => {
+  const observers = [];
+  class TestResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = new Set();
+      observers.push(this);
+    }
+    observe(element) { this.observed.add(element); }
+    unobserve(element) { this.observed.delete(element); }
+    disconnect() { this.observed.clear(); }
+  }
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(512, 48, { hunkSize: 1 }), {},
+    { resizeObserverClass: TestResizeObserver, scopeWaitTimeoutMs: 15000 },
+  );
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const tops = controllers.map((_, index) => 500 + index * 100);
+    const viewport = mockStickyRows(dom, controllers, tops);
+    Object.defineProperty(dom.window, "innerHeight", { configurable: true, value: 800 });
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    state.stickyTop = 40;
+    const measured = new Set();
+    const written = new Set();
+    let tallHeight = 24;
+    controllers.forEach((controller) => {
+      const rect = controller.hunkRow.getBoundingClientRect;
+      controller.hunkRow.getBoundingClientRect = () => {
+        measured.add(controller);
+        const bounds = rect();
+        return { ...bounds, height: controller === controllers[450] ? tallHeight : bounds.height };
+      };
+      const setProperty = controller.hunkRow.style.setProperty.bind(controller.hunkRow.style);
+      controller.hunkRow.style.setProperty = (...args) => {
+        written.add(controller);
+        return setProperty(...args);
+      };
+    });
+    const fileObserver = observers.find((observer) => observer.observed.has(state.fileElement));
+    assert.ok(fileObserver);
+    const check = (index, inset = 0) => {
+      measured.clear();
+      written.clear();
+      viewport.scrollY = tops[index] - 20 + inset;
+      app.updateStickyHunkState(state);
+      assert.equal(state.activeController, controllers[index]);
+      assert.ok(measured.size < 80, `remeasured ${measured.size} of 512 hunks`);
+      assert.ok(written.size < 80, `rewrote ${written.size} of 512 hunks`);
+      assert.ok(state.preparedControllers.has(controllers[index]));
+      assert.equal(controllers[index].stickyHunkOriginDocumentTop, tops[index]);
+      assert.equal(controllers[index].hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-push-end"), `${tops[index + 1] - 100}px`);
+      assert.equal(state.fileElement.classList.contains("hunkmark-sticky-file-measuring"), false);
+    };
+    tops.forEach((top, index) => { tops[index] = top + 75; });
+    fileObserver.callback([{ target: state.fileElement }]);
+    check(10);
+    // Mutate an offscreen part of this file before jumping across it.
+    tops.forEach((top, index) => { if (index >= 200) tops[index] = top + 125; });
+    app.invalidateStickyHunkOriginsForMutations([{ target: controllers[200].groupRows.at(-1) }]);
+    check(450);
+    check(100);
+    tops.forEach((top, index) => { if (index >= 445) tops[index] = top - 50; });
+    fileObserver.callback([{ target: state.fileElement }]);
+    check(450);
+    check(100);
+    tallHeight = 96;
+    const rowObserver = observers.find((observer) => observer.observed.has(controllers[450].hunkRow));
+    rowObserver.callback([{ target: controllers[450].hunkRow }]);
+    check(450, 36);
+    assert.equal(controllers[450].stickyHunkContentInset, 36);
   } finally {
     app.stop();
     dom.window.close();
