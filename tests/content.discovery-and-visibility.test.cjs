@@ -682,9 +682,28 @@ test("yields queued page tasks within discovery of one huge file", async () => {
   }
 });
 
+test("cleans up the extension when test startup times out", async () => {
+  let window;
+  await assert.rejects(
+    startExtension("<!doctype html><html><body></body></html>", {}, {
+      scopeWaitTimeoutMs: 40,
+      setupWindow(candidate) {
+        window = candidate;
+      },
+      url: "https://github.com/octo/repo",
+    }),
+    { name: "AssertionError" },
+  );
+  assert.equal(window.HunkMarkContent.activeApp.stopped, true);
+  assert.equal(window.HunkMarkContent.activeApp.navigationPollTimer, null);
+  assert.equal(window.document, undefined);
+});
+
 test("aborts one-file discovery when a row changes after an internal yield", async () => {
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(300, 48),
+    {},
+    { scopeWaitTimeoutMs: 10_000 },
   );
   try {
     let mutated = false;
@@ -712,6 +731,8 @@ test("aborts one-file discovery when a row changes after an internal yield", asy
 test("aborts cooperative discovery when its caller becomes stale", async () => {
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(300, 48),
+    {},
+    { scopeWaitTimeoutMs: 10_000 },
   );
   try {
     let current = true;

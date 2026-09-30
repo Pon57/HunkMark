@@ -495,6 +495,7 @@ async function startExtension(
     lineLayoutReads = null,
     lockManager = null,
     resizeObserverClass = null,
+    scopeWaitTimeoutMs = 2500,
     setupWindow = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
@@ -556,12 +557,21 @@ async function startExtension(
   });
 
   if (waitForScope) {
-    await waitFor(() => {
-      const app = dom.window.HunkMarkContent.activeApp;
-      assert.ok(app.currentScope);
-      assert.equal(app.refreshRunning, false);
-      assert.equal(app.refreshQueued, false);
-    });
+    try {
+      await waitFor(() => {
+        const app = dom.window.HunkMarkContent.activeApp;
+        assert.ok(app.currentScope);
+        assert.equal(app.refreshRunning, false);
+        assert.equal(app.refreshQueued, false);
+      }, scopeWaitTimeoutMs);
+    } catch (error) {
+      try {
+        dom.window.HunkMarkContent.activeApp?.stop();
+      } finally {
+        dom.window.close();
+      }
+      throw error;
+    }
   }
   return { chrome, dom, app: dom.window.HunkMarkContent.activeApp };
 }
