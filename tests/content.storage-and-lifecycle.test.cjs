@@ -6073,3 +6073,53 @@ test("supports GitHub's current React diff with persistent controls visible", as
     dom.window.close();
   }
 });
+
+for (const { outerVisible, replaceNested } of [true, false].flatMap((outerVisible) =>
+  [true, false].map((replaceNested) => ({ outerVisible, replaceNested })),
+)) {
+  test(`keeps duplicate-path sticky visibility independent on root replacement (outer visible: ${outerVisible}, nested replaced: ${replaceNested})`, async () => {
+    const fixture = new JSDOM(manyFileHunkFixture(2));
+    const [outer, inner] = fixture.window.document.querySelectorAll('[role="region"]');
+    inner.classList.add('js-file');
+    inner.dataset.filePath = 'src/chunk-0.js';
+    inner.querySelector('[role="grid"]').setAttribute('aria-label', 'Diff for: src/chunk-0.js');
+    outer.append(inner);
+    const html = fixture.serialize();
+    fixture.window.close();
+    const observers = [];
+    class TestIntersectionObserver {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} unobserve() {} disconnect() {}
+    }
+    const { app, dom } = await startExtension(html, {}, {
+      intersectionObserverClass: TestIntersectionObserver,
+      setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+    });
+    try {
+      app.observer.disconnect();
+      const outerRoot = dom.window.document.getElementById('diff-chunk-0');
+      const innerRoot = dom.window.document.getElementById('diff-chunk-1');
+      assert.equal(app.hunkStickyStateByFile.size, 2);
+      assert.equal(new Set(controllersFor(app).map((controller) => controller.filePath)).size, 1);
+      observers[0].callback([
+        { target: outerRoot, isIntersecting: outerVisible },
+        { target: innerRoot, isIntersecting: !outerVisible },
+      ]);
+      app.updateStickyHunkLayouts();
+      const replacement = outerRoot.cloneNode(replaceNested);
+      if (replaceNested) {
+        replacement.querySelectorAll('[data-hunkmark-ui], .hunkmark-file-progress').forEach((element) => element.remove());
+      } else {
+        replacement.append(...outerRoot.childNodes);
+      }
+      outerRoot.replaceWith(replacement);
+      await app.refresh();
+      assert.equal(app.hunkStickyStateByFile.get(replacement).visible, outerVisible);
+      const currentInnerRoot = dom.window.document.getElementById('diff-chunk-1');
+      assert.equal(app.hunkStickyStateByFile.get(currentInnerRoot).visible, !outerVisible);
+      assert.equal(app.hunkStickyVisibleStates.has(app.hunkStickyStateByFile.get(replacement)), outerVisible);
+    } finally {
+      app.stop(); dom.window.close();
+    }
+  });
+}

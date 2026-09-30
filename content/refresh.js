@@ -699,17 +699,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const previousControllers = Array.from(this.controllersByRow.values());
       // Keep the states, rather than a visibility snapshot: observer callbacks
       // during discovery/yields remain authoritative even after replacement.
-      const previousStickyHunkStatesByFilePath =
+      const previousStickyHunkStatesByFileElement =
         this.hunkStickyFileVisibilityObserver
-          ? new Map(
-              Array.from(this.hunkStickyStateByFile.values()).flatMap((state) =>
-                Array.from(
-                  state.controllers,
-                  (controller) => [controller.filePath, state],
-                ),
-              ),
-            )
+          ? new Map(this.hunkStickyStateByFile)
           : null;
+      const previousStickyHunkStatesByFilePath = new Map();
+      const previousStickyHunkStatesByRow = new Map();
+      if (previousStickyHunkStatesByFileElement) {
+        previousControllers.forEach((controller) => {
+          const state = previousStickyHunkStatesByFileElement.get(controller.fileElement);
+          if (state) {
+            const states = previousStickyHunkStatesByFilePath.get(controller.filePath) ?? new Set();
+            states.add(state);
+            previousStickyHunkStatesByFilePath.set(controller.filePath, states);
+            previousStickyHunkStatesByRow.set(controller.hunkRow, state);
+          }
+        });
+      }
       const cacheGeneration =
         this.Core.beginIdentifierCacheGeneration();
       let discovered;
@@ -961,13 +967,47 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       });
       const previouslyVisibleStickyHunkFileElements = new Set();
-      if (previousStickyHunkStatesByFilePath) {
+      if (previousStickyHunkStatesByFileElement) {
+        const sourceStatesByFileElement = new Map();
+        discovered.forEach((hunk) => {
+          const states = sourceStatesByFileElement.get(hunk.fileElement) ?? new Set();
+          const rowState = previousStickyHunkStatesByRow.get(hunk.hunkRow);
+          if (rowState) {
+            states.add(rowState);
+          } else {
+            (previousByHunk.get(hunk) ?? []).forEach((controller) => {
+              const state = previousStickyHunkStatesByRow.get(controller.hunkRow);
+              if (state) {
+                states.add(state);
+              }
+            });
+          }
+          sourceStatesByFileElement.set(hunk.fileElement, states);
+        });
         stickyControllersByFile.forEach((controllers, fileElement) => {
-          if (
-            controllers.some((controller) =>
-              previousStickyHunkStatesByFilePath.get(controller.filePath)?.visible,
-            )
-          ) {
+          let previousState = previousStickyHunkStatesByFileElement.get(fileElement);
+          if (!previousState) {
+            const pathStates = new Set(controllers.flatMap((controller) =>
+              Array.from(previousStickyHunkStatesByFilePath.get(controller.filePath) ?? []),
+            ));
+            const idMatches = fileElement.id ? Array.from(pathStates).filter(
+              (state) => state.fileElement.id === fileElement.id,
+            ) : [];
+            const sourceStates = sourceStatesByFileElement.get(fileElement);
+            const detachedStates = Array.from(pathStates).filter((state) => !state.fileElement.isConnected);
+            // Surviving roots and stable root IDs take precedence over path
+            // matches. Shared paths alone cannot identify a replacement.
+            if (idMatches.length === 1) {
+              [previousState] = idMatches;
+            } else if (sourceStates?.size === 1) {
+              [previousState] = sourceStates;
+            } else if (pathStates.size === 1) {
+              [previousState] = pathStates;
+            } else if (detachedStates.length === 1) {
+              [previousState] = detachedStates;
+            }
+          }
+          if (previousState?.visible) {
             previouslyVisibleStickyHunkFileElements.add(fileElement);
           }
         });
@@ -980,7 +1020,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
       this.updateStickyHunkLayouts({
         allowDuringRefresh: true,
-        includeFileElements: previousStickyHunkStatesByFilePath
+        includeFileElements: previousStickyHunkStatesByFileElement
           ? previouslyVisibleStickyHunkFileElements
           : null,
       });

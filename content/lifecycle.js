@@ -1356,13 +1356,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
       };
       this.boundStickyHunkNavigationIntent = (event) => {
         if (this.hunkStickyStateByFile.size > 0) {
-          if (event.type !== "click") {
+          if (event.type !== "click" || event.isTrusted) {
             this.cancelStickyHunkReturn();
           }
           // CSS may have crossed a hunk boundary before the scroll callback.
           // Synchronize interaction state before an activation, not on wheel.
           if (event.type !== "wheel") {
-            this.updateStickyHunkLayouts();
+            const controller = this.stickyHunkControllerForInteractionTarget(event.target);
+            if (controller) {
+              this.updateStickyHunkInteractionsForControllers([controller]);
+            }
           }
         }
       };

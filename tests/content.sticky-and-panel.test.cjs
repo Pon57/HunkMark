@@ -2308,9 +2308,13 @@ test("separates external file translation from internal hunk geometry", async ()
     assert.equal(rowGeometryReads, 0);
     assert.deepEqual(
       controllers.map(
-        (controller) => controller.stickyHunkOriginDocumentTop,
+        (controller) => app.cachedStickyHunkNaturalDocumentTop(controller),
       ),
       cachedOrigins.map((origin) => origin + 80),
+    );
+    assert.deepEqual(
+      controllers.map((controller) => controller.stickyHunkOriginDocumentTop),
+      cachedOrigins,
     );
     assert.deepEqual(
       controllers.map((controller) => controller.hunkRow.style.cssText),
@@ -2741,5 +2745,118 @@ test("adds only the missing panel clearance after the last file", async () => {
   } finally {
     app.stop();
     dom.window.close();
+  }
+});
+
+test("limits synchronous interaction layout to the target hunk's file", async () => {
+  const fixture = new JSDOM(duplicateHunkFixture());
+  const second = fixture.window.document.querySelector('.js-file').cloneNode(true);
+  second.dataset.filePath = 'src/other.js';
+  fixture.window.document.body.append(second);
+  const html = fixture.serialize();
+  fixture.window.close();
+  const { app, dom } = await startExtension(html);
+  try {
+    app.observer.disconnect();
+    const [controller] = app.controllersByRow.values();
+    const state = app.hunkStickyStateByFile.get(controller.fileElement);
+    const updated = [];
+    app.updateStickyHunkState = (target) => updated.push(target);
+    const unrelated = dom.window.document.createElement('button');
+    dom.window.document.body.append(unrelated);
+    for (const type of ['click', 'pointerdown', 'keydown']) {
+      unrelated.dispatchEvent(new dom.window.Event(type, { bubbles: true }));
+      assert.deepEqual(updated, []);
+      controller.hunkCell.dispatchEvent(new dom.window.Event(type, { bubbles: true }));
+      assert.deepEqual(updated.splice(0), [state]);
+    }
+    controller.lines[0].element.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    assert.deepEqual(updated, [state]);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("cancels sticky returns for trusted clicks without canceling programmatic clicks", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const target = dom.window.document.createElement('button');
+    dom.window.document.body.append(target);
+    app.hunkStickyScrollFrameId = 41;
+    const generation = app.hunkStickyNavigationGeneration;
+    app.boundStickyHunkNavigationIntent({ type: 'click', isTrusted: true, target });
+    assert.equal(app.hunkStickyScrollFrameId, null);
+    assert.equal(app.hunkStickyNavigationGeneration, generation + 1);
+    app.hunkStickyScrollFrameId = 42;
+    app.boundStickyHunkNavigationIntent({ type: 'click', isTrusted: false, target });
+    assert.equal(app.hunkStickyScrollFrameId, 42);
+    assert.equal(app.hunkStickyNavigationGeneration, generation + 1);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("restores equal animation ranges when hunk rows move to a replacement file root", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    app.observer.disconnect();
+    const controllers = Array.from(app.controllersByRow.values());
+    const [controller] = controllers;
+    const state = app.hunkStickyStateByFile.get(controller.fileElement);
+    mockStickyRows(dom, controllers, [100, 200]);
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    const ranges = controllers.map((c) => c.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-push-end'));
+    const replacement = state.fileElement.cloneNode(false);
+    replacement.append(...state.fileElement.childNodes);
+    state.fileElement.replaceWith(replacement);
+    await app.refresh();
+    assert.deepEqual(Array.from(app.controllersByRow.values()), controllers);
+    controllers.forEach((c, index) => {
+      assert.equal(c.fileElement, replacement);
+      assert.equal(c.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-push-end'), ranges[index]);
+      assert.ok(c.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
+    });
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("resolves file translation without rewriting every cached hunk origin", async () => {
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(512, 48, { hunkSize: 1 }), {}, { scopeWaitTimeoutMs: 15000 },
+  );
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const tops = controllers.map((_, index) => 500 + index * 100);
+    mockStickyRows(dom, controllers, tops);
+    let fileTop = 100;
+    state.fileElement.getBoundingClientRect = () => ({ top: fileTop });
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    controllers.forEach((c) => app.stickyHunkNaturalDocumentTop(c, {
+      refreshLayout: true, originLayoutGeneration: state.originLayoutGeneration,
+    }));
+    let rewritten = 0;
+    controllers.forEach((c) => {
+      let origin = c.stickyHunkOriginDocumentTop;
+      Object.defineProperty(c, 'stickyHunkOriginDocumentTop', {
+        configurable: true, get: () => origin,
+        set(value) { rewritten += 1; origin = value; },
+      });
+      c.hunkRow.getBoundingClientRect = () => { throw new Error('translation must reuse row geometry'); };
+    });
+    fileTop += 80;
+    app.markStickyHunkFileOriginDirty(state);
+    app.updateStickyHunkState(state);
+    assert.equal(rewritten, 0);
+    for (const index of [0, 200, 511]) {
+      assert.equal(app.stickyHunkNaturalDocumentTop(controllers[index], {
+        originLayoutGeneration: state.originLayoutGeneration,
+      }), tops[index] + 80);
+    }
+  } finally {
+    app.stop(); dom.window.close();
   }
 });

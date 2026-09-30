@@ -547,7 +547,9 @@
         stickyHunkContentInset: 0,
         stickyHunkHasAuxiliaryElements: false,
         stickyHunkOriginDocumentTop: null,
+        stickyHunkOriginFileDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
+        stickyHunkTimelineSignature: null,
       });
       if (controller.returnButton) {
         controller.returnButton.hidden = true;

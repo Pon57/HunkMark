@@ -17,8 +17,10 @@
     controller,
     documentTop,
     originLayoutGeneration,
+    fileDocumentTop,
   ) => {
     controller.stickyHunkOriginDocumentTop = documentTop;
+    controller.stickyHunkOriginFileDocumentTop = fileDocumentTop;
     if (Number.isInteger(originLayoutGeneration)) {
       controller.stickyHunkOriginLayoutGeneration =
         originLayoutGeneration;
@@ -45,6 +47,20 @@
   };
 
   Object.assign(App.prototype, {
+    cachedStickyHunkNaturalDocumentTop(controller) {
+      const cachedTop = controller.stickyHunkOriginDocumentTop;
+      if (!Number.isFinite(cachedTop)) {
+        return null;
+      }
+      const fileTop = this.hunkStickyStateByFile.get(controller.fileElement)
+        ?.fileOriginDocumentTop;
+      const measuredFileTop = controller.stickyHunkOriginFileDocumentTop;
+      return cachedTop + (
+        Number.isFinite(fileTop) && Number.isFinite(measuredFileTop)
+          ? fileTop - measuredFileTop : 0
+      );
+    },
+
     orderedStickyHunkControllers(state) {
       if (!state.orderDirty) {
         return state.orderedControllers;
@@ -261,7 +277,7 @@
       { originLayoutGeneration = null, refreshLayout = false } = {},
     ) {
       const row = controller.hunkRow;
-      const cachedTop = controller.stickyHunkOriginDocumentTop;
+      const cachedTop = this.cachedStickyHunkNaturalDocumentTop(controller);
       if (
         !refreshLayout &&
         Number.isFinite(cachedTop) &&
@@ -286,6 +302,7 @@
           controller,
           naturalTop,
           originLayoutGeneration,
+          this.hunkStickyStateByFile.get(controller.fileElement)?.fileOriginDocumentTop,
         );
       }
 

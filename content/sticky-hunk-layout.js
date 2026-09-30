@@ -29,23 +29,7 @@
         : Number(state.fileOriginDocumentTop) || 0;
     },
 
-    applyStickyHunkFileOrigin(
-      state,
-      controllers,
-      documentTop,
-      { translateCachedOrigins = false } = {},
-    ) {
-      const previousTop = state.fileOriginDocumentTop;
-      if (translateCachedOrigins && Number.isFinite(previousTop)) {
-        const delta = documentTop - previousTop;
-        if (Math.abs(delta) >= 0.01) {
-          controllers.forEach((controller) => {
-            if (Number.isFinite(controller.stickyHunkOriginDocumentTop)) {
-              controller.stickyHunkOriginDocumentTop += delta;
-            }
-          });
-        }
-      }
+    applyStickyHunkFileOrigin(state, documentTop) {
       state.fileOriginDocumentTop = documentTop;
       state.fileOriginDirty = false;
       setPixelStyle(
@@ -55,18 +39,16 @@
       );
     },
 
-    updateStickyHunkFileOrigin(state, controllers) {
+    updateStickyHunkFileOrigin(state) {
       this.applyStickyHunkFileOrigin(
         state,
-        controllers,
         this.stickyHunkFileDocumentTop(state),
-        { translateCachedOrigins: true },
       );
     },
 
     prepareStickyHunkState(state, controllers) {
       if (state.fileOriginDirty) {
-        this.updateStickyHunkFileOrigin(state, controllers);
+        this.updateStickyHunkFileOrigin(state);
       }
       const contentMeasurements = new Map();
       let measuring = false;
@@ -79,8 +61,9 @@
         }
       };
       const naturalTopFor = (controller) => {
+        const cachedTop = this.cachedStickyHunkNaturalDocumentTop(controller);
         if (
-          !Number.isFinite(controller.stickyHunkOriginDocumentTop) ||
+          !Number.isFinite(cachedTop) ||
           controller.stickyHunkOriginLayoutGeneration !== state.originLayoutGeneration
         ) {
           ensureNaturalLayout(controller);
@@ -89,7 +72,7 @@
             refreshLayout: true,
           });
         }
-        return controller.stickyHunkOriginDocumentTop;
+        return cachedTop;
       };
       const contentFor = (controller) => {
         if (
@@ -175,7 +158,7 @@
       documentTop,
       {
         includeContentInset = false,
-        documentTopFor = (controller) => controller.stickyHunkOriginDocumentTop,
+        documentTopFor = (controller) => this.cachedStickyHunkNaturalDocumentTop(controller),
         contentInsetFor = (controller) => controller.stickyHunkContentInset ?? 0,
       } = {},
     ) {
@@ -271,6 +254,32 @@
       );
     },
 
+    stickyHunkControllerForInteractionTarget(node) {
+      const element = node instanceof this.window.Element ? node : node?.parentElement;
+      for (let current = element; current; current = current.parentElement) {
+        const controller = this.hunkStickyControllerByRow.get(current);
+        if (controller) {
+          return controller;
+        }
+      }
+      return this.knownLineControllerForMutationTarget(element)?.controller ?? null;
+    },
+
+    updateStickyHunkInteractionsForControllers(controllers) {
+      const states = new Set();
+      for (const controller of controllers) {
+        const state = this.hunkStickyStateByFile.get(controller.fileElement);
+        if (
+          state?.visible && this.reviewControllerIsCurrent(controller) &&
+          (!(this.refreshRunning || this.refreshQueued) ||
+            this.stickyHunkStateCanPrepareDuringRefresh(state))
+        ) {
+          states.add(state);
+        }
+      }
+      states.forEach((state) => this.updateStickyHunkState(state));
+    },
+
     updateStickyHunkInteractions() {
       const states = this.hunkStickyFileVisibilityObserver
         ? this.hunkStickyVisibleStates
@@ -292,7 +301,7 @@
         }
         const controllers = state.orderedControllers;
         if (state.fileOriginDirty) {
-          this.updateStickyHunkFileOrigin(state, controllers);
+          this.updateStickyHunkFileOrigin(state);
         }
         this.updateStickyHunkInteractionState(state, controllers);
       }
