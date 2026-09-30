@@ -455,6 +455,12 @@
       const rowWasAttached =
         controller.hunkRow.classList.contains("hunkmark-sticky-hunk-row") &&
         this.hunkStickyControllerByRow.get(controller.hunkRow) === controller;
+      if (!rowWasAttached) {
+        this.clearStickyHunkTimeline(controller);
+        if (controller.hunkRow.classList.contains("hunkmark-sticky-hunk-active")) {
+          controller.hunkRow.classList.remove("hunkmark-sticky-hunk-active");
+        }
+      }
       controller.hunkRow.classList.add("hunkmark-sticky-hunk-row");
       this.hunkStickyControllerByRow.set(controller.hunkRow, controller);
 
@@ -518,6 +524,8 @@
         "focusin",
         controller.stickyHunkFocusHandler,
       );
+      controller.stickyHunkFocusOutHandler ??= () => this.scheduleStickyHunkLayout();
+      controller.hunkRow.addEventListener("focusout", controller.stickyHunkFocusOutHandler);
       if (layoutChanged) {
         this.scheduleStickyHunkLayout();
       }
@@ -538,6 +546,7 @@
         "focusin",
         controller.stickyHunkFocusHandler,
       );
+      controller.hunkRow?.removeEventListener("focusout", controller.stickyHunkFocusOutHandler);
       (controller.stickyHunkAuxiliaryElements ?? []).forEach((element) => {
         element.classList.remove("hunkmark-sticky-hunk-auxiliary");
       });

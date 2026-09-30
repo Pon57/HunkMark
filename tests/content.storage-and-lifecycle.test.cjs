@@ -6151,6 +6151,9 @@ for (const cloneId of [true, false]) {
       assert.equal(addedState.visible, false);
       assert.equal(addedState.visibilityObserved, false);
       assert.equal(addedState.preparedControllers.size, 0);
+      addedState.controllers.forEach((controller) => {
+        assert.equal(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'), false);
+      });
       observers[0].callback([{ target: added, isIntersecting: true }]);
       app.updateStickyHunkLayouts();
       assert.equal(addedState.visible, true);

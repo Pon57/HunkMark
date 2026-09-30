@@ -17,7 +17,13 @@
 
   Object.assign(App.prototype, {
     clearStickyHunkTimeline(controller) {
-      controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
+      const prepared = controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared");
+      if (!prepared && !controller.stickyHunkTimelineSignature) {
+        return;
+      }
+      if (prepared) {
+        controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
+      }
       clearStyles(controller.hunkRow, TIMELINE_STYLES);
       controller.stickyHunkTimelineSignature = null;
     },
@@ -110,6 +116,11 @@
         if (controllers[last + 1]) {
           naturalTops.set(controllers[last + 1], naturalTopFor(controllers[last + 1]));
         }
+        const focused = this.focusedStickyHunkController(state);
+        if (focused) {
+          naturalTopFor(focused);
+          contentFor(focused);
+        }
         this.applyStickyHunkStateMeasurements(state, contentMeasurements);
         for (let index = first; index <= last; index += 1) {
           this.syncStickyHunkTimelineRanges(
@@ -193,6 +204,13 @@
           controller.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
         }
       }
+      const focused = this.focusedStickyHunkController(state);
+      if (focused) {
+        preparedControllers.add(focused);
+        if (!state.preparedControllers.has(focused)) {
+          focused.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
+        }
+      }
       state.preparedControllers.forEach((controller) => {
         if (!preparedControllers.has(controller)) {
           controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
@@ -209,7 +227,12 @@
 
       // Within the prepared window CSS owns positioning, clipping and pushing;
       // active state only selects the current interaction controls.
-      const activeController = controllers[activeIndex] ?? null;
+      const focused = this.focusedStickyHunkController(state);
+      const focusedPinned = focused &&
+        this.document.activeElement !== focused.returnButton &&
+        this.cachedStickyHunkNaturalDocumentTop(focused) + (focused.stickyHunkContentInset ?? 0) <=
+          (Number(this.window.scrollY) || 0) + (state.stickyTop ?? 0);
+      const activeController = focusedPinned ? focused : controllers[activeIndex] ?? null;
       const previousActiveController = state.activeController;
       if (previousActiveController !== activeController) {
         const returnButtonHadFocus =
@@ -226,7 +249,7 @@
           activeController.returnButton.tabIndex = 0;
         }
         if (returnButtonHadFocus && activeController?.returnButton) {
-          activeController.returnButton.focus({ preventScroll: true });
+          this.focusStickyHunkWithoutReveal(activeController, activeController.returnButton);
         }
         if (previousActiveController?.returnButton) {
           previousActiveController.returnButton.hidden = true;
@@ -265,6 +288,16 @@
       return this.knownLineControllerForMutationTarget(element)?.controller ?? null;
     },
 
+    focusedStickyHunkController(state) {
+      const target = this.document.activeElement;
+      if (!(target instanceof this.window.Element) || !target.matches(":focus-visible")) {
+        return null;
+      }
+      const controller = this.stickyHunkControllerForInteractionTarget(target);
+      return controller && state.controllers.has(controller) && controller.hunkRow.contains(target)
+        ? controller : null;
+    },
+
     updateStickyHunkInteractionsForControllers(controllers) {
       const states = new Set();
       for (const controller of controllers) {
@@ -285,6 +318,9 @@
         ? this.hunkStickyVisibleStates
         : this.hunkStickyStateByFile.values();
       for (const state of states) {
+        if (!this.stickyHunkStateCanPrepareDuringRefresh(state)) {
+          continue;
+        }
         if (
           state.orderDirty ||
           state.orderChanged ||
@@ -294,9 +330,7 @@
             state.contentLayoutGeneration ||
           state.contentLayoutDirtyControllers.size > 0
         ) {
-          if (this.stickyHunkStateCanPrepareDuringRefresh(state)) {
-            this.updateStickyHunkState(state);
-          }
+          this.updateStickyHunkState(state);
           continue;
         }
         const controllers = state.orderedControllers;

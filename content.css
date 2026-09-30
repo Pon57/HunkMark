@@ -169,6 +169,23 @@
       );
 }
 
+/* Keep the actual focused controls visible even after their hunk's handoff. */
+.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) {
+  animation: none;
+  top: var(--hunkmark-sticky-hunk-top, 0px);
+  transform: none;
+  z-index: 4;
+}
+
+.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)),
+.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) > :is(td, th) {
+  clip-path: none;
+}
+
+.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) .hunkmark-sticky-hunk-auxiliary {
+  animation: none;
+}
+
 /* Unpin every row together while reading natural layout, then restore all
    prepared rows before the browser paints. Keep GitHub's original row sizes. */
 .hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared {
@@ -310,7 +327,7 @@
   pointer-events: none;
 }
 
-.hunkmark-sticky-hunk-row:is(:hover, :focus-within)
+.hunkmark-sticky-hunk-row:is(:hover, :is(:focus-visible, :has(:focus-visible)))
   .hunkmark-collapse-button,
 .hunkmark-sticky-hunk-row .hunkmark-collapse-button.is-collapsed {
   opacity: 1;
@@ -363,7 +380,7 @@
 }
 
 .hunkmark-line-cell:hover > .hunkmark-line-control,
-.hunkmark-line-cell:focus-within > .hunkmark-line-control,
+.hunkmark-line-cell:is(:focus-visible, :has(:focus-visible)) > .hunkmark-line-control,
 .hunkmark-line-drag-touched > .hunkmark-line-control {
   opacity: 1;
   pointer-events: auto;

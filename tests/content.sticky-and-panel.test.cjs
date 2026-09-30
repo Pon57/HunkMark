@@ -2486,6 +2486,13 @@ test("invalidates unrelated DOM layout immediately without ResizeObserver", asyn
       assert.equal(state.fileOriginDirty, false);
     });
     const originGenerationBeforeMutation = state.originLayoutGeneration;
+    if (app.hunkStickyLayoutFrameId !== null) {
+      dom.window.cancelAnimationFrame(app.hunkStickyLayoutFrameId);
+      app.hunkStickyLayoutFrameId = null;
+    }
+    // Observe invalidation before the scheduled frame can consume it.
+    dom.window.requestAnimationFrame = () => 1;
+    dom.window.cancelAnimationFrame = () => {};
     const unrelated = dom.window.document.createElement("aside");
     unrelated.textContent = "unrelated notification";
     dom.window.document.body.append(unrelated);
@@ -2920,3 +2927,170 @@ for (const navigation of ['focus reveal', 'automatic return']) {
     }
   });
 }
+
+test("keeps an outgoing focused hunk prepared and unclipped while scrolling", async () => {
+  const { app, dom } = await startExtension(largeChangedBlockFixture(128, 48, { hunkSize: 1 }));
+  try {
+    installContentStyles(dom);
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const tops = controllers.map((_, index) => 500 + index * 100);
+    const viewport = mockStickyRows(dom, controllers, tops);
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    state.stickyTop = 40;
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    const focused = controllers[0];
+    focused.input.getBoundingClientRect = () => ({ top: 45 });
+    focused.input.focus();
+    viewport.scrollY = tops[100] + 10;
+    app.updateStickyHunkState(state);
+    assert.equal(dom.window.document.activeElement, focused.input);
+    assert.equal(state.activeController, focused);
+    assert.ok(state.preparedControllers.has(focused));
+    assert.equal(dom.window.getComputedStyle(focused.hunkRow).clipPath, 'none');
+    assert.equal(dom.window.getComputedStyle(focused.hunkRow).transform, 'none');
+    assert.ok(state.preparedControllers.size < 35);
+    focused.input.blur();
+    app.updateStickyHunkState(state);
+    assert.equal(state.preparedControllers.has(focused), false);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("transfers return-button focus without triggering a focus-reveal scroll", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const viewport = mockStickyRows(dom, controllers, [200, 400]);
+    state.stickyTop = 40;
+    viewport.scrollY = 200;
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    controllers[0].returnButton.focus();
+    controllers[1].returnButton.getBoundingClientRect = () => ({ top: 5 });
+    const scrollCalls = [];
+    dom.window.scrollTo = (options) => scrollCalls.push(options);
+    viewport.scrollY = 400;
+    app.updateStickyHunkState(state);
+    assert.equal(dom.window.document.activeElement, controllers[1].returnButton);
+    assert.deepEqual(scrollCalls, []);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("skips clean suspended files when another file can prepare during refresh", async () => {
+  const fixture = new JSDOM(duplicateHunkFixture());
+  const second = fixture.window.document.querySelector('.js-file').cloneNode(true);
+  second.dataset.filePath = 'src/other.js';
+  fixture.window.document.body.append(second);
+  const html = fixture.serialize();
+  fixture.window.close();
+  const { app, dom } = await startExtension(html);
+  try {
+    const [suspended, ready] = app.hunkStickyStateByFile.values();
+    assert.equal(suspended.preparedOriginLayoutGeneration, suspended.originLayoutGeneration);
+    app.suspendReviewControllersForDiffMutation(new Set(['src/example.js']));
+    const updated = [];
+    app.updateStickyHunkInteractionState = (state) => updated.push(state);
+    app.refreshQueued = true;
+    app.updateStickyHunkLayouts();
+    assert.deepEqual(updated, [ready]);
+  } finally {
+    app.refreshQueued = false;
+    app.stop(); dom.window.close();
+  }
+});
+
+test("clears ranges only from previously prepared rows when a large file exits", async () => {
+  class TestIntersectionObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() {} unobserve() {} disconnect() {}
+  }
+  const { app, dom } = await startExtension(
+    largeChangedBlockFixture(512, 48, { hunkSize: 1 }), {},
+    { intersectionObserverClass: TestIntersectionObserver, scopeWaitTimeoutMs: 15000 },
+  );
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const viewport = mockStickyRows(dom, controllers, controllers.map((_, index) => 500 + index * 100));
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    const observer = app.hunkStickyFileVisibilityObserver;
+    observer.callback([{ target: state.fileElement, isIntersecting: true }]);
+    app.updateStickyHunkLayouts();
+    viewport.scrollY = 10000;
+    app.updateStickyHunkLayouts();
+    const installed = controllers.filter((c) => c.stickyHunkTimelineSignature);
+    assert.ok(installed.length > state.preparedControllers.size);
+    assert.ok(installed.length < 80);
+    let removals = 0;
+    controllers.forEach((c) => {
+      const remove = c.hunkRow.style.removeProperty.bind(c.hunkRow.style);
+      c.hunkRow.style.removeProperty = (...args) => { removals += 1; return remove(...args); };
+    });
+    observer.callback([{ target: state.fileElement, isIntersecting: false }]);
+    assert.equal(removals, installed.length * 9);
+    assert.equal(state.preparedControllers.size, 0);
+    installed.forEach((c) => {
+      assert.equal(c.stickyHunkTimelineSignature, null);
+      assert.equal(c.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-push-end'), '');
+    });
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("returns a viewed focused outgoing hunk to its own origin", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const focused = controllers[0];
+    const viewport = mockStickyRows(dom, controllers, [200, 400]);
+    const state = app.hunkStickyStateByFile.get(focused.fileElement);
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    state.stickyTop = 40;
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    focused.input.getBoundingClientRect = () => ({ top: 45 });
+    focused.input.focus();
+    viewport.scrollY = 500;
+    app.updateStickyHunkState(state);
+    assert.equal(state.activeController, focused);
+    const scrollCalls = [];
+    dom.window.scrollTo = (options) => scrollCalls.push(options);
+    changeCheckbox(dom, focused.input, true);
+    await waitFor(() => {
+      assert.equal(focused.marked, true);
+      assert.equal(scrollCalls.length, 1);
+    });
+    assert.equal(scrollCalls[0].top, 159);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
+test("does not retain a pointer-focused outgoing hunk over the current header", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const viewport = mockStickyRows(dom, controllers, [200, 400]);
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    state.stickyTop = 40;
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    controllers[0].input.getBoundingClientRect = () => ({ top: 45 });
+    controllers[0].input.focus();
+    controllers[0].input.matches = () => false;
+    viewport.scrollY = 10000;
+    app.updateStickyHunkState(state);
+    assert.equal(state.activeController, controllers[1]);
+    assert.equal(state.preparedControllers.has(controllers[0]), false);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});

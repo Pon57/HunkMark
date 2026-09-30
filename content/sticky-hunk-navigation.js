@@ -61,12 +61,17 @@
       if (!target) {
         return false;
       }
-      // Callers own the following scroll; do not let focusin start another one.
+      return this.focusStickyHunkWithoutReveal(controller, target);
+    },
+
+    focusStickyHunkWithoutReveal(controller, target) {
+      // Callers own scrolling; do not let focusin start another one.
+      const previousSuppression = controller.suppressStickyHunkFocusReveal;
       controller.suppressStickyHunkFocusReveal = true;
       try {
         target.focus({ preventScroll: true });
       } finally {
-        controller.suppressStickyHunkFocusReveal = false;
+        controller.suppressStickyHunkFocusReveal = previousSuppression;
       }
       return this.document.activeElement === target;
     },
