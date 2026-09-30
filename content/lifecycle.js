@@ -1229,20 +1229,35 @@ if (globalThis.HunkMarkContent?.extendApp) {
         // Avoid rediscovering every still-rendered file before the host can
         // paint its Viewed/collapse update; the queued refresh handles cleanup.
         // Visit every affected root even when an earlier file was restored.
-        const restorationResults = restoreRoots.map((root) =>
-          expectedHideOnly || hostContextExpansionPending
-            ? false
-            : this.finishCleanCachedFileReveal(root) ||
-              this.preserveOfficialViewedRestoredState(root) ||
-              this.restoreCachedFileControllers(root),
-        );
-        const restored = restorationResults.some(Boolean);
+        const restorationResults = restoreRoots.map((root) => {
+          if (expectedHideOnly || hostContextExpansionPending) {
+            return { restored: false, canDefer: false };
+          }
+          // Clean unreviewed reveals intentionally defer controller creation.
+          if (this.finishCleanCachedFileReveal(root)) {
+            return { restored: true, canDefer: true };
+          }
+          const controllerRestoration = {};
+          const appearanceRestored = this.preserveOfficialViewedRestoredState(
+            root,
+            controllerRestoration,
+          );
+          const controllersRestored = this.restoreCachedFileControllers(
+            root,
+            controllerRestoration,
+          );
+          return {
+            restored: appearanceRestored || controllersRestored,
+            canDefer: controllerRestoration.complete === true,
+          };
+        });
+        const restored = restorationResults.some((result) => result.restored);
         this.finishReadyFileRevealPrepaintRestores();
         const canDeferRefresh =
           restoreRoots.length > 0 &&
           restoreRoots.every((root, index) =>
             root !== this.document &&
-            restorationResults[index] &&
+            restorationResults[index].canDefer &&
             !this.fileRevealPrepaintRestores.has(root) &&
             this.restorationRootOwnsAllHunks(root),
           );

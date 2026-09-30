@@ -5082,9 +5082,9 @@ test("checks only the mutated file when removing stale progress", async () => {
     const restoreCachedFileControllers =
       app.restoreCachedFileControllers.bind(app);
     const restoreRoots = [];
-    app.restoreCachedFileControllers = (root) => {
+    app.restoreCachedFileControllers = (root, ...args) => {
       restoreRoots.push(root);
-      return restoreCachedFileControllers(root);
+      return restoreCachedFileControllers(root, ...args);
     };
 
     const body = first.hunkRow.closest("tbody");
@@ -5149,9 +5149,9 @@ test("restores only the affected files in a multi-file mutation batch", async ()
     const restoreRoots = [];
     const restoreCachedFileControllers =
       app.restoreCachedFileControllers.bind(app);
-    app.restoreCachedFileControllers = (root) => {
+    app.restoreCachedFileControllers = (root, ...args) => {
       restoreRoots.push(root);
-      return restoreCachedFileControllers(root);
+      return restoreCachedFileControllers(root, ...args);
     };
     const mutations = captureMutationBatch(dom, () => {
       controllers.slice(0, 2).forEach((controller) =>
@@ -5184,9 +5184,9 @@ test("retains document-wide restoration when a batch includes an unowned diff mu
         const restoreRoots = [];
         const restoreCachedFileControllers =
           app.restoreCachedFileControllers.bind(app);
-        app.restoreCachedFileControllers = (root) => {
+        app.restoreCachedFileControllers = (root, ...args) => {
           restoreRoots.push(root);
-          return restoreCachedFileControllers(root);
+          return restoreCachedFileControllers(root, ...args);
         };
         if (expectedVisibility) {
           app.expectFileDiffVisibility(controllers[0].fileElement, true);
@@ -5318,8 +5318,25 @@ test("requires file ownership evidence before deferring a restored region", asyn
       nested: false,
       raw: true,
     },
+    {
+      name: "same-file guard rebuilds all controllers",
+      method: "preserveOfficialViewedRestoredState",
+      nested: false,
+    },
+    {
+      name: "same-file guard cannot restore every hunk",
+      method: "preserveOfficialViewedRestoredState",
+      nested: false,
+      partial: true,
+    },
+    {
+      name: "cached restoration leaves a stale sibling controller",
+      method: "restoreCachedFileControllers",
+      nested: false,
+      keepStale: true,
+    },
   ];
-  for (const { name, method, nested, raw } of scenarios) {
+  for (const { name, method, nested, raw, partial, keepStale } of scenarios) {
     await t.test(name, async () => {
       const fixture = new JSDOM(manyFileHunkFixture(3));
       const [outer, inner] = fixture.window.document.querySelectorAll(
@@ -5370,9 +5387,11 @@ test("requires file ownership evidence before deferring a restored region", asyn
         assert.equal(targets.length, 2);
         const owners = new Set(targets.map((controller) => controller.fileElement));
         assert.equal(owners.size, nested ? 2 : 1);
-        const reviewed = nested
-          ? targets.filter((controller) => controller.fileElement !== root)
-          : targets;
+        const reviewed = partial
+          ? targets.slice(0, 1)
+          : nested
+            ? targets.filter((controller) => controller.fileElement !== root)
+            : targets;
         for (const controller of reviewed) {
           await app.setLineViewed(controller.lines[0], true);
         }
@@ -5382,20 +5401,32 @@ test("requires file ownership evidence before deferring a restored region", asyn
             reviewed[0].filePath,
           );
         }
-        targets.forEach((controller) => app.destroyController(controller));
+        (keepStale ? targets.slice(0, 1) : targets).forEach((controller) =>
+          app.destroyController(controller),
+        );
         const outcomes = [];
         const restore = app[method].bind(app);
-        app[method] = (searchRoot) => {
-          const restored = restore(searchRoot);
+        app[method] = (searchRoot, ...args) => {
+          const restored = restore(searchRoot, ...args);
           outcomes.push({ searchRoot, restored });
           return restored;
+        };
+        const discoveryRoots = [];
+        const discover = app.discoverCachedHunks.bind(app);
+        app.discoverCachedHunks = (searchRoot, ...args) => {
+          discoveryRoots.push(searchRoot);
+          return discover(searchRoot, ...args);
         };
         const refreshes = [];
         app.scheduleRefresh = ({ immediate }) => refreshes.push(immediate);
         const mutations = captureMutationBatch(dom, () => {
-          targets.forEach((controller) =>
-            controller.hunkRow.replaceWith(controller.hunkRow.cloneNode(true)),
-          );
+          targets.forEach((controller, index) => {
+            if (keepStale && index === 1) {
+              controller.hunkCell.replaceWith(controller.hunkCell.cloneNode(true));
+            } else {
+              controller.hunkRow.replaceWith(controller.hunkRow.cloneNode(true));
+            }
+          });
         });
         mutations.forEach((mutation) => {
           const owners = app.diffLoadFileElementsForMutation(mutation);
@@ -5407,12 +5438,16 @@ test("requires file ownership evidence before deferring a restored region", asyn
 
         assert.deepEqual(outcomes.map(({ restored }) => restored), [true]);
         assert.equal(outcomes[0].searchRoot, root);
-        if (method === "restoreCachedFileControllers") {
-          assert.equal(controllersFor(app).filter((controller) =>
-            root.contains(controller.hunkRow),
-          ).length, nested ? 1 : 2);
+        assert.deepEqual(discoveryRoots, [root]);
+        const restoredControllers = controllersFor(app).filter((controller) =>
+          root.contains(controller.hunkRow),
+        );
+        assert.equal(restoredControllers.length, partial ? 0 : nested ? 1 : 2);
+        if (keepStale) {
+          assert.equal(targets[1].hunkRow.isConnected, true);
+          assert.equal(targets[1].hunkCell.isConnected, false);
         }
-        assert.deepEqual(refreshes, [nested]);
+        assert.deepEqual(refreshes, [Boolean(nested || partial || keepStale)]);
       } finally {
         app.stop();
         dom.window.close();
