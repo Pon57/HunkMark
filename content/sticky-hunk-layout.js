@@ -17,17 +17,16 @@
 
   Object.assign(App.prototype, {
     clearStickyHunkTimeline(controller) {
-      this.hunkStickyStateByFile.get(controller.stickyHunkFileElement ?? controller.fileElement)
+      const hadRanges = this.hunkStickyStateByFile.get(controller.stickyHunkFileElement ?? controller.fileElement)
         ?.controllersWithRanges.delete(controller);
       const prepared = controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared");
-      if (!prepared && !controller.stickyHunkTimelineSignature) {
+      if (!prepared && !hadRanges) {
         return;
       }
       if (prepared) {
         controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
       }
       clearStyles(controller.hunkRow, TIMELINE_STYLES);
-      controller.stickyHunkTimelineSignature = null;
     },
 
     stickyHunkFileDocumentTop(state) {
@@ -120,7 +119,9 @@
         }
         const focused = this.focusedStickyHunkController(state);
         let focusedNext;
-        if (focused) {
+        const focusedOutsideWindow = focused &&
+          (focused.stickyHunkOrderIndex < first || focused.stickyHunkOrderIndex > last);
+        if (focusedOutsideWindow) {
           naturalTops.set(focused, naturalTopFor(focused));
           contentFor(focused);
           focusedNext = controllers[focused.stickyHunkOrderIndex + 1];
@@ -135,14 +136,12 @@
             naturalTops.get(controllers[index + 1]), state.fileOriginDocumentTop,
           );
         }
-        if (focused) {
+        if (focusedOutsideWindow) {
           this.syncStickyHunkTimelineRanges(
             focused, naturalTops.get(focused), naturalTops.get(focusedNext), state.fileOriginDocumentTop,
           );
         }
-        state.preparedOriginLayoutGeneration = state.originLayoutGeneration;
-        state.preparedContentLayoutGeneration = state.contentLayoutGeneration;
-        return { activeIndex, first, last };
+        return { activeIndex, first, last, focused };
       } finally {
         if (measuring) {
           state.fileElement.classList.remove("hunkmark-sticky-file-measuring");
@@ -158,11 +157,9 @@
       const distance = nextTop === undefined ? 0 :
         controller.stickyHunkCompactHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX;
       const pushEnd = nextTop === undefined ? 1 : Math.max(0, nextTop - fileDocumentTop);
-      const signature = [start, tailStart, inset, bottomInset, distance, pushEnd].join(":");
       // The host can rewrite inline styles while retaining the row and its
       // geometry. Per-property guards restore missing ranges without rewrites.
-      setPixelStyle(controller.hunkRow, "--hunkmark-sticky-hunk-content-inset", inset, true);
-      setPixelStyle(controller.hunkRow, "--hunkmark-sticky-hunk-bottom-inset", bottomInset, true);
+      this.syncStickyHunkContentStyles(controller);
       setPixelStyles(controller.hunkRow, [
         ["--hunkmark-sticky-hunk-compress-start", start],
         ["--hunkmark-sticky-hunk-compress-end", start + Math.max(inset, 1)],
@@ -174,7 +171,6 @@
         ["--hunkmark-sticky-hunk-push-start", Math.max(0, pushEnd - distance)],
         ["--hunkmark-sticky-hunk-push-end", pushEnd],
       ]);
-      controller.stickyHunkTimelineSignature = signature;
       this.hunkStickyStateByFile.get(controller.fileElement)?.controllersWithRanges.add(controller);
     },
 
@@ -207,24 +203,24 @@
       return foundIndex;
     },
 
-    syncStickyHunkPreparedWindow(state, controllers, { first, last }) {
+    syncStickyHunkPreparedWindow(state, controllers, { first, last, focused }) {
       // Keep a viewport of margin, the preceding pinned row and the next
       // push-off boundary. Offscreen rows have no referenced animations.
       const preparedControllers = new Set();
       for (let index = first; index <= last; index += 1) {
-        const controller = controllers[index];
-        preparedControllers.add(controller);
-        if (!state.preparedControllers.has(controller)) {
-          controller.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
-        }
+        preparedControllers.add(controllers[index]);
       }
-      const focused = this.focusedStickyHunkController(state);
       if (focused) {
         preparedControllers.add(focused);
-        if (!state.preparedControllers.has(focused)) {
-          focused.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
-        }
       }
+      preparedControllers.forEach((controller) => {
+        if (!controller.hunkRow.classList.contains("hunkmark-sticky-hunk-row")) {
+          controller.hunkRow.classList.add("hunkmark-sticky-hunk-row");
+        }
+        if (!controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared")) {
+          controller.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
+        }
+      });
       state.preparedControllers.forEach((controller) => {
         if (!preparedControllers.has(controller)) {
           controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
@@ -237,11 +233,10 @@
       state, controllers, layout = this.prepareStickyHunkState(state, controllers),
     ) {
       this.syncStickyHunkPreparedWindow(state, controllers, layout);
-      const { activeIndex } = layout;
+      const { activeIndex, focused } = layout;
 
       // Within the prepared window CSS owns positioning, clipping and pushing;
       // active state only selects the current interaction controls.
-      const focused = this.focusedStickyHunkController(state);
       const focusedPinned = focused &&
         this.document.activeElement !== focused.returnButton &&
         this.cachedStickyHunkNaturalDocumentTop(focused) + (focused.stickyHunkContentInset ?? 0) <=
@@ -253,9 +248,6 @@
           previousActiveController?.returnButton ===
           this.document.activeElement;
         previousActiveController?.hunkRow.classList.remove(
-          "hunkmark-sticky-hunk-active",
-        );
-        activeController?.hunkRow.classList.add(
           "hunkmark-sticky-hunk-active",
         );
         if (activeController?.returnButton) {
@@ -271,7 +263,9 @@
         }
         state.activeController = activeController;
       }
-      state.orderChanged = false;
+      if (activeController && !activeController.hunkRow.classList.contains("hunkmark-sticky-hunk-active")) {
+        activeController.hunkRow.classList.add("hunkmark-sticky-hunk-active");
+      }
     },
 
     updateStickyHunkState(state) {
@@ -335,23 +329,7 @@
         if (!this.stickyHunkStateCanPrepareDuringRefresh(state)) {
           continue;
         }
-        if (
-          state.orderDirty ||
-          state.orderChanged ||
-          state.preparedOriginLayoutGeneration !==
-            state.originLayoutGeneration ||
-          state.preparedContentLayoutGeneration !==
-            state.contentLayoutGeneration ||
-          state.contentLayoutDirtyControllers.size > 0
-        ) {
-          this.updateStickyHunkState(state);
-          continue;
-        }
-        const controllers = state.orderedControllers;
-        if (state.fileOriginDirty) {
-          this.updateStickyHunkFileOrigin(state);
-        }
-        this.updateStickyHunkInteractionState(state, controllers);
+        this.updateStickyHunkState(state);
       }
     },
 

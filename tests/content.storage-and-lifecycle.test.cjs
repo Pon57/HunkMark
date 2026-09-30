@@ -2137,10 +2137,9 @@ test("yields before, between, and after stable and cold controller refreshes", a
             states.every(
               (state) =>
                 state.stickyTop === 88 &&
-                state.preparedOriginLayoutGeneration ===
-                  state.originLayoutGeneration &&
-                state.preparedContentLayoutGeneration ===
-                  state.contentLayoutGeneration,
+                Array.from(state.preparedControllers).every((controller) =>
+                  controller.stickyHunkOriginLayoutGeneration === state.originLayoutGeneration &&
+                  controller.stickyHunkContentLayoutGeneration === state.contentLayoutGeneration),
             ),
             true,
           );

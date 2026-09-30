@@ -79,12 +79,6 @@
             ? -1
             : 1;
         });
-      state.orderChanged ||=
-        orderedControllers.length !== state.orderedControllers.length ||
-        orderedControllers.some(
-          (controller, index) =>
-            controller !== state.orderedControllers[index],
-        );
       state.orderedControllers = orderedControllers;
       orderedControllers.forEach((controller, index) => {
         controller.stickyHunkOrderIndex = index;
@@ -108,7 +102,6 @@
         );
       state.orderedControllers = currentControllers;
       state.orderDirty = false;
-      state.orderChanged ||= orderChanged;
       if (orderChanged) {
         currentControllers.forEach((controller, index) => {
           controller.stickyHunkOrderIndex = index;
@@ -226,24 +219,22 @@
     ) {
       controller.stickyHunkCompactHeight = compactHeight;
       this.syncStickyHunkAuxiliaryElements(controller);
-      if (
-        (controller.stickyHunkContentInset ?? 0) === inset &&
-        (controller.stickyHunkBottomInset ?? 0) === bottomInset
-      ) {
-        return;
-      }
       controller.stickyHunkContentInset = inset;
       controller.stickyHunkBottomInset = bottomInset;
+      this.syncStickyHunkContentStyles(controller);
+    },
+
+    syncStickyHunkContentStyles(controller) {
       setPixelStyle(
         controller.hunkRow,
         "--hunkmark-sticky-hunk-content-inset",
-        inset,
+        Math.max(0, controller.stickyHunkContentInset ?? 0),
         true,
       );
       setPixelStyle(
         controller.hunkRow,
         "--hunkmark-sticky-hunk-bottom-inset",
-        bottomInset,
+        Math.max(0, controller.stickyHunkBottomInset ?? 0),
         true,
       );
     },

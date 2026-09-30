@@ -1889,14 +1889,14 @@ test("syncs prepared file interactions while another file is dirty during refres
         assert.equal(firstOriginReads, 0);
         assert.equal(secondOriginReads, scenario.dirtyGeometry ? 4 : 2);
         assert.equal(
-          firstState.preparedOriginLayoutGeneration <
-            firstState.originLayoutGeneration,
+          firstControllers.every((controller) =>
+            controller.stickyHunkOriginLayoutGeneration < firstState.originLayoutGeneration),
           true,
         );
         assert.equal(secondState.fileOriginDirty, false);
         assert.equal(
-          secondState.preparedOriginLayoutGeneration ===
-            secondState.originLayoutGeneration,
+          secondControllers.every((controller) =>
+            controller.stickyHunkOriginLayoutGeneration === secondState.originLayoutGeneration),
           true,
         );
         assert.equal(secondFileRectReads, 2);
@@ -2446,12 +2446,14 @@ test("remeasures file-relative hunk origins after an identity-safe diff mutation
         innerGenerationBeforeMutation + 1,
       );
       assert.equal(
-        outerState.preparedOriginLayoutGeneration,
-        outerState.originLayoutGeneration,
+        outerControllers.every((controller) =>
+          controller.stickyHunkOriginLayoutGeneration === outerState.originLayoutGeneration),
+        true,
       );
       assert.equal(
-        innerState.preparedOriginLayoutGeneration,
-        innerState.originLayoutGeneration,
+        innerControllers.every((controller) =>
+          controller.stickyHunkOriginLayoutGeneration === innerState.originLayoutGeneration),
+        true,
       );
       assert.equal(
         innerControllers[1].stickyHunkOriginDocumentTop,
@@ -2846,11 +2848,17 @@ test("restores prepared and active state after host hunk classes are rewritten",
     app.updateStickyHunkState(state);
     assert.equal(state.activeController, controller);
     assert.ok(state.preparedControllers.has(controller));
-    controller.hunkRow.className = 'host-hunk-row';
-    await app.refresh();
-    assert.equal(app.controllersByRow.get(controller.hunkRow), controller);
-    assert.ok(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
-    assert.ok(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-active'));
+    for (const update of [() => app.refresh(), () => app.updateStickyHunkState(state)]) {
+      for (const rewrite of ['all', 'prepared', 'active']) {
+        if (rewrite === 'all') controller.hunkRow.className = 'host-hunk-row';
+        else controller.hunkRow.classList.remove(`hunkmark-sticky-hunk-${rewrite}`);
+        await update();
+        assert.equal(app.controllersByRow.get(controller.hunkRow), controller);
+        for (const suffix of ['row', 'prepared', 'active']) {
+          assert.ok(controller.hunkRow.classList.contains(`hunkmark-sticky-hunk-${suffix}`), rewrite);
+        }
+      }
+    }
     assert.ok(state.controllersWithRanges.has(controller));
     assert.equal(controller.returnButton.hidden, false);
     const scrollCalls = [];
@@ -2881,10 +2889,8 @@ test("restores rewritten animation styles even when row geometry stays cached", 
     );
     const ranges = properties.map((name) => [name, style.getPropertyValue(name)]);
     assert.equal(ranges.length, 9);
-    const signature = controller.stickyHunkTimelineSignature;
     style.cssText = 'color: red';
     await app.refresh();
-    assert.equal(controller.stickyHunkTimelineSignature, signature);
     assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
     assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-content-inset'), '12px');
     assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-bottom-inset'), '24px');
@@ -3080,6 +3086,9 @@ test("keeps an outgoing focused hunk prepared and unclipped while scrolling", as
     assert.ok(state.preparedControllers.has(focused));
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).clipPath, 'none');
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).transform, 'none');
+    focused.hunkRow.classList.remove('hunkmark-sticky-hunk-prepared');
+    app.updateStickyHunkState(state);
+    assert.ok(focused.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
     assert.ok(state.preparedControllers.size < 35);
     focused.input.blur();
     app.updateStickyHunkState(state);
@@ -3122,7 +3131,8 @@ test("skips clean suspended files when another file can prepare during refresh",
   const { app, dom } = await startExtension(html);
   try {
     const [suspended, ready] = app.hunkStickyStateByFile.values();
-    assert.equal(suspended.preparedOriginLayoutGeneration, suspended.originLayoutGeneration);
+    assert.ok(Array.from(suspended.controllers).every((controller) =>
+      controller.stickyHunkOriginLayoutGeneration === suspended.originLayoutGeneration));
     app.suspendReviewControllersForDiffMutation(new Set(['src/example.js']));
     const updated = [];
     app.updateStickyHunkInteractionState = (state) => updated.push(state);
@@ -3154,7 +3164,7 @@ test("clears ranges only from previously prepared rows when a large file exits",
     app.updateStickyHunkLayouts();
     viewport.scrollY = 10000;
     app.updateStickyHunkLayouts();
-    const installed = controllers.filter((c) => c.stickyHunkTimelineSignature);
+    const installed = Array.from(state.controllersWithRanges);
     assert.ok(installed.length > state.preparedControllers.size);
     assert.ok(installed.length < 80);
     const cleanupTargets = [];
@@ -3174,7 +3184,7 @@ test("clears ranges only from previously prepared rows when a large file exits",
     assert.equal(removals, installed.length * 9);
     assert.equal(state.preparedControllers.size, 0);
     installed.forEach((c) => {
-      assert.equal(c.stickyHunkTimelineSignature, null);
+      assert.equal(state.controllersWithRanges.has(c), false);
       assert.equal(c.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-push-end'), '');
     });
   } finally {
@@ -3282,7 +3292,7 @@ test("installs ranges and clears a never-prepared focused hunk outside the windo
     const viewport = mockStickyRows(dom, controllers, tops);
     state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
     const focused = controllers[450];
-    assert.equal(focused.stickyHunkTimelineSignature, undefined);
+    assert.equal(state.controllersWithRanges.has(focused), false);
     focused.input.focus();
     const observer = app.hunkStickyFileVisibilityObserver;
     observer.callback([{ target: state.fileElement, isIntersecting: true }]);

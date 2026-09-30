@@ -930,10 +930,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       });
 
-      const refreshInteractionWork = Math.max(
-        refreshControllerCount,
-        discovered.length,
-      );
       const controllerChunkSize = Math.max(
         1,
         this.constants.LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD,
@@ -971,12 +967,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
         stickyControllersByFile.set(hunk.fileElement, stickyControllers);
         if (
           !collapsedLayoutAnchor &&
-          refreshInteractionWork >= controllerChunkSize &&
+          refreshControllerCount >= controllerChunkSize &&
           (index + 1) % controllerChunkSize === 0 &&
           index + 1 < discovered.length
         ) {
           await this.yieldForLargeRefreshInteraction(
-            refreshInteractionWork,
+            refreshControllerCount,
           );
           if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
             this.abortRefreshForStaleDiff(null, {
@@ -1077,7 +1073,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           !confirmedControllers.has(controller) || unsettledPaths.has(controller.filePath),
         ),
       });
-      await this.yieldForLargeRefreshInteraction(refreshInteractionWork);
+      await this.yieldForLargeRefreshInteraction(refreshControllerCount);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {
           discardControllers: newControllers,

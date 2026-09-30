@@ -349,12 +349,9 @@
         fileOriginDocumentTop: null,
         header: null,
         headerAttributeObserver: null,
-        orderChanged: true,
         orderDirty: true,
         orderedControllers: [],
         originLayoutGeneration: 0,
-        preparedOriginLayoutGeneration: null,
-        preparedContentLayoutGeneration: null,
         preparedControllers: new Set(),
         stickyTop: 0,
         visibilityObserved: false,
@@ -509,7 +506,6 @@
       if (controllerAdded) {
         state.controllers.add(controller);
         state.orderDirty = true;
-        state.orderChanged = true;
       }
       if (state.visible) {
         this.observeStickyHunkRow(controller);
@@ -554,7 +550,6 @@
       this.hunkStickyControllerByRow.delete(controller.hunkRow);
       clearClasses(controller.hunkRow, ROW_CLASSES);
       clearStyles(controller.hunkRow, ROW_STYLES);
-      controller.stickyHunkTimelineSignature = null;
       controller.hunkRow?.removeEventListener(
         "click",
         controller.stickyHunkClickHandler,
@@ -598,7 +593,6 @@
       if (state) {
         state.contentLayoutDirtyControllers.delete(controller);
         state.orderDirty = true;
-        state.orderChanged = true;
       }
       if (!state || state.controllers.size > 0) {
         this.scheduleStickyHunkLayout();
