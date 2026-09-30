@@ -281,27 +281,69 @@ if (globalThis.HunkMarkContent?.extendApp) {
       lines.forEach((line, index) => this.applyLineHostLayout(line, layouts[index]));
     },
 
-    updateLineControlHostLayoutsForAttributes(mutations) {
+    materializedLinesForStickyState(state) {
+      return Array.from(state.controllers).flatMap((controller) =>
+        Array.from(controller.materializedLazyLines ?? controller.lines),
+      ).filter((line) => line.control?.isConnected);
+    },
+
+    stopLineControlAttributeObserver(state) {
+      state.lineAttributeObserver?.disconnect();
+      state.lineAttributeObserver = null;
+      state.lineAttributeAncestors = [];
+    },
+
+    ensureLineControlAttributeObserver(state, { refresh = false } = {}) {
+      if (!state?.visible || !state.fileElement.isConnected) return;
+      const ancestors = [];
+      for (let node = state.fileElement.parentElement; node; node = node.parentElement) ancestors.push(node);
+      if (state.lineAttributeObserver && ancestors.length === state.lineAttributeAncestors.length &&
+        ancestors.every((node, index) => node === state.lineAttributeAncestors[index])) return;
+      const lines = this.materializedLinesForStickyState(state);
+      if (lines.length === 0) return;
+      const replaceObserver = Boolean(state.lineAttributeObserver);
+      this.stopLineControlAttributeObserver(state);
+      state.lineAttributeAncestors = ancestors;
+      state.lineAttributeObserver = new this.window.MutationObserver((mutations) => {
+        if (!this.stopped && state.visible && state.fileElement.isConnected) {
+          this.updateLineControlHostLayoutsForAttributes(state, mutations);
+        }
+      });
+      const options = { attributes: true, attributeFilter: ["class", "style"], attributeOldValue: true };
+      state.lineAttributeObserver.observe(state.fileElement, { ...options, subtree: true });
+      ancestors.forEach((node) => state.lineAttributeObserver.observe(node, options));
+      if (refresh || replaceObserver) this.updateLineControlHostLayouts(lines);
+    },
+
+    updateLineControlHostLayoutsForAttributes(state, mutations) {
       const lines = new Set();
       let previousStyle;
+      let materialized;
       const hostClasses = (value) => (value ?? "").split(/\s+/)
         .filter((name) => name && !name.startsWith("hunkmark-")).join(" ");
+      const hostStyles = (style) => Array.from(style).filter((property) => !property.startsWith("--hunkmark-"))
+        .map((property) => `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`).join(";");
       for (const mutation of mutations) {
         if (mutation.type !== "attributes" || this.extensionOwnsNode(mutation.target)) continue;
-        const line = this.knownLineControllerForMutationTarget(mutation.target);
-        if (!line?.control?.isConnected) continue;
-        if (mutation.target !== line.element) {
-          lines.add(line);
-        } else if (mutation.attributeName === "class") {
-          if (hostClasses(mutation.oldValue) !== hostClasses(line.element.className) ||
-            !line.element.classList.contains("hunkmark-line-cell")) lines.add(line);
-        } else if (mutation.attributeName === "style") {
+        const directLine = this.lineControllersByElement.get(mutation.target);
+        if (mutation.attributeName === "class") {
+          if (hostClasses(mutation.oldValue) === hostClasses(mutation.target.getAttribute("class")) &&
+            (!directLine || mutation.target.classList.contains("hunkmark-line-cell"))) continue;
+        } else {
           previousStyle ??= this.document.createElement("span").style;
           previousStyle.cssText = mutation.oldValue ?? "";
-          if (["padding-right", "padding-top", "line-height"].some((property) =>
-            previousStyle.getPropertyValue(property) !== line.element.style.getPropertyValue(property),
-          ) || !line.element.style.getPropertyValue("--hunkmark-host-line-action-inset") ||
-            !line.element.style.getPropertyValue("--hunkmark-first-line-center")) lines.add(line);
+          if (hostStyles(previousStyle) === hostStyles(mutation.target.style) &&
+            (!directLine || (mutation.target.style.getPropertyValue("--hunkmark-host-line-action-inset") &&
+              mutation.target.style.getPropertyValue("--hunkmark-first-line-center")))) continue;
+        }
+        const line = this.knownLineControllerForMutationTarget(mutation.target);
+        if (line && state.controllers.has(line.controller)) {
+          lines.add(line);
+        } else {
+          materialized ??= this.materializedLinesForStickyState(state);
+          materialized.forEach((candidate) => {
+            if (mutation.target.contains(candidate.element)) lines.add(candidate);
+          });
         }
       }
       this.updateLineControlHostLayouts(lines);
@@ -360,6 +402,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       lineController.element.append(control);
       lineController.control = control;
       lineController.controller.materializedLazyLines?.add(lineController);
+      this.ensureLineControlAttributeObserver(this.hunkStickyStateByFile.get(lineController.controller.fileElement));
       this.applyLineAppearance(lineController);
       return control;
     },

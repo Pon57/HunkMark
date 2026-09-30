@@ -5988,10 +5988,18 @@ for (const [layout, fixture] of [
         unobserve(element) { this.observed.delete(element); }
         disconnect() { this.observed.clear(); }
       }
+      const subscriptions = [];
       const { app, dom } = await startExtension(html, {}, {
         resizeObserverClass: TestResizeObserver,
         setupWindow(window) {
           window.scrollTo = () => {};
+          const NativeMutationObserver = window.MutationObserver;
+          window.MutationObserver = class extends NativeMutationObserver {
+            observe(target, options) {
+              subscriptions.push({ target, options });
+              return super.observe(target, options);
+            }
+          };
           const rect = window.Element.prototype.getBoundingClientRect;
           window.Element.prototype.getBoundingClientRect = function () {
             if (this.matches('[class*="ActionBar-module__action-bar-position__"]')) {
@@ -6067,9 +6075,36 @@ for (const [layout, fixture] of [
         });
         line.element.insertAdjacentHTML('beforeend', badgeHtml);
         await waitFor(() => assert.equal(inset(), '69px'));
+        hostStyle.textContent += '.native-action-offset [class*="ActionBar-module__action-bar-position__"] { right: 12px; }';
+        const fileState = app.hunkStickyStateByFile.get(line.controller.fileElement);
+        line.controller.fileElement.classList.add('native-action-offset');
+        await waitFor(() => assert.equal(inset(), '81px'));
+        assert.ok(measured.every((entry) => entry.controller.fileElement === line.controller.fileElement));
+        assert.equal(subscriptions.some(({ target, options }) =>
+          target === dom.window.document.documentElement && options.attributes && options.subtree), false);
+        const unrelated = dom.window.document.createElement('div');
+        dom.window.document.body.append(unrelated);
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 30));
+        let attributeCallbacks = 0;
+        const handleAttributes = app.updateLineControlHostLayoutsForAttributes.bind(app);
+        app.updateLineControlHostLayoutsForAttributes = (...args) => {
+          attributeCallbacks += 1;
+          return handleAttributes(...args);
+        };
+        unrelated.className = 'other-github-ui';
+        unrelated.style.width = '30px';
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+        assert.equal(attributeCallbacks, 0);
+        app.setStickyHunkStateVisibility(fileState, false);
+        assert.equal(fileState.lineAttributeObserver, null);
+        line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]').style.right = '20px';
+        app.setStickyHunkStateVisibility(fileState, true);
+        assert.equal(inset(), '89px');
+        assert.ok(fileState.lineAttributeObserver);
         line.controller.fileElement.remove();
         app.destroyController(line.controller);
         assert.equal(observer.observed.size, 0);
+        assert.equal(fileState.lineAttributeObserver, null);
       } finally {
         app.stop(); dom.window.close();
         assert.equal(observer?.observed.size ?? 0, 0);
