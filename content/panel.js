@@ -658,34 +658,47 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
-    removeProgressForFilesWithoutRenderedHunks() {
-      const controllers = Array.from(this.controllersByRow.values());
-      const controllerFileElements = [
-        ...new Set(controllers.map((controller) => controller.fileElement)),
-      ].filter(Boolean);
+    removeProgressForFilesWithoutRenderedHunks(fileElements = null) {
+      const controllerFileElements = fileElements === null
+        ? [
+            ...new Set(
+              Array.from(
+                this.controllersByRow.values(),
+                (controller) => controller.fileElement,
+              ),
+            ),
+          ].filter(Boolean)
+        : Array.from(fileElements).filter(
+            (fileElement) => fileElement?.isConnected,
+          );
       const controllerFileElementSet = new Set(controllerFileElements);
       let removed = false;
-      this.document
-        .querySelectorAll(".hunkmark-file-progress")
-        .forEach((badge) => {
-          const directFileElement =
-            this.directFileElementForProgressBadge(badge);
-          const fileElement =
-            (controllerFileElementSet.has(directFileElement)
-              ? directFileElement
-              : controllerFileElements.find((candidate) =>
-                  candidate.contains(badge),
-                )) ??
-            directFileElement ??
-            badge.closest("article, details, section, [role=region]");
-          if (
-            fileElement &&
-            this.findHunkMarkers(fileElement).length === 0
-          ) {
-            badge.remove();
-            removed = true;
-          }
-        });
+      const badges = fileElements === null
+        ? this.document.querySelectorAll(".hunkmark-file-progress")
+        : controllerFileElements.flatMap((fileElement) =>
+            Array.from(
+              fileElement.querySelectorAll(".hunkmark-file-progress"),
+            ),
+          );
+      badges.forEach((badge) => {
+        const directFileElement =
+          this.directFileElementForProgressBadge(badge);
+        const fileElement =
+          (controllerFileElementSet.has(directFileElement)
+            ? directFileElement
+            : controllerFileElements.find((candidate) =>
+                candidate.contains(badge),
+              )) ??
+          directFileElement ??
+          badge.closest("article, details, section, [role=region]");
+        if (
+          fileElement &&
+          this.findHunkMarkers(fileElement).length === 0
+        ) {
+          badge.remove();
+          removed = true;
+        }
+      });
       return removed;
     },
 

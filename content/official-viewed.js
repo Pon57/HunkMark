@@ -1016,29 +1016,51 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
-    fileRevealRestoreRootForMutations(mutations) {
-      const roots = Array.from(this.fileRevealPrepaintRestores.keys()).filter(
-        (fileElement) =>
-          fileElement.isConnected &&
-          mutations.some(
-            (mutation) =>
-              mutation.target === fileElement ||
-              fileElement.contains(mutation.target),
-          ),
-      );
-      if (roots.length !== 1) {
-        return this.document;
+    restorationRootOwnsAllHunks(searchRoot) {
+      if (!(searchRoot instanceof this.window.Element)) {
+        return false;
       }
-      const [root] = roots;
-      return mutations.every(
-        (mutation) =>
-          mutation.target === root || root.contains(mutation.target),
-      )
-        ? root
-        : this.document;
+      const ownerSelector = [
+        this.constants.FILE_CONTAINER_SELECTOR,
+        "article, details, section, [role=region], table",
+      ].join(", ");
+      if (!searchRoot.matches(ownerSelector)) {
+        return false;
+      }
+      // An aggregate restoration success cannot certify a nested file owner.
+      return Array.from(searchRoot.querySelectorAll(ownerSelector)).every(
+        (candidate) => {
+          let marker = candidate.querySelector(
+            this.constants.HUNK_ELEMENT_SELECTOR,
+          );
+          if (!marker) {
+            // Raw headers need only the first text match, not full discovery.
+            const walker = this.document.createTreeWalker(
+              candidate,
+              this.window.NodeFilter.SHOW_TEXT,
+            );
+            let textNode = walker.nextNode();
+            while (textNode) {
+              if (
+                this.Core.isHunkHeaderText(textNode.nodeValue) &&
+                !textNode.parentElement?.closest("script, style, noscript, template")
+              ) {
+                marker = textNode.parentElement;
+                break;
+              }
+              textNode = walker.nextNode();
+            }
+          }
+          return !marker ||
+            this.findFileElement(marker, this.semanticRow(marker)) === searchRoot;
+        },
+      );
     },
 
-    preserveOfficialViewedRestoredState(searchRoot = this.document) {
+    preserveOfficialViewedRestoredState(
+      searchRoot = this.document,
+      restorationState = null,
+    ) {
       if (this.officialViewedRestoreGuards.size === 0) {
         return false;
       }
@@ -1046,6 +1068,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       let restored = false;
       const restoredFiles = new Set();
       const discovered = this.discoverCachedHunks(searchRoot);
+      if (restorationState) {
+        restorationState.discovered = discovered;
+      }
       if (!discovered) {
         return false;
       }
@@ -1145,7 +1170,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
-    restoreCachedFileControllers(searchRoot = this.document) {
+    restoreCachedFileControllers(
+      searchRoot = this.document,
+      restorationState = null,
+    ) {
+      if (restorationState) {
+        restorationState.complete = false;
+      }
       if (
         !this.currentReviewScope ||
         !this.cachedFileControllerRestoreNeeded(searchRoot)
@@ -1154,11 +1185,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
 
       const candidatesByFile = new Map();
-      const discovered = this.discoverCachedHunks(searchRoot);
+      const discovered = restorationState?.discovered ??
+        this.discoverCachedHunks(searchRoot);
       if (!discovered) {
         return false;
       }
-      this.attachCachedHostContextExpansionBaselines(discovered);
+      if (!restorationState?.discovered) {
+        this.attachCachedHostContextExpansionBaselines(discovered);
+      }
       discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
           return;
@@ -1284,6 +1318,31 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const restored = restorationPlans.length > 0;
       if (restored) {
         this.updateProgress();
+      }
+      if (restorationState) {
+        // The boolean return means "anything restored". Deferral requires
+        // current controllers and controls for every discovered hunk.
+        restorationState.complete = discovered.length > 0 && discovered.every(
+          (hunk) => {
+            const controller = this.controllersByRow.get(hunk.hunkRow);
+            return this.reviewControllerIsCurrent(controller) &&
+              !this.reviewControllerIsSuspended(controller) &&
+              controller.fileElement === hunk.fileElement &&
+              controller.filePath === hunk.filePath &&
+              this.controllerMatchesHunk(controller, hunk) &&
+              controller.hunkCell.contains(controller.actions) &&
+              [controller.input, controller.collapseButton, controller.returnButton].every(
+                (control) => controller.actions.contains(control),
+              ) &&
+              controller.groupRows.length === hunk.groupRows.length &&
+              controller.groupRows.every(
+                (row, index) => row === hunk.groupRows[index],
+              ) &&
+              controller.lines.every((line) =>
+                !line.control || line.row.contains(line.control),
+              );
+          },
+        );
       }
       return restored;
     },

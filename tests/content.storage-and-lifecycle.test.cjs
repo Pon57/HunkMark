@@ -5061,6 +5061,401 @@ test("keeps file auxiliary mutations fail-closed without a diff grid", async () 
   }
 });
 
+test("checks only the mutated file when removing stale progress", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const first = controllerForFile(app, "src/react-one.js");
+    const second = controllerForFile(app, "src/react-two.js");
+    await waitFor(() => {
+      assert.ok(first.fileElement.querySelector(".hunkmark-file-progress"));
+      assert.ok(second.fileElement.querySelector(".hunkmark-file-progress"));
+    });
+    app.observer.disconnect();
+    const findHunkMarkers = app.findHunkMarkers.bind(app);
+    let secondFileSearches = 0;
+    app.findHunkMarkers = (root) => {
+      secondFileSearches += Number(root === second.fileElement);
+      return findHunkMarkers(root);
+    };
+    const restoreCachedFileControllers =
+      app.restoreCachedFileControllers.bind(app);
+    const restoreRoots = [];
+    app.restoreCachedFileControllers = (root, ...args) => {
+      restoreRoots.push(root);
+      return restoreCachedFileControllers(root, ...args);
+    };
+
+    const body = first.hunkRow.closest("tbody");
+    const removedRows = Array.from(body.childNodes);
+    body.replaceChildren();
+    app.handleMutations([
+      {
+        addedNodes: [],
+        removedNodes: removedRows,
+        target: body,
+        type: "childList",
+      },
+    ]);
+
+    assert.equal(
+      first.fileElement.querySelector(".hunkmark-file-progress"),
+      null,
+    );
+    assert.ok(second.fileElement.querySelector(".hunkmark-file-progress"));
+    assert.equal(secondFileSearches, 0);
+    assert.equal(restoreRoots.length, 1);
+    assert.notEqual(restoreRoots[0], dom.window.document);
+    assert.equal(
+      restoreRoots[0] === first.fileElement ||
+        first.fileElement.contains(restoreRoots[0]),
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+function captureMutationBatch(dom, mutate) {
+  const observer = new dom.window.MutationObserver(() => {});
+  try {
+    observer.observe(dom.window.document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    mutate();
+    return observer.takeRecords();
+  } finally {
+    observer.disconnect();
+  }
+}
+
+test("restores only the affected files in a multi-file mutation batch", async () => {
+  const fixture = manyFileHunkFixture(3).replaceAll(
+    'class="Diff-module__diffHeaderWrapper__chunk"',
+    'data-diff-header-wrapper class="Diff-module__diffHeaderWrapper__chunk"',
+  );
+  const { app, dom } = await startExtension(fixture);
+  try {
+    app.observer.disconnect();
+    const controllers = controllersFor(app);
+    const files = controllers.map((controller) => controller.fileElement);
+    files.forEach((file) =>
+      assert.ok(file.querySelector(".hunkmark-file-progress")),
+    );
+    const restoreRoots = [];
+    const restoreCachedFileControllers =
+      app.restoreCachedFileControllers.bind(app);
+    app.restoreCachedFileControllers = (root, ...args) => {
+      restoreRoots.push(root);
+      return restoreCachedFileControllers(root, ...args);
+    };
+    const mutations = captureMutationBatch(dom, () => {
+      controllers.slice(0, 2).forEach((controller) =>
+        controller.hunkRow.closest("tbody").replaceChildren(),
+      );
+    });
+
+    app.handleMutations(mutations);
+
+    assert.deepEqual(restoreRoots, files.slice(0, 2));
+    assert.equal(files[0].querySelector(".hunkmark-file-progress"), null);
+    assert.equal(files[1].querySelector(".hunkmark-file-progress"), null);
+    assert.ok(files[2].querySelector(".hunkmark-file-progress"));
+    assert.equal(controllers[2].destroyed, false);
+    assert.equal(controllers[2].actions.isConnected, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("retains document-wide restoration when a batch includes an unowned diff mutation", async (t) => {
+  for (const expectedVisibility of [false, true]) {
+    const name = expectedVisibility ? "during a file reveal" : "ordinary mutation";
+    await t.test(name, async () => {
+      const { app, dom } = await startExtension(manyFileHunkFixture(3));
+      try {
+        app.observer.disconnect();
+        const controllers = controllersFor(app);
+        const restoreRoots = [];
+        const restoreCachedFileControllers =
+          app.restoreCachedFileControllers.bind(app);
+        app.restoreCachedFileControllers = (root, ...args) => {
+          restoreRoots.push(root);
+          return restoreCachedFileControllers(root, ...args);
+        };
+        if (expectedVisibility) {
+          app.expectFileDiffVisibility(controllers[0].fileElement, true);
+        }
+        const mutations = captureMutationBatch(dom, () => {
+          if (expectedVisibility) {
+            const code = controllers[0].lines[0].element.querySelector("code");
+            code.textContent += " updated";
+          } else {
+            controllers[0].hunkRow.closest("tbody").replaceChildren();
+          }
+          const table = dom.window.document.createElement("table");
+          table.innerHTML = `
+            <tbody><tr>
+              <td class="blob-code-hunk">@@ -100 +100 @@</td>
+            </tr></tbody>`;
+          dom.window.document.body.append(table);
+        });
+        const unscopedGeneration = app.unscopedDiffMutationGeneration;
+
+        app.handleMutations(mutations);
+
+        assert.equal(app.unscopedDiffMutationGeneration, unscopedGeneration + 1);
+        assert.deepEqual(restoreRoots, [dom.window.document]);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("checks every affected root before deferring a multi-file refresh", async (t) => {
+  const scenarios = [
+    { name: "every file restored", allRestored: true },
+    { name: "only the first file restored", allRestored: false },
+    { name: "expected file reveals", allRestored: true, expectedFileCount: 2 },
+    {
+      name: "file reveal with another file update",
+      allRestored: true,
+      expectedFileCount: 1,
+    },
+    {
+      name: "only the revealing file restored",
+      allRestored: false,
+      expectedFileCount: 1,
+    },
+    {
+      name: "file hide with another file update",
+      allRestored: true,
+      expectedFileCount: 1,
+      hideFirst: true,
+    },
+  ];
+  for (const { name, allRestored, expectedFileCount, hideFirst } of scenarios) {
+    await t.test(name, async () => {
+      const { app, dom } = await startExtension(manyFileHunkFixture(3));
+      try {
+        app.observer.disconnect();
+        const controllers = controllersFor(app);
+        const files = controllers.map((controller) => controller.fileElement);
+        if (expectedFileCount) {
+          files.slice(0, expectedFileCount).forEach((file) =>
+            app.expectFileDiffVisibility(file, !hideFirst),
+          );
+        }
+        const restoreRoots = [];
+        app.finishCleanCachedFileReveal = (root) => {
+          restoreRoots.push(root);
+          return (!hideFirst || root !== files[0]) &&
+            (allRestored || root === files[0]);
+        };
+        app.preserveOfficialViewedRestoredState = () => false;
+        app.restoreCachedFileControllers = () => false;
+        const refreshes = [];
+        app.scheduleRefresh = (options) => refreshes.push(options);
+        const mutations = captureMutationBatch(dom, () => {
+          controllers.slice(0, 2).forEach((controller, index) => {
+            if (hideFirst && index === 0) {
+              controller.hunkRow.closest("tbody").replaceChildren();
+            } else {
+              const code = controller.lines[0].element.querySelector("code");
+              code.textContent += " updated";
+            }
+          });
+        });
+
+        app.handleMutations(mutations);
+
+        assert.deepEqual(restoreRoots, files.slice(0, 2));
+        assert.deepEqual(
+          refreshes.map(({ immediate }) => immediate),
+          [Boolean(hideFirst || !allRestored)],
+        );
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("requires file ownership evidence before deferring a restored region", async (t) => {
+  const scenarios = [
+    {
+      name: "nested cached restoration",
+      method: "restoreCachedFileControllers",
+      nested: true,
+    },
+    {
+      name: "nested official Viewed guard",
+      method: "preserveOfficialViewedRestoredState",
+      nested: true,
+    },
+    {
+      name: "raw nested hunk headers",
+      method: "preserveOfficialViewedRestoredState",
+      nested: true,
+      raw: true,
+    },
+    {
+      name: "multiple hunks owned by one file",
+      method: "restoreCachedFileControllers",
+      nested: false,
+    },
+    {
+      name: "raw headers owned by one file",
+      method: "restoreCachedFileControllers",
+      nested: false,
+      raw: true,
+    },
+    {
+      name: "same-file guard rebuilds all controllers",
+      method: "preserveOfficialViewedRestoredState",
+      nested: false,
+    },
+    {
+      name: "same-file guard cannot restore every hunk",
+      method: "preserveOfficialViewedRestoredState",
+      nested: false,
+      partial: true,
+    },
+    {
+      name: "cached restoration leaves a stale sibling controller",
+      method: "restoreCachedFileControllers",
+      nested: false,
+      keepStale: true,
+    },
+  ];
+  for (const { name, method, nested, raw, partial, keepStale } of scenarios) {
+    await t.test(name, async () => {
+      const fixture = new JSDOM(manyFileHunkFixture(3));
+      const [outer, inner] = fixture.window.document.querySelectorAll(
+        '[role="region"]',
+      );
+      outer.dataset.filePath = "src/chunk-0.js";
+      if (nested) {
+        inner.className = "js-file";
+        inner.dataset.filePath = "src/chunk-1.js";
+        inner.removeAttribute("role");
+        inner.removeAttribute("id");
+        outer.append(inner);
+      } else {
+        const grid = inner.querySelector('[role="grid"]');
+        grid.setAttribute("aria-label", "Diff for: src/chunk-0.js");
+        outer.append(grid);
+      }
+      const officialStates = [[outer, !nested], ...(nested ? [[inner, true]] : [])];
+      for (const [file, viewed] of officialStates) {
+        const button = fixture.window.document.createElement("button");
+        button.setAttribute("aria-label", viewed ? "Viewed" : "Not Viewed");
+        button.setAttribute("aria-pressed", String(viewed));
+        button.textContent = "Viewed";
+        file.querySelector(
+          '[class*="DiffFileHeader-module__diff-file-header"]',
+        ).append(button);
+      }
+      const metadataButton = fixture.window.document.createElement("button");
+      metadataButton.dataset.filePath = "src/chunk-0.js";
+      metadataButton.textContent = "Expand lines";
+      outer.firstElementChild.append(metadataButton);
+      if (raw) {
+        outer.querySelectorAll(".diff-hunk-cell").forEach((cell) =>
+          cell.classList.remove("diff-hunk-cell"),
+        );
+      }
+      const html = fixture.serialize();
+      fixture.window.close();
+
+      const { app, dom } = await startExtension(html);
+      try {
+        app.observer.disconnect();
+        app.autoCollapseViewed = false;
+        const root = dom.window.document.getElementById("diff-chunk-0");
+        const targets = controllersFor(app).filter((controller) =>
+          root.contains(controller.hunkRow),
+        );
+        assert.equal(targets.length, 2);
+        const owners = new Set(targets.map((controller) => controller.fileElement));
+        assert.equal(owners.size, nested ? 2 : 1);
+        const reviewed = partial
+          ? targets.slice(0, 1)
+          : nested
+            ? targets.filter((controller) => controller.fileElement !== root)
+            : targets;
+        for (const controller of reviewed) {
+          await app.setLineViewed(controller.lines[0], true);
+        }
+        if (method === "preserveOfficialViewedRestoredState") {
+          app.startOfficialViewedRestoreGuard(
+            reviewed[0].officialSuppressionKey,
+            reviewed[0].filePath,
+          );
+        }
+        (keepStale ? targets.slice(0, 1) : targets).forEach((controller) =>
+          app.destroyController(controller),
+        );
+        const outcomes = [];
+        const restore = app[method].bind(app);
+        app[method] = (searchRoot, ...args) => {
+          const restored = restore(searchRoot, ...args);
+          outcomes.push({ searchRoot, restored });
+          return restored;
+        };
+        const discoveryRoots = [];
+        const discover = app.discoverCachedHunks.bind(app);
+        app.discoverCachedHunks = (searchRoot, ...args) => {
+          discoveryRoots.push(searchRoot);
+          return discover(searchRoot, ...args);
+        };
+        const refreshes = [];
+        app.scheduleRefresh = ({ immediate }) => refreshes.push(immediate);
+        const mutations = captureMutationBatch(dom, () => {
+          targets.forEach((controller, index) => {
+            if (keepStale && index === 1) {
+              controller.hunkCell.replaceWith(controller.hunkCell.cloneNode(true));
+            } else {
+              controller.hunkRow.replaceWith(controller.hunkRow.cloneNode(true));
+            }
+          });
+        });
+        mutations.forEach((mutation) => {
+          const owners = app.diffLoadFileElementsForMutation(mutation);
+          assert.equal(owners.size, 1);
+          assert.equal(owners.has(root), true);
+        });
+
+        app.handleMutations(mutations);
+
+        assert.deepEqual(outcomes.map(({ restored }) => restored), [true]);
+        assert.equal(outcomes[0].searchRoot, root);
+        assert.deepEqual(discoveryRoots, [root]);
+        const restoredControllers = controllersFor(app).filter((controller) =>
+          root.contains(controller.hunkRow),
+        );
+        assert.equal(restoredControllers.length, partial ? 0 : nested ? 1 : 2);
+        if (keepStale) {
+          assert.equal(targets[1].hunkRow.isConnected, true);
+          assert.equal(targets[1].hunkCell.isConnected, false);
+        }
+        assert.deepEqual(refreshes, [Boolean(nested || partial || keepStale)]);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
@@ -5090,7 +5485,14 @@ test("uses direct current React progress ownership before controller scans", asy
       return directOwner(badge);
     };
     app.updateProgress();
+    const findHunkMarkers = app.findHunkMarkers.bind(app);
+    const markerSearchRoots = new Set();
+    app.findHunkMarkers = (root) => {
+      markerSearchRoots.add(root);
+      return findHunkMarkers(root);
+    };
     assert.equal(app.removeProgressForFilesWithoutRenderedHunks(), false);
+    assert.deepEqual(markerSearchRoots, new Set(fileElements));
     assert.equal(directOwnerLookups, badges.length * 2);
   } finally {
     app.stop();

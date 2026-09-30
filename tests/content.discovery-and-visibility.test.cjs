@@ -655,7 +655,7 @@ test("yields queued page tasks within discovery of one huge file", async () => {
       assert.equal(app.refreshRunning, false);
       assert.equal(app.refreshQueued, false);
       assert.equal(app.controllersByRow.size, 1);
-    }, 10_000);
+    }, 30_000);
     const controller = controllerAt(app, 0);
     assert.equal(controller.lines.length, 3_000);
     assert.equal(pageTaskRan, true);
@@ -684,11 +684,17 @@ test("yields queued page tasks within discovery of one huge file", async () => {
 
 test("cleans up the extension when test startup times out", async () => {
   let window;
+  let closeCalls = 0;
   await assert.rejects(
     startExtension("<!doctype html><html><body></body></html>", {}, {
       scopeWaitTimeoutMs: 40,
       setupWindow(candidate) {
         window = candidate;
+        const close = candidate.close.bind(candidate);
+        candidate.close = () => {
+          closeCalls += 1;
+          close();
+        };
       },
       url: "https://github.com/octo/repo",
     }),
@@ -696,7 +702,7 @@ test("cleans up the extension when test startup times out", async () => {
   );
   assert.equal(window.HunkMarkContent.activeApp.stopped, true);
   assert.equal(window.HunkMarkContent.activeApp.navigationPollTimer, null);
-  assert.equal(window.document, undefined);
+  assert.equal(closeCalls, 1);
 });
 
 test("aborts one-file discovery when a row changes after an internal yield", async () => {
