@@ -1375,6 +1375,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.boundStickyHunkResize = () => {
         if (this.hunkStickyStateByFile.size > 0) {
           this.invalidateVisibleStickyHunkLayouts({ refreshHeaders: true });
+          this.updateLineControlHostLayouts(Array.from(this.hunkStickyVisibleStates)
+            .flatMap((state) => this.materializedLinesForStickyState(state)));
         }
       };
       this.boundWindowBlur = () => {

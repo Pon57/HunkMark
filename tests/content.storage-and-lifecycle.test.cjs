@@ -5975,6 +5975,8 @@ for (const [layout, fixture] of [
       if (initiallyCommented) {
         target.style.paddingRight = '80px';
         target.insertAdjacentHTML('beforeend', badgeHtml);
+      } else {
+        target.insertAdjacentHTML('beforeend', '<div data-width="24" class="ActionBar-module__action-bar-position__QToB4"><button aria-label="More actions">▼</button></div>');
       }
       const nativeStyles = fixtureDom.window.document.createElement('style');
       nativeStyles.textContent = '[class*="ActionBar-module__action-bar-position__"] { position: absolute; right: 0; }' +
@@ -5989,10 +5991,17 @@ for (const [layout, fixture] of [
         disconnect() { this.observed.clear(); }
       }
       const subscriptions = [];
+      let responsiveRight = null;
       const { app, dom } = await startExtension(html, {}, {
         resizeObserverClass: TestResizeObserver,
         setupWindow(window) {
           window.scrollTo = () => {};
+          const computedStyle = window.getComputedStyle.bind(window);
+          window.getComputedStyle = (element, pseudoElement) => {
+            const style = computedStyle(element, pseudoElement);
+            return responsiveRight !== null && element.matches('[class*="ActionBar-module__action-bar-position__"]')
+              ? { right: `${responsiveRight}px`, marginRight: style.marginRight } : style;
+          };
           const NativeMutationObserver = window.MutationObserver;
           window.MutationObserver = class extends NativeMutationObserver {
             observe(target, options) {
@@ -6030,6 +6039,13 @@ for (const [layout, fixture] of [
         const measure = app.measureLineHostLayout.bind(app);
         app.measureLineHostLayout = (entry) => { measured.push(entry); return measure(entry); };
         if (!initiallyCommented) {
+          const menu = line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]');
+          const menuObserver = app.lineControlHostLayoutObserver;
+          assert.ok(menuObserver.observed.has(menu));
+          menu.dataset.width = '30';
+          menuObserver.callback([{ target: menu }]);
+          assert.equal(inset(), '30px');
+          menu.remove();
           await app.setLineViewed(line, true);
           line.element.style.paddingRight = '80px';
           line.element.insertAdjacentHTML('beforeend', badgeHtml);
@@ -6047,6 +6063,15 @@ for (const [layout, fixture] of [
         badge.dataset.width = '83';
         observer.callback([{ target: badge }]);
         assert.equal(inset(), '83px');
+        const readsBeforeResize = measured.length;
+        responsiveRight = 16;
+        dom.window.dispatchEvent(new dom.window.Event('resize'));
+        assert.equal(inset(), '99px');
+        assert.ok(measured.length > readsBeforeResize);
+        responsiveRight = null;
+        dom.window.dispatchEvent(new dom.window.Event('resize'));
+        assert.equal(inset(), '83px');
+        measured.length = 0;
         line.element.style.paddingRight = '24px';
         badge.remove();
         line.element.querySelector('[class*="comment-indicator"]').remove();
@@ -6068,7 +6093,7 @@ for (const [layout, fixture] of [
         await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
         assert.equal(measured.length, readsBeforeOwnChange);
         assert.ok(measured.length > 0);
-        assert.ok(measured.every((entry) => entry === line));
+        assert.ok(measured.every((entry) => lines.includes(entry)));
         assert.equal(refreshes, 0);
         lines.filter((entry) => entry !== line).forEach((entry) => {
           assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '24px');
