@@ -26,6 +26,25 @@
     return documentTop;
   };
 
+  const readStickyHunkNaturalLayout = (controller, refreshLayout, readLayout) => {
+    const fileElement = controller.fileElement;
+    const measureFile =
+      fileElement &&
+      (refreshLayout ||
+        controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared")) &&
+      !fileElement.classList.contains("hunkmark-sticky-file-measuring");
+    if (measureFile) {
+      fileElement.classList.add("hunkmark-sticky-file-measuring");
+    }
+    try {
+      return readLayout();
+    } finally {
+      if (measureFile) {
+        fileElement.classList.remove("hunkmark-sticky-file-measuring");
+      }
+    }
+  };
+
   Object.assign(App.prototype, {
     orderedStickyHunkControllers(state) {
       if (!state.orderDirty) {
@@ -238,94 +257,32 @@
       });
     },
 
-    stickyHunkTableDocumentTop(
-      controller,
-      { refreshLayout = false } = {},
-    ) {
-      const row = controller.hunkRow;
-      if (row?.tagName !== "TR") {
-        return null;
-      }
-      const table = row.closest("table");
-      const wasSticky = row.classList.contains(
-        "hunkmark-sticky-hunk-active",
-      );
-      if (refreshLayout && wasSticky) {
-        row.classList.remove("hunkmark-sticky-hunk-active");
-      }
-      let renderedOffsetTop;
-      let tableTop;
-      try {
-        renderedOffsetTop = Number(row.offsetTop);
-        tableTop = Number(table?.getBoundingClientRect().top);
-      } finally {
-        if (refreshLayout && wasSticky) {
-          row.classList.add("hunkmark-sticky-hunk-active");
-        }
-      }
-      if (
-        !table ||
-        !Number.isFinite(renderedOffsetTop) ||
-        !Number.isFinite(tableTop)
-      ) {
-        return null;
-      }
-      const cachedOffsetTop = Number(controller.stickyHunkTableOffsetTop);
-      const offsetTop =
-        !refreshLayout && wasSticky && Number.isFinite(cachedOffsetTop)
-          ? cachedOffsetTop
-          : renderedOffsetTop;
-      if (refreshLayout || !wasSticky) {
-        controller.stickyHunkTableOffsetTop = renderedOffsetTop;
-      }
-      return tableTop + (Number(this.window.scrollY) || 0) + offsetTop;
-    },
-
     stickyHunkNaturalDocumentTop(
       controller,
       { originLayoutGeneration = null, refreshLayout = false } = {},
     ) {
-      const cachedTop = Number(controller.stickyHunkOriginDocumentTop);
+      const row = controller.hunkRow;
+      const cachedTop = controller.stickyHunkOriginDocumentTop;
       if (
         !refreshLayout &&
-        Number.isInteger(originLayoutGeneration) &&
-        controller.stickyHunkOriginLayoutGeneration ===
-          originLayoutGeneration &&
-        Number.isFinite(cachedTop)
+        Number.isFinite(cachedTop) &&
+        (row.classList.contains("hunkmark-sticky-hunk-prepared") ||
+          (Number.isInteger(originLayoutGeneration) &&
+            controller.stickyHunkOriginLayoutGeneration ===
+              originLayoutGeneration))
       ) {
         return cachedTop;
       }
 
-      // Sticky table rows need the last pre-sticky offset unless a real layout
-      // invalidation explicitly requests another measurement.
-      const tableTop = this.stickyHunkTableDocumentTop(controller, {
+      // CSS can pin any prepared row. Navigation keeps its natural origin;
+      // explicit remeasurement temporarily restores the whole file's flow.
+      const rowRect = readStickyHunkNaturalLayout(
+        controller,
         refreshLayout,
-      });
-      if (tableTop !== null) {
-        return cacheStickyHunkOrigin(
-          controller,
-          tableTop,
-          originLayoutGeneration,
-        );
-      }
-
-      const row = controller.hunkRow;
-      const wasSticky = row.classList.contains(
-        "hunkmark-sticky-hunk-active",
+        () => row.getBoundingClientRect(),
       );
-      if (refreshLayout && wasSticky) {
-        row.classList.remove("hunkmark-sticky-hunk-active");
-      }
-      let rowRect;
-      try {
-        rowRect = row.getBoundingClientRect();
-      } finally {
-        if (refreshLayout && wasSticky) {
-          row.classList.add("hunkmark-sticky-hunk-active");
-        }
-      }
       const rowTop = Number(rowRect.top);
-      if ((refreshLayout || !wasSticky) && Number.isFinite(rowTop)) {
+      if (Number.isFinite(rowTop)) {
         const naturalTop = rowTop + (Number(this.window.scrollY) || 0);
         return cacheStickyHunkOrigin(
           controller,
@@ -334,47 +291,8 @@
         );
       }
 
-      const rowHeight = firstPositiveNumber(row.offsetHeight, rowRect.height);
-      const rowIndex = controller.groupRows.indexOf(row);
-      const followingRow =
-        rowIndex >= 0 ? controller.groupRows[rowIndex + 1] : null;
-      if (followingRow?.isConnected && rowHeight > 0) {
-        const followingRect = followingRow.getBoundingClientRect();
-        const followingHeight = firstPositiveNumber(
-          followingRow.offsetHeight,
-          followingRect.height,
-        );
-        const followingTop = Number(followingRect.top);
-        if (followingHeight > 0 && Number.isFinite(followingTop)) {
-          const naturalTop =
-            followingTop + (Number(this.window.scrollY) || 0) - rowHeight;
-          if (Number.isFinite(naturalTop)) {
-            return cacheStickyHunkOrigin(
-              controller,
-              naturalTop,
-              originLayoutGeneration,
-            );
-          }
-        }
-      }
-
-      if (Number.isFinite(cachedTop)) {
-        return cachedTop;
-      }
-      return Number.isFinite(rowTop)
-        ? rowTop + (Number(this.window.scrollY) || 0)
-        : 0;
+      return Number.isFinite(cachedTop) ? cachedTop : 0;
     },
 
-    stickyHunkNaturalViewportTop(controller, options) {
-      const documentTop = this.stickyHunkNaturalDocumentTop(
-        controller,
-        options,
-      );
-      const scrollY = Number(this.window.scrollY) || 0;
-      return Number.isFinite(documentTop)
-        ? documentTop - scrollY
-        : Number.POSITIVE_INFINITY;
-    },
   });
 })(globalThis);

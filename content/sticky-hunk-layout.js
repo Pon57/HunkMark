@@ -9,300 +9,325 @@
   }
   const {
     AUXILIARY_FADE_DISTANCE_PX,
-    PUSH_CLASSES,
-    PUSH_STYLES,
-    TIMELINE_CLASSES,
     TIMELINE_STYLES,
-    clearClasses,
     clearStyles,
-    setAnimationPhase,
+    setPixelStyle,
     setPixelStyles,
   } = Sticky;
 
   Object.assign(App.prototype, {
     clearStickyHunkTimeline(controller) {
-      if (!controller) {
-        return;
-      }
-      clearClasses(controller.hunkRow, TIMELINE_CLASSES);
+      controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
       clearStyles(controller.hunkRow, TIMELINE_STYLES);
     },
 
-    syncStickyHunkTimeline(state, controller, naturalDocumentTop = null) {
-      const changed = state.timelineController !== controller;
-      if (changed) {
-        this.clearStickyHunkTimeline(state.timelineController);
-        state.timelineController = controller;
-        if (controller) {
-          state.timelinePhase = state.timelinePhase === "a" ? "b" : "a";
-        }
-      }
-      if (!controller) {
-        return;
-      }
-
-      const row = controller.hunkRow;
-      if (changed) {
-        setAnimationPhase(
-          row,
-          "hunkmark-sticky-hunk-compressing",
-          "hunkmark-sticky-hunk-phase",
-          state.timelinePhase,
-        );
-      }
-      const resolvedNaturalDocumentTop = Number.isFinite(naturalDocumentTop)
-        ? naturalDocumentTop
-        : this.stickyHunkNaturalDocumentTop(controller);
-      const inset = Math.max(0, controller.stickyHunkContentInset ?? 0);
-      const bottomInset = Math.max(
-        0,
-        controller.stickyHunkBottomInset ?? 0,
-      );
-      const naturalTimelineStart =
-        resolvedNaturalDocumentTop - (state.stickyTop ?? 0);
-      const topStart = Math.max(0, naturalTimelineStart);
-      const topEnd = topStart + Math.max(inset, 1);
-      const tailStart = Math.max(0, naturalTimelineStart + inset);
-      const auxiliaryStart = Math.max(0, naturalTimelineStart);
-      setPixelStyles(row, [
-        ["--hunkmark-sticky-hunk-compress-start", topStart],
-        ["--hunkmark-sticky-hunk-compress-end", topEnd],
-        ["--hunkmark-sticky-hunk-tail-start", tailStart],
-        ["--hunkmark-sticky-hunk-tail-end", tailStart + Math.max(bottomInset, 1)],
-        ["--hunkmark-sticky-hunk-auxiliary-start", auxiliaryStart],
-        [
-          "--hunkmark-sticky-hunk-auxiliary-end",
-          auxiliaryStart +
-            (inset > 0 ? inset : AUXILIARY_FADE_DISTANCE_PX),
-        ],
-      ]);
+    stickyHunkFileDocumentTop(state) {
+      const top = Number(state.fileElement.getBoundingClientRect?.().top);
+      return Number.isFinite(top)
+        ? top + (Number(this.window.scrollY) || 0)
+        : Number(state.fileOriginDocumentTop) || 0;
     },
 
-    clearStickyHunkPushTimeline(controller) {
-      if (!controller) {
-        return;
-      }
-      clearClasses(controller.hunkRow, PUSH_CLASSES);
-      clearStyles(controller.hunkRow, PUSH_STYLES);
-    },
-
-    syncStickyHunkPushTimeline(
+    applyStickyHunkFileOrigin(
       state,
-      activeController,
-      incomingController,
-      incomingNaturalDocumentTop = null,
+      controllers,
+      documentTop,
+      { translateCachedOrigins = false } = {},
     ) {
-      const pushController =
-        activeController && incomingController ? activeController : null;
-      const pushIncomingController = pushController
-        ? incomingController
-        : null;
-      const changed =
-        state.pushController !== pushController ||
-        state.pushIncomingController !== pushIncomingController;
-      if (changed) {
-        this.clearStickyHunkPushTimeline(state.pushController);
-        state.pushController = pushController;
-        state.pushIncomingController = pushIncomingController;
-        if (pushController) {
-          state.pushPhase = state.pushPhase === "a" ? "b" : "a";
+      const previousTop = state.fileOriginDocumentTop;
+      if (translateCachedOrigins && Number.isFinite(previousTop)) {
+        const delta = documentTop - previousTop;
+        if (Math.abs(delta) >= 0.01) {
+          controllers.forEach((controller) => {
+            if (Number.isFinite(controller.stickyHunkOriginDocumentTop)) {
+              controller.stickyHunkOriginDocumentTop += delta;
+            }
+          });
         }
       }
-      if (!pushController) {
+      state.fileOriginDocumentTop = documentTop;
+      state.fileOriginDirty = false;
+      setPixelStyle(
+        state.fileElement,
+        "--hunkmark-sticky-hunk-file-start",
+        documentTop - (state.stickyTop ?? 0),
+      );
+    },
+
+    updateStickyHunkFileOrigin(state, controllers) {
+      this.applyStickyHunkFileOrigin(
+        state,
+        controllers,
+        this.stickyHunkFileDocumentTop(state),
+        { translateCachedOrigins: true },
+      );
+    },
+
+    prepareStickyHunkState(state, controllers) {
+      const layoutPrepared =
+        !state.orderChanged &&
+        state.preparedOriginLayoutGeneration ===
+          state.originLayoutGeneration &&
+        state.preparedContentLayoutGeneration ===
+          state.contentLayoutGeneration &&
+        state.contentLayoutDirtyControllers.size === 0;
+      if (layoutPrepared) {
+        if (state.fileOriginDirty) {
+          this.updateStickyHunkFileOrigin(state, controllers);
+        }
         return;
       }
 
-      const row = pushController.hunkRow;
-      const distance = Math.max(
-        1,
-        pushController.stickyHunkCompactHeight ??
-          this.constants.STICKY_HUNK_HEIGHT_PX,
-      );
-      const resolvedIncomingDocumentTop = Number.isFinite(
-        incomingNaturalDocumentTop,
-      )
-        ? incomingNaturalDocumentTop
-        : this.stickyHunkNaturalDocumentTop(pushIncomingController);
-      const end = Math.max(
-        0,
-        resolvedIncomingDocumentTop - (state.stickyTop ?? 0),
-      );
-      if (changed) {
-        setAnimationPhase(
-          row,
-          "hunkmark-sticky-hunk-pushing",
-          "hunkmark-sticky-hunk-push-phase",
-          state.pushPhase,
-        );
-      }
-      setPixelStyles(row, [
-        ["--hunkmark-sticky-hunk-push-distance", distance],
-        ["--hunkmark-sticky-hunk-push-start", Math.max(0, end - distance)],
-        ["--hunkmark-sticky-hunk-push-end", end],
-      ]);
-    },
-
-    updateStickyHunkState(state) {
-      const controllers = this.orderedStickyHunkControllers(state);
-      const orderChanged = state.orderChanged;
-      const originLayoutGeneration = state.originLayoutGeneration;
-      const stickyTop = state.stickyTop ?? 0;
       const contentMeasurements = new Map();
-      const contentMetricsFor = (controller) =>
-        this.stickyHunkContentMetrics(
-          state,
-          controller,
-          contentMeasurements,
-        );
-      const naturalTops = new Map();
-      const naturalTopFor = (controller) => {
-        if (!naturalTops.has(controller)) {
-          const refreshLayout =
-            controller.stickyHunkOriginLayoutGeneration !==
-            originLayoutGeneration;
-          naturalTops.set(
+      const naturalTops = [];
+      const fileDocumentTop = this.stickyHunkFileDocumentTop(state);
+      // All reads precede writes. Removing only the active row no longer
+      // suffices: CSS can pin any prepared row without a JS state update.
+      state.fileElement.classList.add("hunkmark-sticky-file-measuring");
+      try {
+        controllers.forEach((controller) => {
+          this.stickyHunkContentMetrics(
+            state,
             controller,
-            this.stickyHunkNaturalViewportTop(controller, {
-              originLayoutGeneration,
-              refreshLayout,
+            contentMeasurements,
+          );
+          naturalTops.push(
+            this.stickyHunkNaturalDocumentTop(controller, {
+              originLayoutGeneration: state.originLayoutGeneration,
+              refreshLayout: true,
             }),
           );
-        }
-        return naturalTops.get(controller);
-      };
-      let activeIndex = -1;
+        });
+        this.applyStickyHunkStateMeasurements(state, contentMeasurements);
+        this.applyStickyHunkFileOrigin(
+          state,
+          controllers,
+          fileDocumentTop,
+        );
+        controllers.forEach((controller, index) => {
+          const inset = Math.max(0, controller.stickyHunkContentInset ?? 0);
+          const bottomInset = Math.max(
+            0,
+            controller.stickyHunkBottomInset ?? 0,
+          );
+          const start = Math.max(
+            0,
+            naturalTops[index] - fileDocumentTop,
+          );
+          const tailStart = Math.max(
+            0,
+            naturalTops[index] - fileDocumentTop + inset,
+          );
+          const nextTop = naturalTops[index + 1];
+          const distance = nextTop === undefined
+            ? 0
+            : controller.stickyHunkCompactHeight ??
+              this.constants.STICKY_HUNK_HEIGHT_PX;
+          const pushEnd = nextTop === undefined
+            ? 1
+            : Math.max(0, nextTop - fileDocumentTop);
+          setPixelStyles(controller.hunkRow, [
+            ["--hunkmark-sticky-hunk-compress-start", start],
+            [
+              "--hunkmark-sticky-hunk-compress-end",
+              start + Math.max(inset, 1),
+            ],
+            ["--hunkmark-sticky-hunk-tail-start", tailStart],
+            [
+              "--hunkmark-sticky-hunk-tail-end",
+              tailStart + Math.max(bottomInset, 1),
+            ],
+            ["--hunkmark-sticky-hunk-auxiliary-start", start],
+            [
+              "--hunkmark-sticky-hunk-auxiliary-end",
+              start + (inset > 0 ? inset : AUXILIARY_FADE_DISTANCE_PX),
+            ],
+            ["--hunkmark-sticky-hunk-push-distance", distance],
+            [
+              "--hunkmark-sticky-hunk-push-start",
+              Math.max(0, pushEnd - distance),
+            ],
+            ["--hunkmark-sticky-hunk-push-end", pushEnd],
+          ]);
+        });
+        state.preparedOriginLayoutGeneration =
+          state.originLayoutGeneration;
+        state.preparedContentLayoutGeneration =
+          state.contentLayoutGeneration;
+      } finally {
+        state.fileElement.classList.remove("hunkmark-sticky-file-measuring");
+      }
+    },
+
+    stickyHunkControllerIndexAt(
+      controllers,
+      documentTop,
+      { includeContentInset = false } = {},
+    ) {
+      let foundIndex = -1;
       let low = 0;
       let high = controllers.length - 1;
       while (low <= high) {
         const index = Math.floor((low + high) / 2);
         const controller = controllers[index];
-        const inset = contentMetricsFor(controller).inset;
-        if (naturalTopFor(controller) + inset <= stickyTop) {
-          activeIndex = index;
+        if (
+          controller.stickyHunkOriginDocumentTop +
+            (includeContentInset ? controller.stickyHunkContentInset ?? 0 : 0) <=
+            documentTop
+        ) {
+          foundIndex = index;
           low = index + 1;
         } else {
           high = index - 1;
         }
       }
+      return foundIndex;
+    },
 
-      const activeController = controllers[activeIndex] ?? null;
-      const approachingController = controllers[activeIndex + 1] ?? null;
-      const approachingInset = Math.max(
-        0,
-        approachingController
-          ? contentMetricsFor(approachingController).inset
-          : 0,
-      );
-      const preStickyController =
-        approachingController &&
-        approachingInset > 0 &&
-        naturalTopFor(approachingController) <= stickyTop
-          ? approachingController
-          : null;
-      const activeMetrics = activeController
-        ? contentMetricsFor(activeController)
-        : { bottomInset: 0, inset: 0 };
-      const activeInset = Math.max(0, activeMetrics.inset);
-      const postStickyController =
-        activeController &&
-        activeInset === 0 &&
-        activeController.stickyHunkHasAuxiliaryElements &&
-        naturalTopFor(activeController) >=
-          stickyTop - AUXILIARY_FADE_DISTANCE_PX
-          ? activeController
-          : null;
-      const compressingController =
-        preStickyController ?? postStickyController;
+    syncStickyHunkPreparedWindow(state, controllers) {
       const scrollY = Number(this.window.scrollY) || 0;
-      const documentTopFor = (controller) =>
-        controller ? naturalTopFor(controller) + scrollY : null;
-      const approachingDocumentTop = documentTopFor(approachingController);
-      const compressingDocumentTop = documentTopFor(compressingController);
-      const tailController =
-        activeController && activeMetrics.bottomInset > 0
-          ? activeController
-          : null;
-      const tailDocumentTop = documentTopFor(tailController);
-      this.applyStickyHunkStateMeasurements(state, contentMeasurements);
-
-      if (state.candidateController !== approachingController) {
-        state.candidateController?.hunkRow.classList.remove(
-          "hunkmark-sticky-hunk-candidate",
-        );
-        approachingController?.hunkRow.classList.add(
-          "hunkmark-sticky-hunk-candidate",
-        );
-        state.candidateController = approachingController;
+      const viewportHeight = Math.max(0, Number(this.window.innerHeight) || 0);
+      const overscan = Math.max(512, viewportHeight);
+      // Keep a viewport of margin on either side, plus the preceding pinned
+      // hunk and the following push-off boundary. Offscreen rows retain their
+      // measured ranges but have no referenced scroll animations.
+      const first = Math.max(0, this.stickyHunkControllerIndexAt(
+        controllers,
+        scrollY - overscan,
+      ));
+      const last = Math.min(controllers.length - 1,
+        this.stickyHunkControllerIndexAt(
+          controllers,
+          scrollY + viewportHeight + overscan,
+        ) + 1,
+      );
+      const preparedControllers = new Set();
+      for (let index = first; index <= last; index += 1) {
+        const controller = controllers[index];
+        preparedControllers.add(controller);
+        if (!state.preparedControllers.has(controller)) {
+          controller.hunkRow.classList.add("hunkmark-sticky-hunk-prepared");
+        }
       }
+      state.preparedControllers.forEach((controller) => {
+        if (!preparedControllers.has(controller)) {
+          controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
+        }
+      });
+      state.preparedControllers = preparedControllers;
+    },
 
-      if (state.activeController !== activeController || orderChanged) {
-        const previousActiveController = state.activeController;
+    updateStickyHunkInteractionState(state, controllers) {
+      const stickyTop = state.stickyTop ?? 0;
+      const scrollY = Number(this.window.scrollY) || 0;
+      this.syncStickyHunkPreparedWindow(state, controllers);
+      const activeIndex = this.stickyHunkControllerIndexAt(
+        controllers,
+        scrollY + stickyTop,
+        { includeContentInset: true },
+      );
+
+      // Within the prepared window CSS owns positioning, clipping and pushing;
+      // active state only selects the current interaction controls.
+      const activeController = controllers[activeIndex] ?? null;
+      const previousActiveController = state.activeController;
+      if (previousActiveController !== activeController) {
         const returnButtonHadFocus =
           previousActiveController?.returnButton ===
           this.document.activeElement;
-        const movedForward = Boolean(
-          previousActiveController &&
-          activeController &&
-          previousActiveController !== activeController &&
-          previousActiveController.hunkRow.isConnected &&
-          activeController.hunkRow.isConnected &&
-          (previousActiveController.hunkRow.compareDocumentPosition(
-            activeController.hunkRow,
-          ) & this.window.Node.DOCUMENT_POSITION_FOLLOWING),
+        previousActiveController?.hunkRow.classList.remove(
+          "hunkmark-sticky-hunk-active",
         );
-        // Only the immediately outgoing row can overlap the incoming row.
-        state.pastController?.hunkRow.classList.remove(
-          "hunkmark-sticky-hunk-past",
+        activeController?.hunkRow.classList.add(
+          "hunkmark-sticky-hunk-active",
         );
-        state.pastController = null;
-        if (state.activeController !== activeController) {
-          previousActiveController?.hunkRow.classList.remove(
-            "hunkmark-sticky-hunk-active",
-          );
-          activeController?.hunkRow.classList.add(
-            "hunkmark-sticky-hunk-active",
-          );
-          if (activeController?.returnButton) {
-            activeController.returnButton.hidden = false;
-            activeController.returnButton.tabIndex = 0;
-          }
-          if (returnButtonHadFocus && activeController?.returnButton) {
-            activeController.returnButton.focus({ preventScroll: true });
-          }
-          if (previousActiveController?.returnButton) {
-            previousActiveController.returnButton.hidden = true;
-            previousActiveController.returnButton.tabIndex = -1;
-          }
+        if (activeController?.returnButton) {
+          activeController.returnButton.hidden = false;
+          activeController.returnButton.tabIndex = 0;
         }
-        if (movedForward) {
-          previousActiveController.hunkRow.classList.add(
-            "hunkmark-sticky-hunk-past",
-          );
-          state.pastController = previousActiveController;
+        if (returnButtonHadFocus && activeController?.returnButton) {
+          activeController.returnButton.focus({ preventScroll: true });
+        }
+        if (previousActiveController?.returnButton) {
+          previousActiveController.returnButton.hidden = true;
+          previousActiveController.returnButton.tabIndex = -1;
         }
         state.activeController = activeController;
       }
       state.orderChanged = false;
+    },
 
-      this.syncStickyHunkPushTimeline(
-        state,
-        activeController,
-        approachingController,
-        approachingDocumentTop,
-      );
-      this.syncStickyHunkTimeline(
-        state,
-        compressingController ?? tailController,
-        compressingController
-          ? compressingDocumentTop
-          : tailDocumentTop,
+    updateStickyHunkState(state) {
+      const controllers = this.orderedStickyHunkControllers(state);
+      this.prepareStickyHunkState(state, controllers);
+      this.updateStickyHunkInteractionState(state, controllers);
+    },
+
+    stickyHunkStateCanPrepareDuringRefresh(state) {
+      // Reconciliation can suspend controls after their DOM/order is complete.
+      // Before that boundary, only independently usable files may be prepared.
+      return !state.orderDirty && Array.from(state.controllers).every(
+        (controller) => this.reviewControllerIsCurrent(controller) &&
+          (this.refreshStickyLayoutReady ||
+            (!this.reviewControllerIsSuspended(controller) &&
+              !controller.input.disabled)),
       );
     },
 
-    updateStickyHunkLayouts() {
+    updateStickyHunkInteractions() {
       const states = this.hunkStickyFileVisibilityObserver
         ? this.hunkStickyVisibleStates
         : this.hunkStickyStateByFile.values();
+      for (const state of states) {
+        if (
+          state.orderDirty ||
+          state.orderChanged ||
+          state.preparedOriginLayoutGeneration !==
+            state.originLayoutGeneration ||
+          state.preparedContentLayoutGeneration !==
+            state.contentLayoutGeneration ||
+          state.contentLayoutDirtyControllers.size > 0
+        ) {
+          if (this.stickyHunkStateCanPrepareDuringRefresh(state)) {
+            this.updateStickyHunkState(state);
+          }
+          continue;
+        }
+        const controllers = state.orderedControllers;
+        if (state.fileOriginDirty) {
+          this.updateStickyHunkFileOrigin(state, controllers);
+        }
+        this.updateStickyHunkInteractionState(state, controllers);
+      }
+    },
+
+    updateStickyHunkLayouts({
+      allowDuringRefresh = false,
+      includeFileElements = null,
+    } = {}) {
+      if (
+        !allowDuringRefresh &&
+        (this.refreshRunning || this.refreshQueued)
+      ) {
+        this.updateStickyHunkInteractions();
+        return;
+      }
+      const states = this.hunkStickyFileVisibilityObserver
+        ? includeFileElements
+          ? new Set(this.hunkStickyVisibleStates)
+          : this.hunkStickyVisibleStates
+        : this.hunkStickyStateByFile.values();
+      if (this.hunkStickyFileVisibilityObserver && includeFileElements) {
+        includeFileElements.forEach((fileElement) => {
+          const state = this.hunkStickyStateByFile.get(fileElement);
+          if (state && (state.visible || !state.visibilityObserved)) {
+            if (!state.visible) {
+              this.setStickyHunkStateVisibility(state, true);
+            }
+            states.add(state);
+          }
+        });
+      }
       for (const state of states) {
         this.updateStickyHunkState(state);
       }

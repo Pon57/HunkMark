@@ -58,115 +58,33 @@
   z-index: 5 !important;
 }
 
-/* Keep GitHub's original hunk row in flow. Its top clips until the text reaches
-   the sticky boundary; after pinning, its bottom clips at the same rate as the
-   following content. Reversing the scroll restores the bottom before the top,
-   with both phases driven entirely by CSS scroll timelines. */
-.hunkmark-sticky-hunk-candidate {
-  isolation: isolate;
-  position: relative;
-  z-index: 4;
-}
-
-.hunkmark-sticky-hunk-past {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.hunkmark-sticky-hunk-past:focus-within {
-  opacity: 1;
-  pointer-events: auto;
-}
-
+/* Cache original row geometry per layout and animate only near the viewport.
+   Prepared rows follow scrolling without an active-row JS handoff. */
 .hunkmark-sticky-hunk-active {
-  clip-path: inset(
-    var(--hunkmark-sticky-hunk-content-inset, 0px)
-    0
-    var(--hunkmark-sticky-hunk-bottom-inset, 0px)
-    0
-  );
   cursor: pointer;
-  position: sticky;
-  top: calc(
-    var(--hunkmark-sticky-hunk-top, 0px) -
-      var(--hunkmark-sticky-hunk-content-inset, 0px)
-  );
-  z-index: 3;
 }
 
-.hunkmark-sticky-hunk-active > :is(td, th) {
-  clip-path: inset(
-    var(--hunkmark-sticky-hunk-content-inset, 0px)
-    0
-    var(--hunkmark-sticky-hunk-bottom-inset, 0px)
-    0
-  );
-}
-
-@keyframes hunkmark-sticky-hunk-compress-a {
-  from {
-    --hunkmark-sticky-hunk-top-clip: 0px;
-  }
-
+@keyframes hunkmark-sticky-hunk-compress {
+  from { --hunkmark-sticky-hunk-top-clip: 0px; }
   to {
     --hunkmark-sticky-hunk-top-clip:
       var(--hunkmark-sticky-hunk-content-inset, 0px);
   }
 }
 
-@keyframes hunkmark-sticky-hunk-compress-b {
-  from {
-    --hunkmark-sticky-hunk-top-clip: 0px;
-  }
-
-  to {
-    --hunkmark-sticky-hunk-top-clip:
-      var(--hunkmark-sticky-hunk-content-inset, 0px);
-  }
-}
-
-@keyframes hunkmark-sticky-hunk-tail-a {
-  from {
-    --hunkmark-sticky-hunk-bottom-clip: 0px;
-  }
-
+@keyframes hunkmark-sticky-hunk-tail {
+  from { --hunkmark-sticky-hunk-bottom-clip: 0px; }
   to {
     --hunkmark-sticky-hunk-bottom-clip:
       var(--hunkmark-sticky-hunk-bottom-inset, 0px);
   }
 }
 
-@keyframes hunkmark-sticky-hunk-tail-b {
-  from {
-    --hunkmark-sticky-hunk-bottom-clip: 0px;
-  }
-
-  to {
-    --hunkmark-sticky-hunk-bottom-clip:
-      var(--hunkmark-sticky-hunk-bottom-inset, 0px);
-  }
-}
-
-@keyframes hunkmark-sticky-hunk-push-a {
-  from {
-    transform: translateY(0);
-  }
-
+@keyframes hunkmark-sticky-hunk-push {
+  from { transform: translateY(0); }
   to {
     transform: translateY(
-      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 24px))
-    );
-  }
-}
-
-@keyframes hunkmark-sticky-hunk-push-b {
-  from {
-    transform: translateY(0);
-  }
-
-  to {
-    transform: translateY(
-      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 24px))
+      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 0px))
     );
   }
 }
@@ -174,60 +92,61 @@
 @keyframes hunkmark-sticky-hunk-fade-auxiliary {
   from {
     opacity: 1;
+    visibility: visible;
   }
-
   to {
     opacity: 0;
+    visibility: hidden;
   }
 }
 
-.hunkmark-sticky-hunk-phase-a {
-  --hunkmark-sticky-hunk-compress-animation: hunkmark-sticky-hunk-compress-a;
-  --hunkmark-sticky-hunk-tail-animation: hunkmark-sticky-hunk-tail-a;
-}
-
-.hunkmark-sticky-hunk-phase-b {
-  --hunkmark-sticky-hunk-compress-animation: hunkmark-sticky-hunk-compress-b;
-  --hunkmark-sticky-hunk-tail-animation: hunkmark-sticky-hunk-tail-b;
-}
-
-.hunkmark-sticky-hunk-push-phase-a {
-  --hunkmark-sticky-hunk-push-animation: hunkmark-sticky-hunk-push-a;
-}
-
-.hunkmark-sticky-hunk-push-phase-b {
-  --hunkmark-sticky-hunk-push-animation: hunkmark-sticky-hunk-push-b;
-}
-
-.hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-pushing {
-  animation-name: var(--hunkmark-sticky-hunk-push-animation);
-  animation-duration: 1ms;
-  animation-fill-mode: both;
-  animation-timing-function: linear;
-  animation-timeline: scroll(root block);
-  animation-range:
-    var(--hunkmark-sticky-hunk-push-start)
-    var(--hunkmark-sticky-hunk-push-end);
-  will-change: transform;
-}
-
-.hunkmark-sticky-hunk-compressing {
+.hunkmark-sticky-hunk-prepared {
+  position: sticky;
+  top: calc(
+    var(--hunkmark-sticky-hunk-top, 0px) -
+      var(--hunkmark-sticky-hunk-content-inset, 0px)
+  );
+  z-index: 3;
   animation-name:
-    var(--hunkmark-sticky-hunk-compress-animation),
-    var(--hunkmark-sticky-hunk-tail-animation);
-  animation-duration: 1ms, 1ms;
-  animation-fill-mode: both, forwards;
-  animation-timing-function: linear, linear;
-  animation-timeline: scroll(root block), scroll(root block);
+    hunkmark-sticky-hunk-compress,
+    hunkmark-sticky-hunk-tail,
+    hunkmark-sticky-hunk-push;
+  animation-duration: 1ms, 1ms, 1ms;
+  animation-fill-mode: both, both, both;
+  animation-timing-function: linear, linear, linear;
+  animation-timeline:
+    scroll(root block),
+    scroll(root block),
+    scroll(root block);
   animation-range:
-      var(--hunkmark-sticky-hunk-compress-start)
-      var(--hunkmark-sticky-hunk-compress-end),
-    var(--hunkmark-sticky-hunk-tail-start)
-      var(--hunkmark-sticky-hunk-tail-end);
+    calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-compress-start)
+      )
+      calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-compress-end)
+      ),
+    calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-tail-start)
+      )
+      calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-tail-end)
+      ),
+    calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-push-start)
+      )
+      calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-push-end)
+      );
 }
 
-.hunkmark-sticky-hunk-compressing,
-.hunkmark-sticky-hunk-compressing > :is(td, th) {
+.hunkmark-sticky-hunk-prepared,
+.hunkmark-sticky-hunk-prepared > :is(td, th) {
   clip-path: inset(
     var(--hunkmark-sticky-hunk-top-clip, 0px)
     0
@@ -236,46 +155,32 @@
   );
 }
 
-/* The outgoing hunk can be compressing while the following hunk pushes it
-   away. Both behaviors animate the row, so a combined list is required;
-   otherwise the more-specific push rule replaces the two clip animations. */
-.hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-compressing.hunkmark-sticky-hunk-pushing {
-  animation-name:
-    var(--hunkmark-sticky-hunk-compress-animation),
-    var(--hunkmark-sticky-hunk-tail-animation),
-    var(--hunkmark-sticky-hunk-push-animation);
-  animation-duration: 1ms, 1ms, 1ms;
-  animation-fill-mode: both, forwards, both;
-  animation-timing-function: linear, linear, linear;
-  animation-timeline:
-    scroll(root block),
-    scroll(root block),
-    scroll(root block);
-  animation-range:
-      var(--hunkmark-sticky-hunk-compress-start)
-      var(--hunkmark-sticky-hunk-compress-end),
-    var(--hunkmark-sticky-hunk-tail-start)
-      var(--hunkmark-sticky-hunk-tail-end),
-    var(--hunkmark-sticky-hunk-push-start)
-      var(--hunkmark-sticky-hunk-push-end);
-}
-
-.hunkmark-sticky-hunk-compressing
-  .hunkmark-sticky-hunk-auxiliary {
-  animation-name: hunkmark-sticky-hunk-fade-auxiliary;
-  animation-duration: 1ms;
-  animation-fill-mode: both;
-  animation-timing-function: linear;
+.hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
+  animation: hunkmark-sticky-hunk-fade-auxiliary 1ms linear both;
   animation-timeline: scroll(root block);
   animation-range:
-    var(--hunkmark-sticky-hunk-auxiliary-start)
-    var(--hunkmark-sticky-hunk-auxiliary-end);
-  pointer-events: none !important;
+    calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-auxiliary-start)
+      )
+      calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-auxiliary-end)
+      );
 }
 
-.hunkmark-sticky-hunk-active:not(.hunkmark-sticky-hunk-compressing)
-  .hunkmark-sticky-hunk-auxiliary {
-  visibility: hidden !important;
+/* Unpin every row together while reading natural layout, then restore all
+   prepared rows before the browser paints. Keep GitHub's original row sizes. */
+.hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared {
+  position: relative;
+  top: auto;
+  animation: none;
+  transform: none;
+}
+
+.hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared,
+.hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared > :is(td, th) {
+  clip-path: none;
 }
 
 .hunkmark-hunk-actions {
@@ -774,17 +679,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hunkmark-sticky-hunk-compressing
-    .hunkmark-sticky-hunk-auxiliary {
-    animation: none !important;
-    opacity: 0 !important;
-  }
-
-  .hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-pushing {
+  .hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
     animation-timing-function: steps(1, end);
   }
 
-  .hunkmark-sticky-hunk-active.hunkmark-sticky-hunk-compressing.hunkmark-sticky-hunk-pushing {
+  .hunkmark-sticky-hunk-prepared {
     animation-timing-function: linear, linear, steps(1, end);
   }
 

@@ -8,6 +8,30 @@
   }
 
   Object.assign(App.prototype, {
+    revealFocusedStickyHunk(controller, target) {
+      const row = controller.hunkRow;
+      const state = this.hunkStickyStateByFile.get(controller.fileElement);
+      if (
+        !state ||
+        controller.suppressStickyHunkFocusReveal ||
+        !(target instanceof this.window.Element) ||
+        !row.classList.contains("hunkmark-sticky-hunk-prepared")
+      ) {
+        return;
+      }
+      // A pushed-away row still has a sticky box inside the viewport, so
+      // native keyboard focusing alone does not scroll it out of the header.
+      if (target.getBoundingClientRect().top < state.stickyTop) {
+        this.window.scrollTo({
+          behavior: "instant",
+          top: Math.max(
+            0,
+            this.stickyHunkNaturalDocumentTop(controller) - state.stickyTop - 1,
+          ),
+        });
+      }
+    },
+
     stickyHunkOriginFocusTarget(controller) {
       const activeElement = this.document.activeElement;
       if (
@@ -37,7 +61,13 @@
       if (!target) {
         return false;
       }
-      target.focus({ preventScroll: true });
+      // Callers own the following scroll; do not let focusin start another one.
+      controller.suppressStickyHunkFocusReveal = true;
+      try {
+        target.focus({ preventScroll: true });
+      } finally {
+        controller.suppressStickyHunkFocusReveal = false;
+      }
       return this.document.activeElement === target;
     },
 

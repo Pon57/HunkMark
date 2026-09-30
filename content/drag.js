@@ -278,6 +278,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!state) {
         return;
       }
+      if (persist) {
+        this.updateStickyHunkLayouts();
+      }
       this.dragState = null;
       const anchorControl = state.anchorLine.control;
       if (anchorControl) {

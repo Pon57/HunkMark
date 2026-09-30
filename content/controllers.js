@@ -597,7 +597,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       controller.groupRows = nextRows;
       if (hostRevealedRows && hostRevealedRowsCanExpand) {
-        void this.setCollapsed(controller, false);
+        void this.setCollapsed(controller, false, {
+          allowWhileSuspended: true,
+        });
       } else {
         this.applyControllerAppearance(controller);
       }
@@ -959,10 +961,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return null;
     },
 
-    async setCollapsed(controller, collapsed) {
+    async setCollapsed(
+      controller,
+      collapsed,
+      { allowWhileSuspended = false } = {},
+    ) {
       if (
         !this.reviewControllerIsCurrent(controller) ||
-        this.reviewControllerIsSuspended(controller)
+        (!allowWhileSuspended &&
+          this.reviewControllerIsSuspended(controller))
       ) {
         return false;
       }

@@ -149,18 +149,35 @@
       }
       this.hunkStickyFileLayoutObserver = new this.window.ResizeObserver(
         (entries) => {
-          const trackedLayoutChanged = entries.some(
-            (entry) =>
-              entry.target === this.document.body ||
-              this.hunkStickyStateByFile.has(entry.target),
-          );
-          if (!trackedLayoutChanged) {
+          const resizedFileElements = new Set();
+          let bodyResized = false;
+          entries.forEach((entry) => {
+            if (entry.target === this.document.body) {
+              bodyResized = true;
+            } else if (this.hunkStickyStateByFile.has(entry.target)) {
+              resizedFileElements.add(entry.target);
+            }
+          });
+          if (!bodyResized && resizedFileElements.size === 0) {
             return;
           }
-          // A resized file shifts every file below it. Body resizes cover
-          // layout changes outside the diff, such as asynchronously sized
-          // banners above the tracked files.
-          this.invalidateVisibleStickyHunkOrigins();
+          const states = this.hunkStickyFileVisibilityObserver
+            ? this.hunkStickyVisibleStates
+            : this.hunkStickyStateByFile.values();
+          let visibleStateChanged = false;
+          for (const state of states) {
+            if (resizedFileElements.has(state.fileElement)) {
+              this.markStickyHunkOriginsDirty(state);
+            } else {
+              // A resized file or body can translate every following file.
+              // Their internal hunk geometry remains file-relative.
+              this.markStickyHunkFileOriginDirty(state);
+            }
+            visibleStateChanged = true;
+          }
+          if (visibleStateChanged) {
+            this.scheduleStickyHunkLayout();
+          }
         },
       );
     },
@@ -177,6 +194,7 @@
           entries.forEach((entry) => {
             const state = this.hunkStickyStateByFile.get(entry.target);
             if (state) {
+              state.visibilityObserved = true;
               this.setStickyHunkStateVisibility(state, entry.isIntersecting);
             }
           });
@@ -185,7 +203,11 @@
     },
 
     setStickyHunkStateVisibility(state, visible) {
-      state.visible = Boolean(visible);
+      const nextVisible = Boolean(visible);
+      if (state.visible === nextVisible) {
+        return;
+      }
+      state.visible = nextVisible;
       if (state.visible) {
         // The file may have been rebuilt or moved while outside the viewport.
         this.syncStickyHunkHeader(state);
@@ -202,28 +224,23 @@
       );
       this.detachStickyHunkHeader(state);
       this.hunkStickyVisibleStates.delete(state);
-      this.syncStickyHunkPushTimeline(state, null, null);
-      this.syncStickyHunkTimeline(state, null);
-      state.candidateController?.hunkRow.classList.remove(
-        "hunkmark-sticky-hunk-candidate",
+      state.controllers.forEach((controller) =>
+        this.clearStickyHunkTimeline(controller),
       );
+      state.preparedControllers.clear();
       state.activeController?.hunkRow.classList.remove(
         "hunkmark-sticky-hunk-active",
-      );
-      state.pastController?.hunkRow.classList.remove(
-        "hunkmark-sticky-hunk-past",
       );
       if (state.activeController?.returnButton) {
         state.activeController.returnButton.hidden = true;
         state.activeController.returnButton.tabIndex = -1;
       }
       state.activeController = null;
-      state.candidateController = null;
-      state.pastController = null;
       this.markStickyHunkOriginsDirty(state);
     },
 
     markStickyHunkOriginsDirty(state) {
+      this.markStickyHunkFileOriginDirty(state);
       state.originLayoutGeneration = Number.isInteger(
         state.originLayoutGeneration,
       )
@@ -231,13 +248,21 @@
         : 0;
     },
 
-    invalidateVisibleStickyHunkOrigins() {
+    markStickyHunkFileOriginDirty(state) {
+      state.fileOriginDirty = true;
+    },
+
+    invalidateVisibleStickyHunkOrigins({ translationOnly = false } = {}) {
       const states = this.hunkStickyFileVisibilityObserver
         ? this.hunkStickyVisibleStates
         : this.hunkStickyStateByFile.values();
       let visibleStateChanged = false;
       for (const state of states) {
-        this.markStickyHunkOriginsDirty(state);
+        if (translationOnly) {
+          this.markStickyHunkFileOriginDirty(state);
+        } else {
+          this.markStickyHunkOriginsDirty(state);
+        }
         visibleStateChanged = true;
       }
       if (visibleStateChanged) {
@@ -251,6 +276,29 @@
         return;
       }
       this.markStickyHunkOriginsDirty(state);
+      this.scheduleStickyHunkLayout();
+    },
+
+    invalidateStickyHunkOriginsForMutations(mutations) {
+      const states = new Set();
+      mutations.forEach((mutation) => {
+        const target =
+          mutation.target?.nodeType === this.window.Node.ELEMENT_NODE
+            ? mutation.target
+            : mutation.target?.parentElement;
+        let candidate = target;
+        while (candidate) {
+          const state = this.hunkStickyStateByFile.get(candidate);
+          if (state) {
+            states.add(state);
+          }
+          candidate = candidate.parentElement;
+        }
+      });
+      if (states.size === 0) {
+        return;
+      }
+      states.forEach((state) => this.markStickyHunkOriginsDirty(state));
       this.scheduleStickyHunkLayout();
     },
 
@@ -269,8 +317,11 @@
     },
 
     updateStickyHunkTop(state) {
-      state.stickyTop = this.stickyHunkTopForHeader(state.header);
-      this.markStickyHunkOriginsDirty(state);
+      const stickyTop = this.stickyHunkTopForHeader(state.header);
+      if (state.stickyTop !== stickyTop) {
+        state.stickyTop = stickyTop;
+        this.markStickyHunkFileOriginDirty(state);
+      }
       setPixelStyle(
         state.fileElement,
         "--hunkmark-sticky-hunk-top",
@@ -282,24 +333,23 @@
     createStickyHunkState(fileElement) {
       return {
         activeController: null,
-        candidateController: null,
         contentLayoutGeneration: 0,
         contentLayoutDirtyControllers: new Set(),
         controllers: new Set(),
         fileElement,
+        fileOriginDirty: true,
+        fileOriginDocumentTop: null,
         header: null,
         headerAttributeObserver: null,
         orderChanged: true,
         orderDirty: true,
         orderedControllers: [],
         originLayoutGeneration: 0,
-        pastController: null,
-        pushController: null,
-        pushIncomingController: null,
-        pushPhase: "b",
+        preparedOriginLayoutGeneration: null,
+        preparedContentLayoutGeneration: null,
+        preparedControllers: new Set(),
         stickyTop: 0,
-        timelineController: null,
-        timelinePhase: "b",
+        visibilityObserved: false,
         visible: typeof this.window.IntersectionObserver !== "function",
       };
     },
@@ -370,6 +420,10 @@
     scheduleStickyHunkLayout() {
       if (
         this.stopped ||
+        ((this.refreshRunning || this.refreshQueued) &&
+          !Array.from(this.hunkStickyVisibleStates).some((state) =>
+            this.stickyHunkStateCanPrepareDuringRefresh(state),
+          )) ||
         this.hunkStickyStateByFile.size === 0 ||
         (this.hunkStickyFileVisibilityObserver &&
           this.hunkStickyVisibleStates.size === 0) ||
@@ -379,6 +433,14 @@
       }
       this.hunkStickyLayoutFrameId = this.window.requestAnimationFrame(() => {
         this.hunkStickyLayoutFrameId = null;
+        if (
+          (this.refreshRunning || this.refreshQueued) &&
+          !Array.from(this.hunkStickyVisibleStates).some((state) =>
+            this.stickyHunkStateCanPrepareDuringRefresh(state),
+          )
+        ) {
+          return;
+        }
         this.updateStickyHunkLayouts();
       });
     },
@@ -419,7 +481,8 @@
           this.syncStickyHunkHeader(state);
         }
       }
-      if (!state.controllers.has(controller)) {
+      const controllerAdded = !state.controllers.has(controller);
+      if (controllerAdded) {
         state.controllers.add(controller);
         state.orderDirty = true;
         state.orderChanged = true;
@@ -436,7 +499,11 @@
       ) {
         state.contentLayoutDirtyControllers.add(controller);
       }
-      this.markStickyHunkOriginsDirty(state);
+      const layoutChanged =
+        !rowWasAttached || controllerAdded || auxiliaryElementsChanged;
+      if (layoutChanged) {
+        this.markStickyHunkOriginsDirty(state);
+      }
       controller.stickyHunkFileElement = controller.fileElement;
       controller.stickyHunkClickHandler ??= (event) =>
         this.handleStickyHunkClick(controller, event);
@@ -445,7 +512,15 @@
         controller.stickyHunkClickHandler,
         true,
       );
-      this.scheduleStickyHunkLayout();
+      controller.stickyHunkFocusHandler ??= (event) =>
+        this.revealFocusedStickyHunk(controller, event.target);
+      controller.hunkRow.addEventListener(
+        "focusin",
+        controller.stickyHunkFocusHandler,
+      );
+      if (layoutChanged) {
+        this.scheduleStickyHunkLayout();
+      }
     },
 
     detachStickyHunkRow(controller) {
@@ -458,6 +533,10 @@
         controller.stickyHunkClickHandler,
         true,
       );
+      controller.hunkRow?.removeEventListener(
+        "focusin",
+        controller.stickyHunkFocusHandler,
+      );
       (controller.stickyHunkAuxiliaryElements ?? []).forEach((element) => {
         element.classList.remove("hunkmark-sticky-hunk-auxiliary");
       });
@@ -469,7 +548,6 @@
         stickyHunkHasAuxiliaryElements: false,
         stickyHunkOriginDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
-        stickyHunkTableOffsetTop: null,
       });
       if (controller.returnButton) {
         controller.returnButton.hidden = true;
@@ -481,25 +559,11 @@
         return;
       }
       const state = this.hunkStickyStateByFile.get(fileElement);
-      for (const property of [
-        "activeController",
-        "candidateController",
-        "pastController",
-        "timelineController",
-      ]) {
-        if (state?.[property] === controller) {
-          state[property] = null;
-        }
-      }
-      if (
-        state?.pushController === controller ||
-        state?.pushIncomingController === controller
-      ) {
-        this.clearStickyHunkPushTimeline(state.pushController);
-        state.pushController = null;
-        state.pushIncomingController = null;
+      if (state?.activeController === controller) {
+        state.activeController = null;
       }
       state?.controllers.delete(controller);
+      state?.preparedControllers.delete(controller);
       if (state) {
         state.contentLayoutDirtyControllers.delete(controller);
         state.orderDirty = true;
@@ -510,9 +574,8 @@
         return;
       }
       this.detachStickyHunkHeader(state);
-      this.clearStickyHunkTimeline(state.timelineController);
-      this.clearStickyHunkPushTimeline(state.pushController);
       fileElement.style.removeProperty("--hunkmark-sticky-hunk-top");
+      fileElement.style.removeProperty("--hunkmark-sticky-hunk-file-start");
       this.hunkStickyFileLayoutObserver?.unobserve?.(fileElement);
       this.hunkStickyFileVisibilityObserver?.unobserve?.(fileElement);
       this.hunkStickyVisibleStates.delete(state);
@@ -526,11 +589,13 @@
       this.hunkStickyStateByFile.forEach((state) => {
         state.controllers.forEach((controller) => {
           controller.stickyHunkRowObserved = false;
+          this.clearStickyHunkTimeline(controller);
         });
         this.detachStickyHunkHeader(state);
-        this.clearStickyHunkTimeline(state.timelineController);
-        this.clearStickyHunkPushTimeline(state.pushController);
         state.fileElement.style.removeProperty("--hunkmark-sticky-hunk-top");
+        state.fileElement.style.removeProperty(
+          "--hunkmark-sticky-hunk-file-start",
+        );
       });
       this.hunkStickyStateByFile.clear();
       this.hunkStickyVisibleStates.clear();

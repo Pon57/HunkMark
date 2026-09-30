@@ -697,6 +697,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       const refreshSnapshot = this.hunkDiscoverySnapshot(this.document);
       const previousControllers = Array.from(this.controllersByRow.values());
+      // Keep the states, rather than a visibility snapshot: observer callbacks
+      // during discovery/yields remain authoritative even after replacement.
+      const previousStickyHunkStatesByFilePath =
+        this.hunkStickyFileVisibilityObserver
+          ? new Map(
+              Array.from(this.hunkStickyStateByFile.values()).flatMap((state) =>
+                Array.from(
+                  state.controllers,
+                  (controller) => [controller.filePath, state],
+                ),
+              ),
+            )
+          : null;
       const cacheGeneration =
         this.Core.beginIdentifierCacheGeneration();
       let discovered;
@@ -726,9 +739,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.abortRefreshForStaleDiff(cacheGeneration);
         return;
       }
-      this.restoreDiffMutationSuspendedReviewControls({
-        keepFilePaths: this.unsettledDiffLoadReviewSuspensionPaths(),
-      });
       this.Core.commitIdentifierCacheGeneration(cacheGeneration);
       this.attachCachedHostContextExpansionBaselines(discovered);
       const hostContextExpansionIntents =
@@ -872,7 +882,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       });
 
-      discovered.forEach((hunk) => {
+      const refreshInteractionWork = Math.max(
+        refreshControllerCount,
+        discovered.length,
+      );
+      const controllerChunkSize = Math.max(
+        1,
+        this.constants.LARGE_REFRESH_INTERACTION_YIELD_THRESHOLD,
+      );
+      for (let index = 0; index < discovered.length; index += 1) {
+        const hunk = discovered[index];
         let controller = this.controllersByRow.get(hunk.hunkRow);
         if (controller) {
           controller.fileElement = hunk.fileElement;
@@ -901,7 +920,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
           stickyControllersByFile.get(hunk.fileElement) ?? [];
         stickyControllers.push(controller);
         stickyControllersByFile.set(hunk.fileElement, stickyControllers);
-      });
+        if (
+          !collapsedLayoutAnchor &&
+          refreshInteractionWork >= controllerChunkSize &&
+          (index + 1) % controllerChunkSize === 0 &&
+          index + 1 < discovered.length
+        ) {
+          await this.yieldForLargeRefreshInteraction(
+            refreshInteractionWork,
+          );
+          if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
+            this.abortRefreshForStaleDiff(null, {
+              discardControllers: newControllers,
+              hostContextExpansionIntentsByFilePath,
+            });
+            return;
+          }
+        }
+      }
 
       const orderedControllers = discovered
         .map((hunk) => this.controllersByRow.get(hunk.hunkRow))
@@ -924,15 +960,34 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.syncStickyHunkHeader(state);
         }
       });
+      const previouslyVisibleStickyHunkFileElements = new Set();
+      if (previousStickyHunkStatesByFilePath) {
+        stickyControllersByFile.forEach((controllers, fileElement) => {
+          if (
+            controllers.some((controller) =>
+              previousStickyHunkStatesByFilePath.get(controller.filePath)?.visible,
+            )
+          ) {
+            previouslyVisibleStickyHunkFileElements.add(fileElement);
+          }
+        });
+      }
       // GitHub has already completed the host mutation. Correct only the
       // additional synchronous displacement caused by HunkMark revealing
       // previously collapsed rows, before any asynchronous storage read.
       this.restoreHostContextExpansionCollapsedLayout(
         collapsedLayoutAnchor,
       );
+      this.updateStickyHunkLayouts({
+        allowDuringRefresh: true,
+        includeFileElements: previousStickyHunkStatesByFilePath
+          ? previouslyVisibleStickyHunkFileElements
+          : null,
+      });
+      this.refreshStickyLayoutReady = true;
 
       this.suspendReviewControllersForDiffMutation();
-      await this.yieldForLargeRefreshInteraction(refreshControllerCount);
+      await this.yieldForLargeRefreshInteraction(refreshInteractionWork);
       if (!this.hunkDiscoverySnapshotIsCurrent(refreshSnapshot)) {
         this.abortRefreshForStaleDiff(null, {
           discardControllers: newControllers,
