@@ -6123,3 +6123,71 @@ for (const { outerVisible, replaceNested } of [true, false].flatMap((outerVisibl
     }
   });
 }
+
+for (const cloneId of [true, false]) {
+  test(`does not inherit sticky visibility for an added same-path root (cloned ID: ${cloneId})`, async () => {
+    const observers = [];
+    class TestIntersectionObserver {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} unobserve() {} disconnect() {}
+    }
+    const { app, dom } = await startExtension(manyFileHunkFixture(1), {}, {
+      intersectionObserverClass: TestIntersectionObserver,
+      setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+    });
+    try {
+      app.observer.disconnect();
+      const root = dom.window.document.getElementById('diff-chunk-0');
+      observers[0].callback([{ target: root, isIntersecting: true }]);
+      app.updateStickyHunkLayouts();
+      const added = root.cloneNode(true);
+      added.querySelectorAll('[data-hunkmark-ui], .hunkmark-file-progress').forEach((element) => element.remove());
+      if (!cloneId) added.id = 'diff-added';
+      dom.window.document.body.append(added);
+      await app.refresh();
+      assert.equal(root.isConnected, true);
+      assert.equal(app.hunkStickyStateByFile.get(root).visible, true);
+      const addedState = app.hunkStickyStateByFile.get(added);
+      assert.equal(addedState.visible, false);
+      assert.equal(addedState.visibilityObserved, false);
+      assert.equal(addedState.preparedControllers.size, 0);
+      observers[0].callback([{ target: added, isIntersecting: true }]);
+      app.updateStickyHunkLayouts();
+      assert.equal(addedState.visible, true);
+      assert.ok(addedState.preparedControllers.size > 0);
+    } finally {
+      app.stop(); dom.window.close();
+    }
+  });
+}
+
+test("inherits sticky visibility for actual rows moved out of a connected root", async () => {
+  const observers = [];
+  class TestIntersectionObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe() {} unobserve() {} disconnect() {}
+  }
+  const { app, dom } = await startExtension(manyFileHunkFixture(1), {}, {
+    intersectionObserverClass: TestIntersectionObserver,
+    setupWindow(window) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; },
+  });
+  try {
+    app.observer.disconnect();
+    const root = dom.window.document.getElementById('diff-chunk-0');
+    const [controller] = controllersFor(app);
+    observers[0].callback([{ target: root, isIntersecting: true }]);
+    app.updateStickyHunkLayouts();
+    const added = root.cloneNode(false);
+    added.id = 'diff-moved';
+    added.append(...root.childNodes);
+    dom.window.document.body.append(added);
+    await app.refresh();
+    assert.equal(root.isConnected, true);
+    assert.equal(controllersFor(app)[0], controller);
+    assert.equal(controller.fileElement, added);
+    assert.equal(app.hunkStickyStateByFile.get(added).visible, true);
+    assert.ok(controller.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});

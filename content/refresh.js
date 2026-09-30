@@ -977,7 +977,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           } else {
             (previousByHunk.get(hunk) ?? []).forEach((controller) => {
               const state = previousStickyHunkStatesByRow.get(controller.hunkRow);
-              if (state) {
+              if (state && !state.fileElement.isConnected) {
                 states.add(state);
               }
             });
@@ -987,13 +987,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         stickyControllersByFile.forEach((controllers, fileElement) => {
           let previousState = previousStickyHunkStatesByFileElement.get(fileElement);
           if (!previousState) {
+            const sourceStates = sourceStatesByFileElement.get(fileElement);
             const pathStates = new Set(controllers.flatMap((controller) =>
               Array.from(previousStickyHunkStatesByFilePath.get(controller.filePath) ?? []),
+            ).filter((state) =>
+              !state.fileElement.isConnected || sourceStates?.has(state),
             ));
             const idMatches = fileElement.id ? Array.from(pathStates).filter(
               (state) => state.fileElement.id === fileElement.id,
             ) : [];
-            const sourceStates = sourceStatesByFileElement.get(fileElement);
             const detachedStates = Array.from(pathStates).filter((state) => !state.fileElement.isConnected);
             // Surviving roots and stable root IDs take precedence over path
             // matches. Shared paths alone cannot identify a replacement.

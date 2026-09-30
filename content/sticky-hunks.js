@@ -528,6 +528,7 @@
       this.hunkStickyControllerByRow.delete(controller.hunkRow);
       clearClasses(controller.hunkRow, ROW_CLASSES);
       clearStyles(controller.hunkRow, ROW_STYLES);
+      controller.stickyHunkTimelineSignature = null;
       controller.hunkRow?.removeEventListener(
         "click",
         controller.stickyHunkClickHandler,
@@ -549,7 +550,6 @@
         stickyHunkOriginDocumentTop: null,
         stickyHunkOriginFileDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
-        stickyHunkTimelineSignature: null,
       });
       if (controller.returnButton) {
         controller.returnButton.hidden = true;

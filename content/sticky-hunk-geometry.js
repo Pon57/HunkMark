@@ -277,6 +277,12 @@
       { originLayoutGeneration = null, refreshLayout = false } = {},
     ) {
       const row = controller.hunkRow;
+      const state = this.hunkStickyStateByFile.get(controller.fileElement);
+      if (state?.fileOriginDirty) {
+        // Explicit navigation measurements may precede the scheduled layout.
+        // Cache them against the current file origin, not its previous offset.
+        this.updateStickyHunkFileOrigin(state);
+      }
       const cachedTop = this.cachedStickyHunkNaturalDocumentTop(controller);
       if (
         !refreshLayout &&

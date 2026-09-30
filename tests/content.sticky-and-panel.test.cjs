@@ -2860,3 +2860,27 @@ test("resolves file translation without rewriting every cached hunk origin", asy
     app.stop(); dom.window.close();
   }
 });
+
+test("does not apply file translation twice after an explicit origin measurement", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    app.observer.disconnect();
+    const controllers = Array.from(app.controllersByRow.values());
+    const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+    const tops = [500, 700];
+    mockStickyRows(dom, controllers, tops);
+    let fileTop = 100;
+    state.fileElement.getBoundingClientRect = () => ({ top: fileTop });
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    fileTop += 80;
+    tops.forEach((top, index) => { tops[index] = top + 80; });
+    app.markStickyHunkFileOriginDirty(state);
+    assert.equal(app.stickyHunkNaturalDocumentTop(controllers[0], { refreshLayout: true }), tops[0]);
+    app.updateStickyHunkState(state);
+    assert.equal(app.stickyHunkNaturalDocumentTop(controllers[0]), tops[0]);
+    assert.equal(app.stickyHunkNaturalDocumentTop(controllers[1]), tops[1]);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
