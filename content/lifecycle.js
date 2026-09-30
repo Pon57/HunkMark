@@ -1091,6 +1091,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (mutation) => !this.mutationIsExtensionOnly(mutation),
       );
       if (hostMutations.length > 0) {
+        this.updateLineControlHostLayoutsForMutations(hostMutations);
         // Host DOM can translate every file. Diff-owned mutation targets also
         // invalidate the internal geometry of their ancestor file states.
         if (this.hunkStickyFileLayoutObserver) {

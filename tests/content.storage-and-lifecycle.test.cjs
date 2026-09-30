@@ -5959,6 +5959,61 @@ test("refreshes when an untracked context identity changes", async () => {
   }
 });
 
+for (const [layout, fixture] of [
+  ["split", currentReactSplitContextExpansionFixture],
+  ["unified", currentReactContextExpansionFixture],
+]) {
+  for (const initiallyCommented of [true, false]) {
+    test(`reserves native comment space in ${layout} lines ${initiallyCommented ? "on startup" : "after comment changes"}`, async () => {
+      const fixtureDom = new JSDOM(fixture());
+      const cells = fixtureDom.window.document.querySelectorAll('.diff-text-cell');
+      cells.forEach((cell) => { cell.style.cssText = 'line-height: 24px; padding-right: 24px'; });
+      const target = fixtureDom.window.document.querySelector('.right-side-diff-cell');
+      const badgeHtml = '<div aria-hidden="true" class="SimpleDiff-module__comment-indicator__iwZDp"><span class="commentIndicatorText">1</span></div>';
+      if (initiallyCommented) {
+        target.style.paddingRight = '80px';
+        target.insertAdjacentHTML('beforeend', badgeHtml);
+      }
+      const html = fixtureDom.serialize();
+      fixtureDom.window.close();
+      const { app, dom } = await startExtension(html);
+      try {
+        const lines = controllersFor(app).flatMap((controller) => controller.lines);
+        const line = lines.find((entry) => entry.side === 'right');
+        const control = line.control;
+        const key = line.key;
+        const inset = () => line.element.style.getPropertyValue('--hunkmark-host-line-action-inset');
+        assert.equal(inset(), initiallyCommented ? '80px' : '24px');
+        let refreshes = 0;
+        app.refresh = async () => { refreshes += 1; };
+        const measured = [];
+        const measure = app.measureLineHostLayout.bind(app);
+        app.measureLineHostLayout = (entry) => { measured.push(entry); return measure(entry); };
+        if (!initiallyCommented) {
+          await app.setLineViewed(line, true);
+          line.element.style.paddingRight = '80px';
+          line.element.insertAdjacentHTML('beforeend', badgeHtml);
+          await waitFor(() => assert.equal(inset(), '80px'));
+          assert.equal(line.marked, true);
+          assert.equal(line.control, control);
+          assert.equal(line.key, key);
+          line.element.style.paddingRight = '24px';
+          line.element.querySelector('[class*="comment-indicator"]').remove();
+          await waitFor(() => assert.equal(inset(), '24px'));
+          assert.ok(measured.length > 0);
+          assert.ok(measured.every((entry) => entry === line));
+        }
+        assert.equal(refreshes, 0);
+        lines.filter((entry) => entry !== line).forEach((entry) => {
+          assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '24px');
+        });
+      } finally {
+        app.stop(); dom.window.close();
+      }
+    });
+  }
+}
+
 test("supports GitHub's current React diff with persistent controls visible", async () => {
   const { app, dom } = await startExtension(modernGridFixture());
   try {

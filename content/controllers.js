@@ -212,7 +212,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         ? Number.parseFloat(hostStyle.paddingRight)
         : 0;
       const safeHostRightInset = Number.isFinite(hostRightInset)
-        ? Math.min(Math.max(hostRightInset, 0), 48)
+        ? Math.max(hostRightInset, 0)
         : 0;
       const hostLineHeight = Number.parseFloat(hostStyle.lineHeight);
       const hostPaddingTop = Number.parseFloat(hostStyle.paddingTop);
@@ -222,6 +222,30 @@ if (globalThis.HunkMarkContent?.extendApp) {
           ? hostLineHeight / 2
           : 12);
       return { firstLineCenter, safeHostRightInset };
+    },
+
+    applyLineHostLayout(lineController, { firstLineCenter, safeHostRightInset }) {
+      const style = lineController.element.style;
+      for (const [property, value] of [
+        ["--hunkmark-host-line-action-inset", safeHostRightInset],
+        ["--hunkmark-first-line-center", firstLineCenter],
+      ]) {
+        const next = `${value}px`;
+        if (style.getPropertyValue(property) !== next) {
+          style.setProperty(property, next);
+        }
+      }
+    },
+
+    updateLineControlHostLayoutsForMutations(mutations) {
+      const lines = [...new Set(mutations.map((mutation) =>
+        this.knownLineControllerForMutationTarget(mutation.target),
+      ))].filter((line) => line?.control?.isConnected &&
+        line.element.contains(line.control) &&
+        this.reviewControllerIsCurrent(line.controller));
+      // Read only affected cells, before writing any extension positioning.
+      const layouts = lines.map((line) => this.measureLineHostLayout(line));
+      lines.forEach((line, index) => this.applyLineHostLayout(line, layouts[index]));
     },
 
     createLineController(controller, line) {
@@ -264,15 +288,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       control.setAttribute("aria-pressed", "false");
       control.setAttribute("data-hunkmark-ui", "true");
 
-      const { firstLineCenter, safeHostRightInset } = layout;
-      lineController.element.style.setProperty(
-        "--hunkmark-host-line-action-inset",
-        `${safeHostRightInset}px`,
-      );
-      lineController.element.style.setProperty(
-        "--hunkmark-first-line-center",
-        `${firstLineCenter}px`,
-      );
+      this.applyLineHostLayout(lineController, layout);
       lineController.element.classList.add("hunkmark-line-cell");
       lineController.element.append(control);
       lineController.control = control;
