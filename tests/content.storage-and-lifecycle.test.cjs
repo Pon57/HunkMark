@@ -5289,6 +5289,138 @@ test("checks every affected root before deferring a multi-file refresh", async (
   }
 });
 
+test("requires file ownership evidence before deferring a restored region", async (t) => {
+  const scenarios = [
+    {
+      name: "nested cached restoration",
+      method: "restoreCachedFileControllers",
+      nested: true,
+    },
+    {
+      name: "nested official Viewed guard",
+      method: "preserveOfficialViewedRestoredState",
+      nested: true,
+    },
+    {
+      name: "raw nested hunk headers",
+      method: "preserveOfficialViewedRestoredState",
+      nested: true,
+      raw: true,
+    },
+    {
+      name: "multiple hunks owned by one file",
+      method: "restoreCachedFileControllers",
+      nested: false,
+    },
+    {
+      name: "raw headers owned by one file",
+      method: "restoreCachedFileControllers",
+      nested: false,
+      raw: true,
+    },
+  ];
+  for (const { name, method, nested, raw } of scenarios) {
+    await t.test(name, async () => {
+      const fixture = new JSDOM(manyFileHunkFixture(3));
+      const [outer, inner] = fixture.window.document.querySelectorAll(
+        '[role="region"]',
+      );
+      outer.dataset.filePath = "src/chunk-0.js";
+      if (nested) {
+        inner.className = "js-file";
+        inner.dataset.filePath = "src/chunk-1.js";
+        inner.removeAttribute("role");
+        inner.removeAttribute("id");
+        outer.append(inner);
+      } else {
+        const grid = inner.querySelector('[role="grid"]');
+        grid.setAttribute("aria-label", "Diff for: src/chunk-0.js");
+        outer.append(grid);
+      }
+      const officialStates = [[outer, !nested], ...(nested ? [[inner, true]] : [])];
+      for (const [file, viewed] of officialStates) {
+        const button = fixture.window.document.createElement("button");
+        button.setAttribute("aria-label", viewed ? "Viewed" : "Not Viewed");
+        button.setAttribute("aria-pressed", String(viewed));
+        button.textContent = "Viewed";
+        file.querySelector(
+          '[class*="DiffFileHeader-module__diff-file-header"]',
+        ).append(button);
+      }
+      const metadataButton = fixture.window.document.createElement("button");
+      metadataButton.dataset.filePath = "src/chunk-0.js";
+      metadataButton.textContent = "Expand lines";
+      outer.firstElementChild.append(metadataButton);
+      if (raw) {
+        outer.querySelectorAll(".diff-hunk-cell").forEach((cell) =>
+          cell.classList.remove("diff-hunk-cell"),
+        );
+      }
+      const html = fixture.serialize();
+      fixture.window.close();
+
+      const { app, dom } = await startExtension(html);
+      try {
+        app.observer.disconnect();
+        app.autoCollapseViewed = false;
+        const root = dom.window.document.getElementById("diff-chunk-0");
+        const targets = controllersFor(app).filter((controller) =>
+          root.contains(controller.hunkRow),
+        );
+        assert.equal(targets.length, 2);
+        const owners = new Set(targets.map((controller) => controller.fileElement));
+        assert.equal(owners.size, nested ? 2 : 1);
+        const reviewed = nested
+          ? targets.filter((controller) => controller.fileElement !== root)
+          : targets;
+        for (const controller of reviewed) {
+          await app.setLineViewed(controller.lines[0], true);
+        }
+        if (method === "preserveOfficialViewedRestoredState") {
+          app.startOfficialViewedRestoreGuard(
+            reviewed[0].officialSuppressionKey,
+            reviewed[0].filePath,
+          );
+        }
+        targets.forEach((controller) => app.destroyController(controller));
+        const outcomes = [];
+        const restore = app[method].bind(app);
+        app[method] = (searchRoot) => {
+          const restored = restore(searchRoot);
+          outcomes.push({ searchRoot, restored });
+          return restored;
+        };
+        const refreshes = [];
+        app.scheduleRefresh = ({ immediate }) => refreshes.push(immediate);
+        const mutations = captureMutationBatch(dom, () => {
+          targets.forEach((controller) =>
+            controller.hunkRow.replaceWith(controller.hunkRow.cloneNode(true)),
+          );
+        });
+        mutations.forEach((mutation) => {
+          const owners = app.diffLoadFileElementsForMutation(mutation);
+          assert.equal(owners.size, 1);
+          assert.equal(owners.has(root), true);
+        });
+
+        app.handleMutations(mutations);
+
+        assert.deepEqual(outcomes.map(({ restored }) => restored), [true]);
+        assert.equal(outcomes[0].searchRoot, root);
+        if (method === "restoreCachedFileControllers") {
+          assert.equal(controllersFor(app).filter((controller) =>
+            root.contains(controller.hunkRow),
+          ).length, nested ? 1 : 2);
+        }
+        assert.deepEqual(refreshes, [nested]);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),

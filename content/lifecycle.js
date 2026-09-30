@@ -1243,7 +1243,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
           restoreRoots.every((root, index) =>
             root !== this.document &&
             restorationResults[index] &&
-            !this.fileRevealPrepaintRestores.has(root),
+            !this.fileRevealPrepaintRestores.has(root) &&
+            this.restorationRootOwnsAllHunks(root),
           );
         const diffLoadExpectedRoots =
           uniqueExpectedRestoreRoots.length > 0

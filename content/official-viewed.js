@@ -1016,6 +1016,47 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    restorationRootOwnsAllHunks(searchRoot) {
+      if (!(searchRoot instanceof this.window.Element)) {
+        return false;
+      }
+      const ownerSelector = [
+        this.constants.FILE_CONTAINER_SELECTOR,
+        "article, details, section, [role=region], table",
+      ].join(", ");
+      if (!searchRoot.matches(ownerSelector)) {
+        return false;
+      }
+      // An aggregate restoration success cannot certify a nested file owner.
+      return Array.from(searchRoot.querySelectorAll(ownerSelector)).every(
+        (candidate) => {
+          let marker = candidate.querySelector(
+            this.constants.HUNK_ELEMENT_SELECTOR,
+          );
+          if (!marker) {
+            // Raw headers need only the first text match, not full discovery.
+            const walker = this.document.createTreeWalker(
+              candidate,
+              this.window.NodeFilter.SHOW_TEXT,
+            );
+            let textNode = walker.nextNode();
+            while (textNode) {
+              if (
+                this.Core.isHunkHeaderText(textNode.nodeValue) &&
+                !textNode.parentElement?.closest("script, style, noscript, template")
+              ) {
+                marker = textNode.parentElement;
+                break;
+              }
+              textNode = walker.nextNode();
+            }
+          }
+          return !marker ||
+            this.findFileElement(marker, this.semanticRow(marker)) === searchRoot;
+        },
+      );
+    },
+
     preserveOfficialViewedRestoredState(searchRoot = this.document) {
       if (this.officialViewedRestoreGuards.size === 0) {
         return false;
