@@ -5969,21 +5969,42 @@ for (const [layout, fixture] of [
       const cells = fixtureDom.window.document.querySelectorAll('.diff-text-cell');
       cells.forEach((cell) => { cell.style.cssText = 'line-height: 24px; padding-right: 24px'; });
       const target = fixtureDom.window.document.querySelector('.right-side-diff-cell');
-      const badgeHtml = '<div aria-hidden="true" class="SimpleDiff-module__comment-indicator__iwZDp"><span class="commentIndicatorText">1</span></div>';
+      const badgeHtml = '<div aria-hidden="true" data-width="24" class="SimpleDiff-module__comment-indicator__iwZDp"><span class="commentIndicatorText">1</span></div>';
       if (initiallyCommented) {
         target.style.paddingRight = '80px';
         target.insertAdjacentHTML('beforeend', badgeHtml);
       }
       const html = fixtureDom.serialize();
       fixtureDom.window.close();
-      const { app, dom } = await startExtension(html);
+      class TestResizeObserver {
+        constructor(callback) { this.callback = callback; this.observed = new Set(); }
+        observe(element) { this.observed.add(element); }
+        unobserve(element) { this.observed.delete(element); }
+        disconnect() { this.observed.clear(); }
+      }
+      const { app, dom } = await startExtension(html, {}, {
+        resizeObserverClass: TestResizeObserver,
+        setupWindow(window) {
+          window.scrollTo = () => {};
+          const rect = window.Element.prototype.getBoundingClientRect;
+          window.Element.prototype.getBoundingClientRect = function () {
+            if (this.matches('[class*="SimpleDiff-module__comment-indicator__"]')) {
+              const width = Number(this.dataset.width);
+              return { left: 400 - 27 - width, right: 373, width, height: 24, top: 0 };
+            }
+            if (this.matches('.diff-text-cell')) return { left: 0, right: 400, width: 400, height: 24, top: 0 };
+            return rect.call(this);
+          };
+        },
+      });
+      const observer = app.lineControlHostLayoutObserver;
       try {
         const lines = controllersFor(app).flatMap((controller) => controller.lines);
         const line = lines.find((entry) => entry.side === 'right');
         const control = line.control;
         const key = line.key;
         const inset = () => line.element.style.getPropertyValue('--hunkmark-host-line-action-inset');
-        assert.equal(inset(), initiallyCommented ? '80px' : '24px');
+        assert.equal(inset(), initiallyCommented ? '51px' : '24px');
         let refreshes = 0;
         app.refresh = async () => { refreshes += 1; };
         const measured = [];
@@ -5993,22 +6014,32 @@ for (const [layout, fixture] of [
           await app.setLineViewed(line, true);
           line.element.style.paddingRight = '80px';
           line.element.insertAdjacentHTML('beforeend', badgeHtml);
-          await waitFor(() => assert.equal(inset(), '80px'));
+          await waitFor(() => assert.equal(inset(), '51px'));
           assert.equal(line.marked, true);
           assert.equal(line.control, control);
           assert.equal(line.key, key);
-          line.element.style.paddingRight = '24px';
-          line.element.querySelector('[class*="comment-indicator"]').remove();
-          await waitFor(() => assert.equal(inset(), '24px'));
-          assert.ok(measured.length > 0);
-          assert.ok(measured.every((entry) => entry === line));
         }
+        const badge = line.element.querySelector('[class*="comment-indicator"]');
+        assert.ok(observer.observed.has(badge));
+        badge.dataset.width = '38';
+        observer.callback([{ target: badge }]);
+        assert.equal(inset(), '65px');
+        line.element.style.paddingRight = '24px';
+        badge.remove();
+        await waitFor(() => assert.equal(inset(), '24px'));
+        assert.equal(observer.observed.has(badge), false);
+        line.element.style.paddingRight = '40px';
+        observer.callback([{ target: line.element }]);
+        assert.equal(inset(), '40px');
+        assert.ok(measured.length > 0);
+        assert.ok(measured.every((entry) => entry === line));
         assert.equal(refreshes, 0);
         lines.filter((entry) => entry !== line).forEach((entry) => {
           assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '24px');
         });
       } finally {
         app.stop(); dom.window.close();
+        assert.equal(observer.observed.size, 0);
       }
     });
   }

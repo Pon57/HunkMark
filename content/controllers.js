@@ -205,12 +205,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
     measureLineHostLayout(line) {
       const hostStyle = this.window.getComputedStyle(line.element);
 
-      // GitHub reserves the modern cell's right padding for its native line menu.
-      const hostRightInset = line.element.matches(
+      // Prefer the rendered comment edge over the wider native action gutter,
+      // so one or several avatars leave the same gap beside Viewed.
+      let hostRightInset = line.element.matches(
         ".diff-text-cell, [data-line-anchor]",
       )
         ? Number.parseFloat(hostStyle.paddingRight)
         : 0;
+      const commentIndicator = line.element.querySelector(
+        '[class*="SimpleDiff-module__comment-indicator__"]',
+      );
+      if (commentIndicator) {
+        const indicatorRect = commentIndicator.getBoundingClientRect();
+        const inset = line.element.getBoundingClientRect().right - indicatorRect.left;
+        if (indicatorRect.width > 0 && Number.isFinite(inset) && inset >= 0) {
+          hostRightInset = inset;
+        }
+      }
       const safeHostRightInset = Number.isFinite(hostRightInset)
         ? Math.max(hostRightInset, 0)
         : 0;
@@ -221,10 +232,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (Number.isFinite(hostLineHeight) && hostLineHeight > 0
           ? hostLineHeight / 2
           : 12);
-      return { firstLineCenter, safeHostRightInset };
+      return { commentIndicator, firstLineCenter, safeHostRightInset };
     },
 
-    applyLineHostLayout(lineController, { firstLineCenter, safeHostRightInset }) {
+    lineControlHostLayoutObserverInstance() {
+      if (!this.lineControlHostLayoutObserver && typeof this.window.ResizeObserver === "function") {
+        this.lineControlHostLayoutObserver = new this.window.ResizeObserver((entries) =>
+          this.updateLineControlHostLayouts(entries.map((entry) =>
+            this.knownLineControllerForMutationTarget(entry.target),
+          )),
+        );
+      }
+      return this.lineControlHostLayoutObserver;
+    },
+
+    applyLineHostLayout(lineController, { commentIndicator = null, firstLineCenter, safeHostRightInset }) {
       const style = lineController.element.style;
       for (const [property, value] of [
         ["--hunkmark-host-line-action-inset", safeHostRightInset],
@@ -235,12 +257,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
           style.setProperty(property, next);
         }
       }
+      if (lineController.commentIndicator !== commentIndicator) {
+        const observer = this.lineControlHostLayoutObserverInstance();
+        if (lineController.commentIndicator) observer?.unobserve?.(lineController.commentIndicator);
+        lineController.commentIndicator = commentIndicator;
+        if (commentIndicator) observer?.observe(commentIndicator);
+      }
     },
 
-    updateLineControlHostLayoutsForMutations(mutations) {
-      const lines = [...new Set(mutations.map((mutation) =>
-        this.knownLineControllerForMutationTarget(mutation.target),
-      ))].filter((line) => line?.control?.isConnected &&
+    updateLineControlHostLayouts(candidates) {
+      const lines = [...new Set(candidates)].filter((line) => line?.control?.isConnected &&
         line.element.contains(line.control) &&
         this.reviewControllerIsCurrent(line.controller));
       // Read only affected cells, before writing any extension positioning.
@@ -251,6 +277,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
     createLineController(controller, line) {
       const lineController = {
         ...line,
+        commentIndicator: null,
         control: null,
         controller,
         lineControlObserved: false,
@@ -292,6 +319,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       lineController.element.classList.add("hunkmark-line-cell");
       lineController.element.append(control);
       lineController.control = control;
+      this.lineControlHostLayoutObserverInstance()?.observe(lineController.element);
       lineController.controller.materializedLazyLines?.add(lineController);
       this.applyLineAppearance(lineController);
       return control;
@@ -1390,6 +1418,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     destroyLineController(lineController) {
+      this.lineControlHostLayoutObserver?.unobserve?.(lineController.element);
+      if (lineController.commentIndicator) {
+        this.lineControlHostLayoutObserver?.unobserve?.(lineController.commentIndicator);
+        lineController.commentIndicator = null;
+      }
       if (lineController.lineControlObserved) {
         this.lineControlVisibilityObserver?.unobserve(
           lineController.element,
@@ -1461,6 +1494,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.diffMutationGenerationByFileElement = new WeakMap();
       this.lineControlVisibilityObserver?.disconnect();
       this.lineControlVisibilityObserver = null;
+      this.lineControlHostLayoutObserver?.disconnect();
+      this.lineControlHostLayoutObserver = null;
       this.cleanupStickyHunks();
       this.removePanel();
       this.document
