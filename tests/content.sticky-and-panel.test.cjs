@@ -2862,6 +2862,47 @@ test("restores prepared and active state after host hunk classes are rewritten",
   }
 });
 
+test("restores rewritten animation styles even when row geometry stays cached", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    app.observer.disconnect();
+    const controllers = Array.from(app.controllersByRow.values());
+    const controller = controllers[0];
+    const state = app.hunkStickyStateByFile.get(controller.fileElement);
+    mockStickyRows(dom, controllers, [200, 400]);
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    const style = controller.hunkRow.style;
+    const properties = Array.from(style).filter((name) =>
+      name.startsWith('--hunkmark-sticky-hunk-') &&
+      !['--hunkmark-sticky-hunk-content-inset', '--hunkmark-sticky-hunk-bottom-inset'].includes(name),
+    );
+    const ranges = properties.map((name) => [name, style.getPropertyValue(name)]);
+    assert.equal(ranges.length, 9);
+    const signature = controller.stickyHunkTimelineSignature;
+    style.cssText = 'color: red';
+    await app.refresh();
+    assert.equal(controller.stickyHunkTimelineSignature, signature);
+    assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
+    assert.equal(style.color, 'red');
+    style.setProperty('--hunkmark-sticky-hunk-push-end', '999px');
+    let rangeWrites = 0;
+    const setProperty = style.setProperty.bind(style);
+    style.setProperty = (name, ...args) => {
+      if (properties.includes(name)) rangeWrites += 1;
+      return setProperty(name, ...args);
+    };
+    await app.refresh();
+    assert.equal(rangeWrites, 1);
+    assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
+    rangeWrites = 0;
+    await app.refresh();
+    assert.equal(rangeWrites, 0);
+  } finally {
+    app.stop(); dom.window.close();
+  }
+});
+
 test("remeasures enclosing hunk positions when only a nested file resizes", async () => {
   const fixture = new JSDOM(duplicateHunkFixture());
   const outer = fixture.window.document.querySelector('.js-file');

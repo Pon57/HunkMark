@@ -159,9 +159,8 @@
         controller.stickyHunkCompactHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX;
       const pushEnd = nextTop === undefined ? 1 : Math.max(0, nextTop - fileDocumentTop);
       const signature = [start, tailStart, inset, bottomInset, distance, pushEnd].join(":");
-      if (controller.stickyHunkTimelineSignature === signature) {
-        return;
-      }
+      // The host can rewrite inline styles while retaining the row and its
+      // geometry. Per-property guards restore missing ranges without rewrites.
       setPixelStyles(controller.hunkRow, [
         ["--hunkmark-sticky-hunk-compress-start", start],
         ["--hunkmark-sticky-hunk-compress-end", start + Math.max(inset, 1)],
