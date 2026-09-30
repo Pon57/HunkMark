@@ -1165,6 +1165,20 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (hasUnscopedDiffMutation) {
           this.unscopedDiffMutationGeneration += 1;
         }
+        const connectedMutationFileElements = Array.from(
+          mutationFileElements,
+        ).filter((fileElement) => fileElement.isConnected);
+        let mutationRestoreRoot = null;
+        if (!hasUnscopedDiffMutation) {
+          if (connectedMutationFileElements.length === 1) {
+            [mutationRestoreRoot] = connectedMutationFileElements;
+          } else if (
+            connectedMutationFileElements.length === 0 &&
+            mutationFileElements.size === 1
+          ) {
+            mutationRestoreRoot = mutationFileElements.values().next().value;
+          }
+        }
         const activeHostContextExpansionIntents =
           this.activeHostContextExpansionIntents();
         let pendingHostContextExpansionIntents = [];
@@ -1189,7 +1203,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
         const progressRemoved =
           !expectedFileDiffVisibility.changed &&
-          this.removeProgressForFilesWithoutRenderedHunks();
+          this.removeProgressForFilesWithoutRenderedHunks(
+            hasUnscopedDiffMutation ? null : mutationFileElements,
+          );
         const expectedRestoreRoots = [
           ...Array.from(
             this.fileRevealPrepaintRestores.keys(),
@@ -1205,7 +1221,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
           ? uniqueExpectedRestoreRoots.length === 1
             ? uniqueExpectedRestoreRoots[0]
             : this.document
-          : this.fileRevealRestoreRootForMutations(hostDiffMutations);
+          : mutationRestoreRoot ??
+            this.fileRevealRestoreRootForMutations(hostDiffMutations);
         const expectedHideOnly =
           expectedFileDiffVisibility.changed &&
           !expectedFileDiffVisibility.revealed &&

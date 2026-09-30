@@ -5061,6 +5061,63 @@ test("keeps file auxiliary mutations fail-closed without a diff grid", async () 
   }
 });
 
+test("checks only the mutated file when removing stale progress", async () => {
+  const { app, dom } = await startExtension(
+    currentReactContextExpansionFixture(),
+  );
+  try {
+    const first = controllerForFile(app, "src/react-one.js");
+    const second = controllerForFile(app, "src/react-two.js");
+    await waitFor(() => {
+      assert.ok(first.fileElement.querySelector(".hunkmark-file-progress"));
+      assert.ok(second.fileElement.querySelector(".hunkmark-file-progress"));
+    });
+    app.observer.disconnect();
+    const findHunkMarkers = app.findHunkMarkers.bind(app);
+    let secondFileSearches = 0;
+    app.findHunkMarkers = (root) => {
+      secondFileSearches += Number(root === second.fileElement);
+      return findHunkMarkers(root);
+    };
+    const restoreCachedFileControllers =
+      app.restoreCachedFileControllers.bind(app);
+    const restoreRoots = [];
+    app.restoreCachedFileControllers = (root) => {
+      restoreRoots.push(root);
+      return restoreCachedFileControllers(root);
+    };
+
+    const body = first.hunkRow.closest("tbody");
+    const removedRows = Array.from(body.childNodes);
+    body.replaceChildren();
+    app.handleMutations([
+      {
+        addedNodes: [],
+        removedNodes: removedRows,
+        target: body,
+        type: "childList",
+      },
+    ]);
+
+    assert.equal(
+      first.fileElement.querySelector(".hunkmark-file-progress"),
+      null,
+    );
+    assert.ok(second.fileElement.querySelector(".hunkmark-file-progress"));
+    assert.equal(secondFileSearches, 0);
+    assert.equal(restoreRoots.length, 1);
+    assert.notEqual(restoreRoots[0], dom.window.document);
+    assert.equal(
+      restoreRoots[0] === first.fileElement ||
+        first.fileElement.contains(restoreRoots[0]),
+      true,
+    );
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("uses direct current React progress ownership before controller scans", async () => {
   const { app, dom } = await startExtension(
     currentReactContextExpansionFixture(),
@@ -5090,7 +5147,14 @@ test("uses direct current React progress ownership before controller scans", asy
       return directOwner(badge);
     };
     app.updateProgress();
+    const findHunkMarkers = app.findHunkMarkers.bind(app);
+    const markerSearchRoots = new Set();
+    app.findHunkMarkers = (root) => {
+      markerSearchRoots.add(root);
+      return findHunkMarkers(root);
+    };
     assert.equal(app.removeProgressForFilesWithoutRenderedHunks(), false);
+    assert.deepEqual(markerSearchRoots, new Set(fileElements));
     assert.equal(directOwnerLookups, badges.length * 2);
   } finally {
     app.stop();
