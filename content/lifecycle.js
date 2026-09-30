@@ -1385,7 +1385,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.chrome.storage.onChanged.addListener(this.boundStorageChanged);
       this.observer = new this.window.MutationObserver((mutations) => {
         try {
-          this.handleMutations(mutations);
+          this.updateLineControlHostLayoutsForAttributes(mutations);
+          const structural = mutations.filter((mutation) => mutation.type !== "attributes");
+          if (structural.length > 0) this.handleMutations(structural);
         } catch (error) {
           if (!this.stopForInvalidatedContext(error)) {
             this.finishAllFileRevealPrepaintRestores();
@@ -1396,6 +1398,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.observer.observe(this.document.documentElement, {
         childList: true,
         subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style"],
+        attributeOldValue: true,
       });
       this.document.addEventListener(
         "pointermove",
