@@ -1505,6 +1505,11 @@ test("blocks review and official Viewed sync while a host spinner remains", asyn
   );
   const { app, dom } = await startExtension(fixture);
   try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 60,
+    };
     const officialControl = dom.window.document.querySelector(
       'button[aria-label="Not Viewed"]',
     );
