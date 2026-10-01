@@ -20,7 +20,9 @@ A Chrome extension that adds hunk-level and line-level `Viewed` controls and hun
 
 ## Installation
 
-Until HunkMark is available in the Chrome Web Store, clone the repository and load it in developer mode.
+Install HunkMark from the [Chrome Web Store](https://chromewebstore.google.com/detail/cpoeaeelpknichiihdfemgamkmhhjmgf).
+
+To try the current source in developer mode, clone the repository:
 
 ```sh
 git clone https://github.com/Pon57/HunkMark.git
@@ -32,7 +34,7 @@ git clone https://github.com/Pon57/HunkMark.git
 4. Choose the cloned `HunkMark` directory.
 5. Reload the **Files changed** page of a GitHub pull request.
 
-After updating the repository, reload HunkMark from `chrome://extensions`.
+After updating the repository, reload the development copy from `chrome://extensions`.
 
 ## Review state
 
