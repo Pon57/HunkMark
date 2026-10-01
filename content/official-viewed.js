@@ -1170,6 +1170,27 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    cachedFileSnapshotMatchesHunks(filePath, hunks) {
+      const progressKey = this.fileProgressStateKey(filePath);
+      const progress = this.fileProgressStateByKey.get(progressKey);
+      const snapshot = this.fileReviewSnapshotsByKey.get(progressKey);
+      return Boolean(
+        progress?.hunks === hunks.length &&
+        progress?.lines === hunks.reduce((total, hunk) => total + hunk.lines.length, 0) &&
+        snapshot?.hunks.length === hunks.length &&
+        hunks.every((hunk, index) => {
+          const previous = snapshot.hunks[index];
+          return previous.key === hunk.key &&
+            previous.lines.length === hunk.lines.length &&
+            hunk.lines.every((line, lineIndex) => {
+              const previousLine = previous.lines[lineIndex];
+              return previousLine.key === line.key &&
+                previousLine.contextFingerprint === line.contextFingerprint;
+            });
+        }),
+      );
+    },
+
     restoreCachedFileControllers(
       searchRoot = this.document,
       restorationState = null,
@@ -1193,23 +1214,22 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!restorationState?.discovered) {
         this.attachCachedHostContextExpansionBaselines(discovered);
       }
+      const hunksByPath = new Map();
+      discovered.forEach((hunk) => {
+        const hunks = hunksByPath.get(hunk.filePath) ?? [];
+        hunks.push(hunk);
+        hunksByPath.set(hunk.filePath, hunks);
+      });
+      // Compare before progress adopts the newly mounted DOM. Equal totals
+      // alone cannot certify that the captured hunk and line identities survived.
+      const matchedCachedPaths = new Set(
+        Array.from(hunksByPath)
+          .filter(([filePath, hunks]) => this.cachedFileSnapshotMatchesHunks(filePath, hunks))
+          .map(([filePath]) => filePath),
+      );
       if (restorationState) {
-        const countsByFile = new Map();
-        discovered.forEach((hunk) => {
-          const counts = countsByFile.get(hunk.filePath) ?? { hunks: 0, lines: 0 };
-          counts.hunks += 1;
-          counts.lines += hunk.lines.length;
-          countsByFile.set(hunk.filePath, counts);
-        });
-        // Capture this before progress is updated from the newly mounted DOM:
-        // a partial render must not certify its own smaller file totals.
-        restorationState.cachedFileComplete = countsByFile.size > 0 &&
-          Array.from(countsByFile).every(([filePath, counts]) => {
-            const cached = this.fileProgressStateByKey.get(
-              this.fileProgressStateKey(filePath),
-            );
-            return cached?.hunks === counts.hunks && cached?.lines === counts.lines;
-          });
+        restorationState.cachedFileComplete = hunksByPath.size > 0 &&
+          matchedCachedPaths.size === hunksByPath.size;
       }
       discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
@@ -1263,6 +1283,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.fileProgressStateByKey.get(progressKey);
         const matchesCachedFile =
           explicitReveal &&
+          matchedCachedPaths.has(candidates[0].hunk.filePath) &&
           cachedProgress?.hunks === candidates.length &&
           cachedProgress?.lines === candidates.reduce(
             (total, { hunk }) => total + hunk.lines.length,

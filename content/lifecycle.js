@@ -1284,7 +1284,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           deferredRestoreRoots.size === restoreRoots.length;
         // A clean paint-only reveal does not validate controller identities.
         const confirmedRestoreRoots = new Set(restoreRoots.filter((root, index) =>
-          deferredRestoreRoots.has(root) && restorationResults[index].controlsReady,
+          deferredRestoreRoots.has(root) &&
+          restorationResults[index].controlsReady &&
+          restorationResults[index].cachedFileComplete,
         ));
         if (
           expectedFileDiffVisibility.revealed &&

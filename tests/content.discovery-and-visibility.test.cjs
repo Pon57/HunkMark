@@ -1453,7 +1453,7 @@ test("reconciles cached Viewed reveals with partial or loading content", async (
       if (partial) Array.from(table.rows).slice(3).forEach((row) => row.remove());
       const tableHtml = table.outerHTML;
       clean.window.close();
-      const { app, dom } = await startExtension(fixture, {
+      const { app, chrome, dom } = await startExtension(fixture, {
         [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
       });
       const held = createDeferred();
@@ -1484,6 +1484,96 @@ test("reconciles cached Viewed reveals with partial or loading content", async (
         });
         assert.equal(app.officialViewedRestoreGuards.values().next().value?.cachedRestore, undefined);
         assert.equal(partial ? fullRefreshes > 0 : app.deferredDiffLoadRefreshes.size > 0, true);
+        if (partial) {
+          const controller = controllerAt(app);
+          assert.equal(controller.input.disabled, true);
+          assert.equal(app.reviewControllerIsSuspended(controller), true);
+          const stored = chrome.snapshot();
+          controller.input.disabled = false;
+          controller.input.click();
+          await Promise.resolve();
+          assert.equal(controller.input.disabled, true);
+          assert.deepEqual(chrome.snapshot(), stored);
+        }
+      } finally { held.resolve(); app.stop(); dom.window.close(); }
+    });
+  }
+});
+
+test("reconciles known cached identities when an unreviewed reveal changes content", async (t) => {
+  const fixture = contextualLineFixture({ officialControl: true });
+  const clean = new JSDOM(fixture);
+  const originalTable = clean.window.document.querySelector("table").outerHTML;
+  clean.window.close();
+  const variants = [
+    { name: "changed line key", from: "+return true;", to: "+return false;" },
+    { name: "changed context fingerprint", from: "before();", to: "differentContext();" },
+  ];
+  for (const variant of variants) {
+    await t.test(variant.name, async () => {
+      const { app, chrome, dom } = await startExtension(fixture, {
+        [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+      });
+      const held = createDeferred();
+      try {
+        const initial = controllerAt(app);
+        const originalIdentity = initial.lines[0];
+        const file = initial.fileElement;
+        const control = file.querySelector('button[aria-pressed]');
+        const changedTable = originalTable.replace(variant.from, variant.to);
+        control.addEventListener("click", () => {
+          const viewed = control.getAttribute("aria-pressed") !== "true";
+          setOfficialViewed(control, viewed);
+          if (viewed) file.querySelector("table")?.remove();
+          else file.insertAdjacentHTML("beforeend", changedTable);
+        });
+        control.click();
+        await waitFor(() => {
+          assert.equal(app.controllersByRow.size, 0);
+          assert.equal(app.refreshRunning || app.refreshQueued, false);
+          assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+        });
+
+        // Identifiers may already be cached from an earlier discovery. Warm
+        // this variant without replacing the captured file review snapshot.
+        app.observer.disconnect();
+        file.insertAdjacentHTML("beforeend", changedTable);
+        const knownVariant = await app.discoverHunks(file);
+        assert.ok(app.discoverCachedHunks(file));
+        assert.equal(knownVariant.length, 1);
+        assert.equal(knownVariant[0].lines.length, 1);
+        if (variant.name === "changed context fingerprint") {
+          assert.equal(knownVariant[0].lines[0].key, originalIdentity.key);
+          assert.notEqual(knownVariant[0].lines[0].contextFingerprint,
+            originalIdentity.contextFingerprint);
+        } else {
+          assert.notEqual(knownVariant[0].lines[0].key, originalIdentity.key);
+        }
+        file.querySelector("table").remove();
+        app.observer.observe(app.document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+        const refresh = app.refresh.bind(app);
+        app.refresh = async () => { await held.promise; return refresh(); };
+        control.click();
+        await Promise.resolve();
+        assert.equal(app.refreshRunning || app.refreshQueued, true);
+        controllersFor(app).forEach((controller) => {
+          assert.equal(controller.input.disabled, true);
+          assert.equal(app.reviewControllerIsSuspended(controller), true);
+          controller.input.disabled = false;
+          controller.input.click();
+        });
+        await Promise.resolve();
+        assert.equal(Boolean(chrome.snapshot()[knownVariant[0].lines[0].key]), false);
+        held.resolve();
+        await waitFor(() => {
+          assert.equal(app.refreshRunning || app.refreshQueued, false);
+          assert.equal(app.controllersByRow.size, 1);
+          assert.equal(controllerAt(app).input.disabled, false);
+          assert.equal(controllerAt(app).marked, false);
+        });
       } finally { held.resolve(); app.stop(); dom.window.close(); }
     });
   }
