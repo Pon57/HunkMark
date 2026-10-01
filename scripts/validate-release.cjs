@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { validateProjectReleaseVersion } = require("./release-version.cjs");
 
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -11,6 +12,7 @@ const packageLock = JSON.parse(
   fs.readFileSync(path.join(root, "package-lock.json"), "utf8"),
 );
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
+validateProjectReleaseVersion(version);
 
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(

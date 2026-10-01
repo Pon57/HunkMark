@@ -3,21 +3,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { validateProjectReleaseVersion } = require("./release-version.cjs");
 
 const root = path.resolve(__dirname, "..");
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
-const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
-
-assert.ok(
-  match,
-  `VERSION must be a Chrome-compatible semantic version, received ${JSON.stringify(version)}`,
-);
-for (const component of match.slice(1)) {
-  assert.ok(
-    Number(component) <= 65535,
-    `VERSION component ${component} exceeds Chrome's limit of 65535`,
-  );
-}
+validateProjectReleaseVersion(version);
 
 if (process.env.TAGPR_NEXT_VERSION) {
   assert.equal(
