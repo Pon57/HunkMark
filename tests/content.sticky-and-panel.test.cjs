@@ -2213,6 +2213,52 @@ test("cancels a scheduled sticky return when the route changes", async () => {
   }
 });
 
+test("cancels a scheduled sticky return on hash changes without refreshing the diff", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [, target] = Array.from(app.controllersByRow.values());
+    const scrollCalls = [];
+    dom.window.scrollTo = (options) => scrollCalls.push(options);
+    app.stickyHunkNaturalDocumentTop = () => 600;
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = (...args) => { refreshes += 1; return refresh(...args); };
+    app.scheduleStickyHunkReturn(target.key);
+    dom.window.history.pushState({}, "", "#diff-other-file");
+    assert.equal(app.checkForNavigation(), false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(scrollCalls.length, 0);
+    assert.equal(app.hunkStickyScrollFrameId, null);
+    assert.equal(refreshes, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("refreshes a page-cache restoration and cancels a pending sticky return", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [, target] = Array.from(app.controllersByRow.values());
+    const scrollCalls = [];
+    dom.window.scrollTo = (options) => scrollCalls.push(options);
+    app.stickyHunkNaturalDocumentTop = () => 600;
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = (...args) => { refreshes += 1; return refresh(...args); };
+    app.scheduleStickyHunkReturn(target.key);
+    dom.window.dispatchEvent(new dom.window.PageTransitionEvent("pageshow", { persisted: false }));
+    assert.notEqual(app.hunkStickyScrollFrameId, null);
+    dom.window.dispatchEvent(new dom.window.PageTransitionEvent("pageshow", { persisted: true }));
+    assert.equal(app.hunkStickyScrollFrameId, null);
+    await waitFor(() => assert.equal(refreshes, 1));
+    assert.equal(scrollCalls.length, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("separates external file translation from internal hunk geometry", async () => {
   const resizeObservers = [];
   class TestResizeObserver {
