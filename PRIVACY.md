@@ -28,7 +28,7 @@ When `Sync GitHub file Viewed` is enabled, all hunks in a file are marked Viewed
 
 ## Retention and deletion
 
-Saved review state becomes eligible for local cleanup after its pull-request context has been inactive for more than 180 days. HunkMark checks for expired state when it activates on a supported pull-request diff page and during later cleanup checks while it is running. State is removed during cleanup, so eligible state can remain on the device beyond 180 days until HunkMark next runs cleanup. To avoid unnecessary writes, the extension updates that context's last-accessed time at most once per 24 hours.
+Saved review state becomes eligible for local cleanup after its pull-request context has been inactive for more than 180 days. HunkMark checks for expired state when it activates on a supported pull-request diff page and during later cleanup checks while it is running. State for contexts that are still inactive is removed during cleanup, so it can remain on the device beyond 180 days while no cleanup runs. The currently opened pull request is treated as active before expiration is checked. Reopening an inactive pull request before its state has been deleted therefore preserves that state under the 180-day rule and restarts its inactivity period. To avoid unnecessary writes, the extension updates that context's last-accessed time at most once per 24 hours.
 
 To keep storage use bounded, it retains at most 25,000 review-state and context-metadata entries; when the limit is exceeded, it removes the least recently accessed pull-request contexts, including all of their saved commit-range views, as complete units instead of leaving partial review state.
 

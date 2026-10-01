@@ -119,7 +119,7 @@ Initial public release.
 - Pins GitHub Actions dependencies to full commit SHAs
 - Produces deterministic release ZIPs with a SHA-256 checksum
 - Attaches the ZIP and checksum to GitHub Releases when they are published
-- Tracks one last-access time per account-and-pull-request context at most once per 24 hours and removes all saved ranges as a complete unit after more than 180 inactive days when HunkMark next runs cleanup
+- Tracks one last-access time per account-and-pull-request context at most once per 24 hours and removes all saved ranges of still-inactive contexts as a complete unit after more than 180 days when HunkMark runs cleanup; refreshes access for the displayed context before checking expiration, preserving its still-saved state under the retention rule
 - Enforces the 25,000-entry bound by evicting least recently accessed whole account-and-pull-request contexts instead of partial range or line state
 - Covers unified and split diffs, persistence, drag shrinking, commit-range switching, view-scoped reset, persisted official Viewed suppression, post-write storage eviction, non-review-route mutation filtering, and GitHub DOM replacement with automated DOM integration tests
 
