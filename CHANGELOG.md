@@ -106,7 +106,7 @@ Initial public release.
 - Debounces DOM refresh work and scopes fallback hunk discovery to diff containers
 - Ignores extension-owned and diff-unrelated DOM mutations to avoid unnecessary full-page rescans
 - Skips diff-mutation inspection entirely outside pull-request diff routes
-- Rechecks retention once per day and enforces the 25,000-entry bound after later writes and cross-tab storage changes
+- Checks retention on each supported review-page activation and, on later refreshes of that page, after at least 24 hours since the last successful check; enforces the 25,000-entry bound after later writes and cross-tab storage changes
 - Reduces repeated row lookup and line fingerprint work during large diff discovery
 - Resets hunk and line state only for the currently displayed commit range
 - Isolates All commits and each range chosen with Select commits to view
@@ -119,7 +119,7 @@ Initial public release.
 - Pins GitHub Actions dependencies to full commit SHAs
 - Produces deterministic release ZIPs with a SHA-256 checksum
 - Attaches the ZIP and checksum to GitHub Releases when they are published
-- Tracks one last-access time per account-and-pull-request context at most once per 24 hours and removes all saved ranges as a complete unit after 180 inactive days
+- Tracks one last-access time per account-and-pull-request context at most once per 24 hours and removes all saved ranges of still-inactive contexts as a complete unit after more than 180 days when HunkMark runs cleanup; refreshes access for the displayed context before checking expiration, preserving its still-saved state under the retention rule
 - Enforces the 25,000-entry bound by evicting least recently accessed whole account-and-pull-request contexts instead of partial range or line state
 - Covers unified and split diffs, persistence, drag shrinking, commit-range switching, view-scoped reset, persisted official Viewed suppression, post-write storage eviction, non-review-route mutation filtering, and GitHub DOM replacement with automated DOM integration tests
 
