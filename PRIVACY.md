@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: July 25, 2026
+Last updated: October 1, 2026
 
 HunkMark has one purpose: to add hunk-level and line-level review controls to GitHub pull request diff pages.
 
@@ -28,7 +28,11 @@ When `Sync GitHub file Viewed` is enabled, all hunks in a file are marked Viewed
 
 ## Retention and deletion
 
-Saved review state is retained locally for up to 180 days after its pull-request context was most recently accessed. To avoid unnecessary writes, the extension updates that context's last-accessed time at most once per 24 hours. To keep storage use bounded, it retains at most 25,000 review-state and context-metadata entries; when the limit is exceeded, it removes the least recently accessed pull-request contexts, including all of their saved commit-range views, as complete units instead of leaving partial review state. The user can remove the current diff view's state sooner with `Reset page`, clear all extension data through Chrome, or uninstall the extension. `Reset page` removes locally saved hunk marks, line marks, and per-hunk collapsed state only for the displayed All commits or selected commit-range view. Other commit-range views and global display preferences remain unchanged; shared context access metadata is removed when no saved view remains for that pull request.
+Saved review state becomes eligible for local cleanup after its pull-request context has been inactive for more than 180 days. HunkMark checks for expired state when it activates on a supported pull-request diff page and during later cleanup checks while it is running. State is removed during cleanup, so eligible state can remain on the device beyond 180 days until HunkMark next runs cleanup. To avoid unnecessary writes, the extension updates that context's last-accessed time at most once per 24 hours.
+
+To keep storage use bounded, it retains at most 25,000 review-state and context-metadata entries; when the limit is exceeded, it removes the least recently accessed pull-request contexts, including all of their saved commit-range views, as complete units instead of leaving partial review state.
+
+The user can remove the current diff view's state sooner with `Reset page`, clear all extension data through Chrome, or uninstall the extension. `Reset page` removes locally saved hunk marks, line marks, and per-hunk collapsed state only for the displayed All commits or selected commit-range view. Other commit-range views and global display preferences remain unchanged; shared context access metadata is removed when no saved view remains for that pull request.
 
 Legacy review state from earlier versions is removed during the next storage cleanup. Local display preferences are preserved.
 
