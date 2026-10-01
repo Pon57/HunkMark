@@ -1170,6 +1170,27 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
     },
 
+    cachedFileSnapshotMatchesHunks(filePath, hunks) {
+      const progressKey = this.fileProgressStateKey(filePath);
+      const progress = this.fileProgressStateByKey.get(progressKey);
+      const snapshot = this.fileReviewSnapshotsByKey.get(progressKey);
+      return Boolean(
+        progress?.hunks === hunks.length &&
+        progress?.lines === hunks.reduce((total, hunk) => total + hunk.lines.length, 0) &&
+        snapshot?.hunks.length === hunks.length &&
+        hunks.every((hunk, index) => {
+          const previous = snapshot.hunks[index];
+          return previous.key === hunk.key &&
+            previous.lines.length === hunk.lines.length &&
+            hunk.lines.every((line, lineIndex) => {
+              const previousLine = previous.lines[lineIndex];
+              return previousLine.key === line.key &&
+                previousLine.contextFingerprint === line.contextFingerprint;
+            });
+        }),
+      );
+    },
+
     restoreCachedFileControllers(
       searchRoot = this.document,
       restorationState = null,
@@ -1192,6 +1213,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
       if (!restorationState?.discovered) {
         this.attachCachedHostContextExpansionBaselines(discovered);
+      }
+      const hunksByPath = new Map();
+      discovered.forEach((hunk) => {
+        const hunks = hunksByPath.get(hunk.filePath) ?? [];
+        hunks.push(hunk);
+        hunksByPath.set(hunk.filePath, hunks);
+      });
+      // Compare before progress adopts the newly mounted DOM. Equal totals
+      // alone cannot certify that the captured hunk and line identities survived.
+      const matchedCachedPaths = new Set(
+        Array.from(hunksByPath)
+          .filter(([filePath, hunks]) => this.cachedFileSnapshotMatchesHunks(filePath, hunks))
+          .map(([filePath]) => filePath),
+      );
+      if (restorationState) {
+        restorationState.cachedFileComplete = hunksByPath.size > 0 &&
+          matchedCachedPaths.size === hunksByPath.size;
       }
       discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
@@ -1245,6 +1283,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.fileProgressStateByKey.get(progressKey);
         const matchesCachedFile =
           explicitReveal &&
+          matchedCachedPaths.has(candidates[0].hunk.filePath) &&
           cachedProgress?.hunks === candidates.length &&
           cachedProgress?.lines === candidates.reduce(
             (total, { hunk }) => total + hunk.lines.length,
@@ -1317,7 +1356,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       const restored = restorationPlans.length > 0;
       if (restored) {
-        this.updateProgress();
+        this.updateProgressForControllers(
+          restorationPlans.map(({ hunk }) => this.controllersByRow.get(hunk.hunkRow)),
+        );
       }
       if (restorationState) {
         // The boolean return means "anything restored". Deferral requires
@@ -1345,6 +1386,58 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       }
       return restored;
+    },
+
+    finishConfirmedCachedFileReveals(fileElements) {
+      if (
+        this.deferredDiffLoadRefreshes.size > 0 ||
+        this.diffLoadHydrations.size > 0 ||
+        this.diffLoadHydrationRunningStates.size > 0 ||
+        this.activeHostContextExpansionIntents().length > 0 ||
+        Array.from(fileElements).some((fileElement) =>
+          this.fileDiffHasUnresolvedContent(fileElement),
+        )
+      ) {
+        return false;
+      }
+      const controllers = Array.from(this.controllersByRow.values());
+      if (controllers.some((controller) =>
+        !controller.hunkRow.isConnected || !this.reviewControllerIsCurrent(controller),
+      )) {
+        return false;
+      }
+      // Cached attachment appends to the map. Restore navigation order without
+      // rediscovering every unaffected diff on the page.
+      controllers.sort((left, right) => left.hunkRow === right.hunkRow ? 0 :
+        left.hunkRow.compareDocumentPosition(right.hunkRow) &
+          this.window.Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      this.controllersByRow.clear();
+      controllers.forEach((controller) =>
+        this.controllersByRow.set(controller.hunkRow, controller),
+      );
+      fileElements.forEach((fileElement) => {
+        const fileControllers = controllers.filter((controller) =>
+          controller.fileElement === fileElement,
+        );
+        const state = this.hunkStickyStateByFile.get(fileElement);
+        if (state) {
+          this.syncStickyHunkControllerOrder(state, fileControllers);
+          if (state.visible) this.syncStickyHunkHeader(state);
+        }
+        const guard = this.officialViewedRestoreGuards.get(
+          fileControllers[0]?.officialSuppressionKey,
+        );
+        if (guard) {
+          guard.cachedRestore = {
+            fileElement,
+            generation: this.diffMutationGenerationByFileElement.get(fileElement) ?? 0,
+          };
+        }
+      });
+      this.clearSettledOfficialViewedRestoreGuards();
+      this.scheduleStickyHunkLayout();
+      return true;
     },
 
     handleFileVisibilityClick(event) {
@@ -1425,6 +1518,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return;
       }
       guard.officialStateSettled = true;
+      const cachedRestore = guard.cachedRestore;
+      if (
+        cachedRestore?.fileElement.isConnected &&
+        (this.diffMutationGenerationByFileElement.get(cachedRestore.fileElement) ?? 0) ===
+          cachedRestore.generation
+      ) {
+        this.clearSettledOfficialViewedRestoreGuards();
+        return;
+      }
       this.scheduleRefresh();
     },
 
@@ -1486,6 +1588,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
             { cachedReveal },
           )
         : null;
+      if (prepaintRestore && cachedReveal) {
+        // Restore this explicit reveal from its file cache before the full
+        // refresh, just as an Expand file click does.
+        this.fileRevealRestorePending.add(
+          this.fileProgressStateKey(filePath),
+        );
+      }
       if (!prepaintRestore) {
         const pendingRestore =
           this.fileRevealPrepaintRestores.get(fileElement);

@@ -255,9 +255,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       mutations,
       expectedFileElements = new Set(),
     ) {
-      const legacyFileElements = Array.from(
-        this.document.querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR),
-      );
+      let legacyFileElements;
       const filePathsByElement = new Map();
       const filePathForElement = (fileElement) => {
         const knownPath =
@@ -266,6 +264,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (knownPath || !fileElement.isConnected) {
           return knownPath ?? null;
         }
+        legacyFileElements ??= Array.from(
+          this.document.querySelectorAll(this.constants.FILE_CONTAINER_SELECTOR),
+        );
         const fallbackIndex = legacyFileElements.indexOf(fileElement);
         return fallbackIndex >= 0
           ? this.resolveFilePath(fileElement, fallbackIndex)
