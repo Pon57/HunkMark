@@ -19,6 +19,11 @@ npm run package
 
 The generated ZIP and SHA-256 checksum are written to `dist/`.
 
+Release validation restricts manifest permissions and execution scope through
+`scripts/manifest-policy.cjs`. Intentional changes to those boundaries must update
+the policy and its tests. Display metadata and individual runtime modules are not
+duplicated in that policy.
+
 ## Releases
 
 Releases are managed by tagpr. Merging its release pull request creates the
