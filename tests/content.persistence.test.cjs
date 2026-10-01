@@ -501,10 +501,10 @@ test("restores collapsed hunks before paint after GitHub removes its diff body",
       );
       assert.equal(app.officialViewedRestoreGuards.size, 0);
     });
+    // A complete cached restore can paint without forcing a full refresh.
     assert.equal(
-      scheduled.filter(({ immediate }) => immediate === true).length >
-        immediateRefreshesBeforeRestore,
-      true,
+      scheduled.filter(({ immediate }) => immediate === true).length,
+      immediateRefreshesBeforeRestore,
     );
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
@@ -672,7 +672,7 @@ test("synchronizes modern file progress with expand and collapse before paint", 
   }
 });
 
-test("restores reviewed line backgrounds before rebuilding controllers", async () => {
+test("restores reviewed line backgrounds and controls before paint", async () => {
   const autoCollapsePreferenceKey =
     `${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
   const { app, dom } = await startExtension(
@@ -738,7 +738,7 @@ test("restores reviewed line backgrounds before rebuilding controllers", async (
     );
     assert.equal(
       fileElement.querySelectorAll(".hunkmark-line-control").length,
-      0,
+      2,
     );
     assert.equal(
       fileElement.querySelectorAll(".hunkmark-collapsed").length,
@@ -747,11 +747,7 @@ test("restores reviewed line backgrounds before rebuilding controllers", async (
     const progress = fileElement.querySelector(".hunkmark-file-progress");
     assert.ok(progress);
     assert.match(progress.textContent, /Hunks 2\/2 · Lines 2\/2/);
-    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
-    assert.equal(
-      fileElement.querySelectorAll(".hunkmark-line-control").length,
-      2,
-    );
+    assert.equal(app.controllersByRow.size, 2);
 
     await waitFor(() => {
       assert.equal(app.controllersByRow.size, 2);

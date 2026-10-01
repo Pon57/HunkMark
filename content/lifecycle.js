@@ -1265,18 +1265,37 @@ if (globalThis.HunkMarkContent?.extendApp) {
           return {
             restored: appearanceRestored || controllersRestored,
             canDefer: controllerRestoration.complete === true,
+            controlsReady: controllerRestoration.complete === true,
+            cachedFileComplete: controllerRestoration.cachedFileComplete === true,
           };
         });
         const restored = restorationResults.some((result) => result.restored);
         this.finishReadyFileRevealPrepaintRestores();
-        const canDeferRefresh =
-          restoreRoots.length > 0 &&
-          restoreRoots.every((root, index) =>
+        const deferredRestoreRoots = new Set(
+          restoreRoots.filter((root, index) =>
             root !== this.document &&
             restorationResults[index].canDefer &&
             !this.fileRevealPrepaintRestores.has(root) &&
             this.restorationRootOwnsAllHunks(root),
-          );
+          ),
+        );
+        const canDeferRefresh =
+          restoreRoots.length > 0 &&
+          deferredRestoreRoots.size === restoreRoots.length;
+        // A clean paint-only reveal does not validate controller identities.
+        const confirmedRestoreRoots = new Set(restoreRoots.filter((root, index) =>
+          deferredRestoreRoots.has(root) && restorationResults[index].controlsReady,
+        ));
+        if (
+          expectedFileDiffVisibility.revealed &&
+          hostDiffMutations.length === 0 &&
+          !hasUnscopedDiffMutation &&
+          confirmedRestoreRoots.size === restoreRoots.length &&
+          restorationResults.every((result) => result.cachedFileComplete) &&
+          this.finishConfirmedCachedFileReveals(confirmedRestoreRoots)
+        ) {
+          return;
+        }
         const diffLoadExpectedRoots =
           uniqueExpectedRestoreRoots.length > 0
             ? uniqueExpectedRestoreRoots
@@ -1294,7 +1313,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
               hostDiffMutations,
               expectedFileDiffVisibility.fileElements,
             );
-          this.suspendReviewControllersForDiffMutation(affectedFilePaths);
+          // Complete, owned cached restores already establish these controls'
+          // current identities. Keep them usable during the full refresh.
+          this.suspendReviewControllersForDiffMutation(affectedFilePaths, {
+            controllers: Array.from(this.controllersByRow.values()).filter(
+              (controller) => !confirmedRestoreRoots.has(controller.fileElement),
+            ),
+          });
         }
         if (refreshDeferredForDiffLoad) {
           this.suspendReviewControllersForDiffMutation(

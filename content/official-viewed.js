@@ -1193,6 +1193,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!restorationState?.discovered) {
         this.attachCachedHostContextExpansionBaselines(discovered);
       }
+      if (restorationState) {
+        const countsByFile = new Map();
+        discovered.forEach((hunk) => {
+          const counts = countsByFile.get(hunk.filePath) ?? { hunks: 0, lines: 0 };
+          counts.hunks += 1;
+          counts.lines += hunk.lines.length;
+          countsByFile.set(hunk.filePath, counts);
+        });
+        // Capture this before progress is updated from the newly mounted DOM:
+        // a partial render must not certify its own smaller file totals.
+        restorationState.cachedFileComplete = countsByFile.size > 0 &&
+          Array.from(countsByFile).every(([filePath, counts]) => {
+            const cached = this.fileProgressStateByKey.get(
+              this.fileProgressStateKey(filePath),
+            );
+            return cached?.hunks === counts.hunks && cached?.lines === counts.lines;
+          });
+      }
       discovered.forEach((hunk) => {
         if (this.controllersByRow.has(hunk.hunkRow)) {
           return;
@@ -1317,7 +1335,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       const restored = restorationPlans.length > 0;
       if (restored) {
-        this.updateProgress();
+        this.updateProgressForControllers(
+          restorationPlans.map(({ hunk }) => this.controllersByRow.get(hunk.hunkRow)),
+        );
       }
       if (restorationState) {
         // The boolean return means "anything restored". Deferral requires
@@ -1345,6 +1365,58 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       }
       return restored;
+    },
+
+    finishConfirmedCachedFileReveals(fileElements) {
+      if (
+        this.deferredDiffLoadRefreshes.size > 0 ||
+        this.diffLoadHydrations.size > 0 ||
+        this.diffLoadHydrationRunningStates.size > 0 ||
+        this.activeHostContextExpansionIntents().length > 0 ||
+        Array.from(fileElements).some((fileElement) =>
+          this.fileDiffHasUnresolvedContent(fileElement),
+        )
+      ) {
+        return false;
+      }
+      const controllers = Array.from(this.controllersByRow.values());
+      if (controllers.some((controller) =>
+        !controller.hunkRow.isConnected || !this.reviewControllerIsCurrent(controller),
+      )) {
+        return false;
+      }
+      // Cached attachment appends to the map. Restore navigation order without
+      // rediscovering every unaffected diff on the page.
+      controllers.sort((left, right) => left.hunkRow === right.hunkRow ? 0 :
+        left.hunkRow.compareDocumentPosition(right.hunkRow) &
+          this.window.Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      this.controllersByRow.clear();
+      controllers.forEach((controller) =>
+        this.controllersByRow.set(controller.hunkRow, controller),
+      );
+      fileElements.forEach((fileElement) => {
+        const fileControllers = controllers.filter((controller) =>
+          controller.fileElement === fileElement,
+        );
+        const state = this.hunkStickyStateByFile.get(fileElement);
+        if (state) {
+          this.syncStickyHunkControllerOrder(state, fileControllers);
+          if (state.visible) this.syncStickyHunkHeader(state);
+        }
+        const guard = this.officialViewedRestoreGuards.get(
+          fileControllers[0]?.officialSuppressionKey,
+        );
+        if (guard) {
+          guard.cachedRestore = {
+            fileElement,
+            generation: this.diffMutationGenerationByFileElement.get(fileElement) ?? 0,
+          };
+        }
+      });
+      this.clearSettledOfficialViewedRestoreGuards();
+      this.scheduleStickyHunkLayout();
+      return true;
     },
 
     handleFileVisibilityClick(event) {
@@ -1425,6 +1497,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return;
       }
       guard.officialStateSettled = true;
+      const cachedRestore = guard.cachedRestore;
+      if (
+        cachedRestore?.fileElement.isConnected &&
+        (this.diffMutationGenerationByFileElement.get(cachedRestore.fileElement) ?? 0) ===
+          cachedRestore.generation
+      ) {
+        this.clearSettledOfficialViewedRestoreGuards();
+        return;
+      }
       this.scheduleRefresh();
     },
 
@@ -1486,6 +1567,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
             { cachedReveal },
           )
         : null;
+      if (prepaintRestore && cachedReveal) {
+        // Restore this explicit reveal from its file cache before the full
+        // refresh, just as an Expand file click does.
+        this.fileRevealRestorePending.add(
+          this.fileProgressStateKey(filePath),
+        );
+      }
       if (!prepaintRestore) {
         const pendingRestore =
           this.fileRevealPrepaintRestores.get(fileElement);

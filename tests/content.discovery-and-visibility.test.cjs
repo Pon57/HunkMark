@@ -5,6 +5,7 @@ const {
   JSDOM,
   Core,
   root,
+  createDeferred,
   installContentStyles,
   delayReviewStorageRead,
   recordCachedDiscoveryRoots,
@@ -29,6 +30,8 @@ const {
   nonHunkDiffFixture,
   splitFixture,
   currentReactContextEvidenceFixture,
+  currentReactContextExpansionFixture,
+  currentReactSplitContextExpansionFixture,
   contextualLineFixture,
 } = require("./content-test-support.cjs");
 
@@ -1346,6 +1349,491 @@ test("hides a cold-cache Viewed removal until review state is restored", async (
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     reviewRead.release();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("finishes complete cached Viewed reveals without scanning unaffected files", async (t) => {
+  const cleanDom = new JSDOM(currentReactSplitContextExpansionFixture());
+  const entry = cleanDom.window.document.querySelector('[data-testid]').innerHTML
+    .replace('</h3>', '</h3><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>');
+  const tableHtml = cleanDom.window.document.querySelector('table').outerHTML;
+  cleanDom.window.close();
+  const fixture = '<!doctype html><html><body><div data-testid="progressive-diffs-list">' +
+    Array.from({ length: 32 }, (_, index) => entry.replaceAll('split', `split${index}`)).join('') +
+    '</div></body></html>';
+  for (const reviewed of [false, true]) {
+    await t.test(reviewed ? 'reviewed and collapsed' : 'unreviewed', async () => {
+      const { app, chrome, dom } = await startExtension(fixture, {
+        [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+      }, { scopeWaitTimeoutMs: 10_000 });
+      try {
+        const originalControllers = controllersFor(app);
+        const target = originalControllers[16];
+        const file = target.fileElement;
+        const control = file.querySelector('button[aria-pressed]');
+        if (reviewed) await app.setHunkViewed(target, true);
+        control.addEventListener('click', () => {
+          const viewed = control.getAttribute('aria-pressed') !== 'true';
+          setOfficialViewed(control, viewed);
+          if (viewed) file.querySelector('table')?.remove();
+          else file.insertAdjacentHTML('beforeend', tableHtml.replaceAll('split', 'split16'));
+        });
+        control.click();
+        await waitFor(() => {
+          assert.equal(app.controllersByRow.size, 31);
+          assert.equal(app.refreshRunning || app.refreshQueued, false);
+          assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+        });
+        let fullRefreshes = 0;
+        let globalProgressUpdates = 0;
+        const discoveryRoots = [];
+        const documentScans = [];
+        const refresh = app.refresh.bind(app);
+        const updateProgress = app.updateProgress.bind(app);
+        const discoverHunks = app.discoverHunks.bind(app);
+        const querySelectorAll = app.document.querySelectorAll.bind(app.document);
+        app.refresh = (...args) => { fullRefreshes += 1; return refresh(...args); };
+        app.updateProgress = (...args) => { globalProgressUpdates += 1; return updateProgress(...args); };
+        app.discoverHunks = (root, ...args) => { discoveryRoots.push(root); return discoverHunks(root, ...args); };
+        app.document.querySelectorAll = (selector) => {
+          if ([app.constants.FILE_CONTAINER_SELECTOR, app.constants.ACTIVE_DIFF_LOADING_SELECTOR,
+            '.hunkmark-file-progress'].includes(selector)) documentScans.push(selector);
+          return querySelectorAll(selector);
+        };
+        control.click();
+        await waitFor(() => {
+          assert.equal(app.controllersByRow.size, 32);
+          assert.equal(app.fileRevealPrepaintRestores.size, 0);
+          assert.equal(app.officialViewedReconcileGenerationByKey.size, 0);
+          assert.equal(app.officialViewedRestoreGuards.size, 0);
+        });
+        // Include the delayed authoritative-refresh and native-Viewed settlement
+        // windows: neither should restart work after the complete file restore.
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 200));
+        assert.equal(fullRefreshes, 0);
+        assert.equal(globalProgressUpdates, 0);
+        assert.deepEqual(discoveryRoots, []);
+        assert.deepEqual(documentScans, []);
+        const restored = controllersFor(app)[16];
+        assert.equal(restored.fileElement, file);
+        assert.equal(restored.marked, reviewed);
+        assert.equal(restored.collapsed, reviewed);
+        assert.deepEqual(controllersFor(app).map((controller) => controller.filePath),
+          originalControllers.map((controller) => controller.filePath));
+        originalControllers.forEach((controller, index) => {
+          if (index !== 16) assert.equal(controllersFor(app)[index], controller);
+        });
+        assert.match(file.querySelector('.hunkmark-file-progress').textContent,
+          reviewed ? /Hunks 1\/1.*Lines 2\/2/ : /Hunks 0\/1.*Lines 0\/2/);
+        assert.match(dom.window.document.querySelector('.hunkmark-panel-summary').textContent,
+          reviewed ? /Hunks 1 \/ 32.*Lines 2 \/ 64/ : /Hunks 0 \/ 32.*Lines 0 \/ 64/);
+        restored.input.click();
+        await waitFor(() => {
+          assert.equal(restored.input.disabled, false);
+          assert.equal(restored.collapsePending, false);
+          restored.lines.forEach((line) => {
+            assert.equal(Boolean(chrome.snapshot()[line.key]?.viewedAt), !reviewed);
+          });
+        });
+        assert.equal(fullRefreshes, 0);
+      } finally { app.stop(); dom.window.close(); }
+    });
+  }
+});
+
+test("reconciles cached Viewed reveals with partial or loading content", async (t) => {
+  const fixture = largeChangedBlockFixture(4, 32, { hunkSize: 2 })
+    .replace('</span>', '</span><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>');
+  for (const partial of [true, false]) {
+    await t.test(partial ? 'partial cached hunks' : 'active host loader', async () => {
+      const clean = new JSDOM(fixture);
+      const table = clean.window.document.querySelector('table');
+      if (partial) Array.from(table.rows).slice(3).forEach((row) => row.remove());
+      const tableHtml = table.outerHTML;
+      clean.window.close();
+      const { app, dom } = await startExtension(fixture, {
+        [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+      });
+      const held = createDeferred();
+      try {
+        const initial = controllersFor(app);
+        for (const controller of initial) await app.setHunkViewed(controller, true);
+        const file = initial[0].fileElement;
+        const control = file.querySelector('button[aria-pressed]');
+        control.addEventListener('click', () => {
+          const viewed = control.getAttribute('aria-pressed') !== 'true';
+          setOfficialViewed(control, viewed);
+          if (viewed) file.querySelector('table')?.remove();
+          else file.insertAdjacentHTML('beforeend', tableHtml + (partial ? '' :
+            '<span data-component="Spinner">Loading</span>'));
+        });
+        control.click();
+        await waitFor(() => {
+          assert.equal(app.controllersByRow.size, 0);
+          assert.equal(app.refreshRunning || app.refreshQueued, false);
+          assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+        });
+        const refresh = app.refresh.bind(app);
+        let fullRefreshes = 0;
+        app.refresh = async () => { fullRefreshes += 1; await held.promise; return refresh(); };
+        control.click();
+        await waitFor(() => {
+          assert.ok(fullRefreshes > 0 || app.deferredDiffLoadRefreshes.size > 0);
+        });
+        assert.equal(app.officialViewedRestoreGuards.values().next().value?.cachedRestore, undefined);
+        assert.equal(partial ? fullRefreshes > 0 : app.deferredDiffLoadRefreshes.size > 0, true);
+      } finally { held.resolve(); app.stop(); dom.window.close(); }
+    });
+  }
+});
+
+test("reconciles a newer semantic mutation before late Viewed settlement", async () => {
+  const fixture = currentReactSplitContextExpansionFixture()
+    .replace('</h3>', '</h3><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>');
+  const clean = new JSDOM(fixture);
+  const tableHtml = clean.window.document.querySelector('table').outerHTML;
+  clean.window.close();
+  const { app, dom } = await startExtension(fixture, {
+    [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+  });
+  const held = createDeferred();
+  try {
+    const initial = controllerAt(app);
+    await app.setHunkViewed(initial, true);
+    const file = initial.fileElement;
+    const control = file.querySelector('button[aria-pressed]');
+    control.addEventListener('click', () => {
+      const viewed = control.getAttribute('aria-pressed') !== 'true';
+      setOfficialViewed(control, viewed);
+      if (viewed) file.querySelector('table')?.remove();
+      else {
+        control.setAttribute('aria-busy', 'true');
+        file.insertAdjacentHTML('beforeend', tableHtml);
+      }
+    });
+    control.click();
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 0);
+      assert.equal(app.refreshRunning || app.refreshQueued, false);
+      assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+    });
+    control.click();
+    await waitFor(() => {
+      assert.ok(app.officialViewedRestoreGuards.get(initial.officialSuppressionKey)?.cachedRestore);
+      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(app.refreshRunning || app.refreshQueued, false);
+    });
+    const restored = controllerAt(app);
+    const refresh = app.refresh.bind(app);
+    const scheduleRefresh = app.scheduleRefresh.bind(app);
+    let refreshSchedules = 0;
+    app.refresh = async () => { await held.promise; return refresh(); };
+    app.scheduleRefresh = (...args) => { refreshSchedules += 1; return scheduleRefresh(...args); };
+    file.querySelector('.right-side-diff-cell .diff-text-inner').textContent = 'new identity';
+    await Promise.resolve();
+    assert.equal(restored.input.disabled, true);
+    assert.equal(app.reviewControllerIsSuspended(restored), true);
+    const beforeSettlement = refreshSchedules;
+    control.setAttribute('aria-busy', 'false');
+    await waitFor(() => {
+      assert.equal(app.officialViewedReconcileGenerationByKey.size, 0);
+      assert.ok(refreshSchedules > beforeSettlement);
+    });
+    held.resolve();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning || app.refreshQueued, false);
+      assert.notEqual(controllerAt(app), restored);
+      assert.equal(controllerAt(app).marked, false);
+      assert.equal(controllerAt(app).input.disabled, false);
+    });
+  } finally { held.resolve(); app.stop(); dom.window.close(); }
+});
+
+test("restores cached Viewed reveals before the full refresh completes", async (t) => {
+  const fixtures = [
+    {
+      name: "legacy",
+      html: largeChangedBlockFixture(4, 32, { hunkSize: 2 }).replace(
+        '<span class="file-info">src/large.js</span>',
+        '<span class="file-info">src/large.js</span><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>',
+      ),
+      changedText: "line-0000",
+    },
+    {
+      name: "React split",
+      html: currentReactSplitContextExpansionFixture().replace(
+        "</h3>",
+        '</h3><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>',
+      ),
+      changedText: "newValue",
+    },
+  ];
+  const states = [
+    { name: "unreviewed" },
+    { name: "partly reviewed", partial: true },
+    { name: "reviewed and collapsed", viewed: true },
+    { name: "changed identity", viewed: true, changed: true },
+  ];
+
+  for (const fixture of fixtures) {
+    for (const state of states) {
+      await t.test(`${fixture.name}: ${state.name}`, async () => {
+        const cleanDom = new JSDOM(fixture.html);
+        const tableHtml =
+          cleanDom.window.document.querySelector("table").outerHTML;
+        cleanDom.window.close();
+        const { app, chrome, dom } = await startExtension(fixture.html, {
+          [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+        });
+        const refreshHeld = createDeferred();
+        try {
+          installContentStyles(dom);
+          const initial = controllersFor(app);
+          const fileElement = initial[0].fileElement;
+          const control = fileElement.querySelector('button[aria-pressed]');
+          if (state.viewed) {
+            await app.setHunkViewed(initial[0], true);
+          } else if (state.partial) {
+            await app.setLineViewed(initial[0].lines[0], true);
+          }
+          const expected = initial.map((controller) => ({
+            marked: controller.marked,
+            collapsed: controller.collapsed,
+            lines: controller.lines.map((line) => line.marked),
+          }));
+          control.addEventListener("click", () => {
+            const viewed = control.getAttribute("aria-pressed") !== "true";
+            setOfficialViewed(control, viewed);
+            if (viewed) {
+              fileElement.querySelector("table")?.remove();
+            } else {
+              fileElement.insertAdjacentHTML(
+                "beforeend",
+                state.changed
+                  ? tableHtml.replace(fixture.changedText, "changedIdentity")
+                  : tableHtml,
+              );
+            }
+          });
+          control.click();
+          await waitFor(() => {
+            assert.equal(app.controllersByRow.size, 0);
+            assert.equal(app.refreshRunning, false);
+            assert.equal(app.refreshQueued, false);
+            assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+          });
+
+          const refresh = app.refresh.bind(app);
+          app.refresh = async () => {
+            await refreshHeld.promise;
+            return refresh();
+          };
+          control.click();
+          await Promise.resolve();
+
+          const table = fileElement.querySelector("table");
+          assertFileRevealState(dom, fileElement, table, Boolean(state.changed));
+          if (state.changed) {
+            assert.equal(app.controllersByRow.size, 0);
+          } else {
+            assert.equal(app.fileRevealRestorePending.size, 0);
+            assert.equal(app.diffMutationSuspendedControllers.size, 0);
+            assert.equal(
+              controllersFor(app).every((controller) =>
+                !controller.input.disabled &&
+                !controller.collapseButton.disabled &&
+                controller.lines.every((line) => !line.control?.disabled),
+              ),
+              true,
+            );
+            assert.deepEqual(
+              controllersFor(app).map((controller) => ({
+                marked: controller.marked,
+                collapsed: controller.collapsed,
+                lines: controller.lines.map((line) => line.marked),
+              })),
+              expected,
+            );
+            if (state.name === "unreviewed") {
+              // The global refresh is still held: the restored control must
+              // accept and persist a real hunk interaction on its own.
+              const controller = controllerAt(app);
+              controller.input.click();
+              assert.equal(controller.marked, true);
+              await waitFor(() => {
+                assert.equal(controller.input.disabled, false);
+                assert.equal(controller.collapsePending, false);
+                const stored = chrome.snapshot();
+                controller.lines.forEach((line) => {
+                  assert.ok(stored[line.key]?.viewedAt);
+                });
+              });
+              expected[0] = {
+                marked: true,
+                collapsed: true,
+                lines: controller.lines.map(() => true),
+              };
+            }
+          }
+
+          refreshHeld.resolve();
+          await waitFor(() => {
+            assert.equal(app.refreshRunning, false);
+            assert.equal(app.refreshQueued, false);
+            assert.equal(app.controllersByRow.size, initial.length);
+            assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+            assertFileRevealState(dom, fileElement, table, false);
+          });
+          assert.equal(app.fileRevealRestorePending.size, 0);
+          assert.equal(app.diffMutationSuspendedControllers.size, 0);
+          assert.equal(
+            controllersFor(app).every((controller) => !controller.input.disabled),
+            true,
+          );
+          if (state.changed) {
+            assert.equal(controllerAt(app).marked, false);
+            assert.equal(controllerAt(app).collapsed, false);
+          } else {
+            assert.deepEqual(
+              controllersFor(app).map((controller) => ({
+                marked: controller.marked,
+                collapsed: controller.collapsed,
+                lines: controller.lines.map((line) => line.marked),
+              })),
+              expected,
+            );
+          }
+        } finally {
+          refreshHeld.resolve();
+          app.stop();
+          dom.window.close();
+        }
+      });
+    }
+  }
+});
+
+test("keeps a cached reveal usable while another file needs reconciliation", async () => {
+  const html = currentReactContextExpansionFixture().replace(
+    "</h3>",
+    '</h3><button aria-label="Not Viewed" aria-pressed="false">Viewed</button>',
+  );
+  const cleanDom = new JSDOM(html);
+  const tableHtml = cleanDom.window.document.querySelector("table").outerHTML;
+  cleanDom.window.close();
+  const { app, chrome, dom } = await startExtension(html, {
+    [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:sync-github-file-viewed`]: false,
+  });
+  const refreshHeld = createDeferred();
+  try {
+    const initial = controllersFor(app);
+    const firstFile = initial[0].fileElement;
+    const second = initial[1];
+    const staleLineKey = second.lines[0].key;
+    const control = firstFile.querySelector('button[aria-pressed]');
+    control.addEventListener("click", () => {
+      const viewed = control.getAttribute("aria-pressed") !== "true";
+      setOfficialViewed(control, viewed);
+      if (viewed) {
+        firstFile.querySelector("table")?.remove();
+      } else {
+        firstFile.insertAdjacentHTML("beforeend", tableHtml);
+        second.lines[0].element.querySelector("code").textContent =
+          "+changed alongside the reveal";
+      }
+    });
+    control.click();
+    await waitFor(() => {
+      assert.equal(app.controllersByRow.size, 1);
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.officialViewedStorageIntentGenerationByKey.size, 0);
+    });
+
+    const refresh = app.refresh.bind(app);
+    app.refresh = async () => {
+      await refreshHeld.promise;
+      return refresh();
+    };
+    control.click();
+    await Promise.resolve();
+    const restored = controllersFor(app).find((controller) =>
+      controller.fileElement === firstFile,
+    );
+    assert.ok(restored);
+    assert.equal(app.reviewControllerIsSuspended(restored), false);
+    assert.equal(restored.input.disabled, false);
+    assert.equal(app.reviewControllerIsSuspended(second), true);
+    assert.equal(second.input.disabled, true);
+    second.input.click();
+    assert.equal(staleLineKey in chrome.snapshot(), false);
+
+    restored.input.click();
+    assert.equal(restored.marked, true);
+    await waitFor(() => {
+      assert.equal(restored.input.disabled, false);
+      assert.ok(chrome.snapshot()[restored.lines[0].key]?.viewedAt);
+    });
+    refreshHeld.resolve();
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(app.diffMutationSuspendedControllers.size, 0);
+      assert.equal(app.controllersByRow.size, 2);
+    });
+    assert.equal(restored.marked, true);
+    assert.equal(staleLineKey in chrome.snapshot(), false);
+  } finally {
+    refreshHeld.resolve();
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps changed identities locked after a clean paint-only reveal", async () => {
+  const html = currentReactSplitContextExpansionFixture().replace(
+    "</h3>",
+    '</h3><button aria-label="Expand file">Expand</button>',
+  );
+  const { app, chrome, dom } = await startExtension(html);
+  try {
+    const controller = controllerAt(app);
+    const table = controller.fileElement.querySelector("table");
+    const control = controller.fileElement.querySelector('[aria-label="Expand file"]');
+    const staleLine = controller.lines[0];
+    table.hidden = true;
+    app.constants = {
+      ...app.constants,
+      LAZY_LINE_CONTROL_FILE_LINE_THRESHOLD: 1,
+    };
+    app.scheduleRefresh = () => {};
+    let paintedCleanReveal = false;
+    const finishCleanReveal = app.finishCleanCachedFileReveal.bind(app);
+    app.finishCleanCachedFileReveal = (...args) => {
+      const result = finishCleanReveal(...args);
+      paintedCleanReveal ||= result;
+      return result;
+    };
+    control.addEventListener("click", () => {
+      control.setAttribute("aria-label", "Collapse file");
+      table.hidden = false;
+      staleLine.element.querySelector(".diff-text-inner").textContent = "changed identity";
+    });
+    control.click();
+    await Promise.resolve();
+
+    assert.equal(paintedCleanReveal, true);
+    assert.equal(app.fileRevealPrepaintRestores.size, 0);
+    assert.equal(app.reviewControllerIsSuspended(controller), true);
+    assert.equal(controller.input.disabled, true);
+    controller.input.disabled = false;
+    controller.input.click();
+    await Promise.resolve();
+    assert.equal(controller.marked, false);
+    assert.equal(staleLine.key in chrome.snapshot(), false);
+  } finally {
     app.stop();
     dom.window.close();
   }
