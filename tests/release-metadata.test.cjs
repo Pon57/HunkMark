@@ -24,7 +24,7 @@ function createReleaseFixture(t, version, { metadataVersion = version } = {}) {
   }
   fs.writeFileSync(path.join(fixture, "VERSION"), `${version}\n`);
   fs.mkdirSync(path.join(fixture, "scripts"));
-  for (const script of ["release-version.cjs", "sync-version.cjs", "validate-release.cjs"]) {
+  for (const script of ["release-version.cjs", "manifest-policy.cjs", "sync-version.cjs", "validate-release.cjs"]) {
     fs.copyFileSync(path.join(root, "scripts", script), path.join(fixture, "scripts", script));
   }
   // Validation reads the real release assets; only metadata and scripts live
@@ -97,3 +97,23 @@ test("synchronizes and validates a valid release version", (t) => {
   assert.equal(validation.error, undefined);
   assert.equal(validation.status, 0, validation.stderr);
 });
+
+for (const [name, mutate] of [
+  ["additional host permissions", (m) => m.host_permissions = ["<all_urls>"]],
+  ["a second content script", (m) => m.content_scripts.push({ matches: ["<all_urls>"], js: ["content.js"] })],
+  ["the page execution world", (m) => m.content_scripts[0].world = "MAIN"],
+]) {
+  test(`release validation rejects ${name}`, (t) => {
+    const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
+    const fixture = createReleaseFixture(t, version);
+    const file = path.join(fixture, "manifest.json");
+    const candidate = JSON.parse(fs.readFileSync(file, "utf8"));
+    mutate(candidate);
+    fs.writeFileSync(file, JSON.stringify(candidate));
+    const result = runReleaseScript(fixture, "validate-release.cjs");
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Manifest boundary:/);
+  });
+}

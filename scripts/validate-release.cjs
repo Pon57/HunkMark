@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { validateProjectReleaseVersion } = require("./release-version.cjs");
+const { validateManifestBoundary } = require("./manifest-policy.cjs");
 
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -13,6 +14,7 @@ const packageLock = JSON.parse(
 );
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 validateProjectReleaseVersion(version);
+validateManifestBoundary(manifest);
 
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(
@@ -64,12 +66,6 @@ assert.deepEqual(
 assert.ok(manifest.name.length <= 75, "Manifest name exceeds 75 characters");
 assert.ok(manifest.short_name.length <= 12, "Manifest short name exceeds 12 characters");
 assert.ok(manifest.description.length <= 132, "Manifest description exceeds 132 characters");
-assert.deepEqual(manifest.permissions, ["storage"], "Unexpected extension permissions");
-assert.deepEqual(
-  manifest.content_scripts?.[0]?.matches,
-  ["https://github.com/*"],
-  "Unexpected content-script host access",
-);
 
 const executableFiles = [
   ...new Set(
