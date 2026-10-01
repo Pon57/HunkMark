@@ -106,7 +106,7 @@ Initial public release.
 - Debounces DOM refresh work and scopes fallback hunk discovery to diff containers
 - Ignores extension-owned and diff-unrelated DOM mutations to avoid unnecessary full-page rescans
 - Skips diff-mutation inspection entirely outside pull-request diff routes
-- Rechecks retention on supported review-page refreshes at most once per day and enforces the 25,000-entry bound after later writes and cross-tab storage changes
+- Checks retention on each supported review-page activation and, on later refreshes of that page, after at least 24 hours since the last successful check; enforces the 25,000-entry bound after later writes and cross-tab storage changes
 - Reduces repeated row lookup and line fingerprint work during large diff discovery
 - Resets hunk and line state only for the currently displayed commit range
 - Isolates All commits and each range chosen with Select commits to view
