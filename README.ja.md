@@ -20,7 +20,9 @@ GitHub の Pull Request にある **Files changed** 画面に、hunk 単位・�
 
 ## インストール
 
-Chrome Web Store で公開されるまでは、リポジトリを取得してデベロッパーモードで読み込みます。
+[Chrome ウェブストア](https://chromewebstore.google.com/detail/cpoeaeelpknichiihdfemgamkmhhjmgf)から HunkMark をインストールできます。
+
+開発版をデベロッパーモードで試す場合は、リポジトリを取得します。
 
 ```sh
 git clone https://github.com/Pon57/HunkMark.git
@@ -32,7 +34,7 @@ git clone https://github.com/Pon57/HunkMark.git
 4. クローンした `HunkMark` フォルダーを指定する
 5. GitHub の Pull Request で **Files changed** ページを再読み込みする
 
-更新後は `chrome://extensions` で HunkMark を再読み込みしてください。
+更新後は `chrome://extensions` で開発用の HunkMark を再読み込みしてください。
 
 ## レビュー状態
 
