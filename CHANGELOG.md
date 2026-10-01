@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.2.0](https://github.com/Pon57/HunkMark/compare/v3.1.1...v3.2.0) - 2026-10-01
+
+### Bug Fixes
+- perf: avoid full refresh for file comments by @Pon57 in https://github.com/Pon57/HunkMark/pull/36
+- perf: keep large diff loading responsive by @Pon57 in https://github.com/Pon57/HunkMark/pull/38
+- fix: coalesce large diff settlement scans by @Pon57 in https://github.com/Pon57/HunkMark/pull/40
+- fix: preserve context expansion reviews during diff loading by @Pon57 in https://github.com/Pon57/HunkMark/pull/41
+- fix: prevent line Viewed controls from overlapping comments by @Pon57 in https://github.com/Pon57/HunkMark/pull/52
+- fix: restore Viewed diffs without a full-page refresh by @Pon57 in https://github.com/Pon57/HunkMark/pull/53
+### Enhancements
+- refactor: unify diff discovery preparation by @Pon57 in https://github.com/Pon57/HunkMark/pull/39
+- perf: skip redundant context baseline validation by @Pon57 in https://github.com/Pon57/HunkMark/pull/48
+- perf: scope file mutation cleanup to affected roots by @Pon57 in https://github.com/Pon57/HunkMark/pull/49
+- perf: stabilize sticky hunk scrolling and diff refreshes by @Pon57 in https://github.com/Pon57/HunkMark/pull/51
+### General Changes
+- test: clean up timed-out extension startup by @Pon57 in https://github.com/Pon57/HunkMark/pull/47
+### Dependency Updates
+- chore(deps): update songmu/tagpr action to v1.20.2 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/42
+- chore(deps): update songmu/tagpr action to v1.20.3 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/43
+- chore(deps): update songmu/tagpr action to v1.20.4 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/45
+- chore(deps): update dependency jsdom to v30.1.1 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/44
+- chore(deps): update songmu/tagpr action to v1.21.0 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/50
+
 ## [v3.1.1](https://github.com/Pon57/HunkMark/compare/v3.1.0...v3.1.1) - 2026-08-22
 
 ### Enhancements
