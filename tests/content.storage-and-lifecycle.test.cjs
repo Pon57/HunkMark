@@ -1878,6 +1878,170 @@ test("activates when the diff DOM arrives before the SPA URL change", async () =
   }
 });
 
+test("keeps controllers for hash-only history changes but refreshes routes and queries", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const initialControllers = controllersFor(app);
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = (...args) => { refreshes += 1; return refresh(...args); };
+
+    for (const hash of ["#diff-first", "#diff-second", ""]) {
+      dom.window.history.pushState({}, "", `/octo/repo/pull/123/files${hash}`);
+      dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+      assert.equal(app.checkForNavigation(), false);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(refreshes, 0);
+    assert.deepEqual(controllersFor(app), initialControllers);
+
+    dom.window.history.pushState({}, "", "/octo/repo/pull/124/files#diff-first");
+    dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+    await waitFor(() => {
+      assert.equal(app.currentScope, "github.com:octo/repo:pull:124");
+      assert.equal(app.refreshRunning, false);
+    });
+    assert.equal(refreshes, 1);
+
+    dom.window.history.pushState({}, "", "?w=1#diff-first");
+    dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+    await waitFor(() => assert.equal(refreshes, 2));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("classifies native traversals using their source entry after the URL was observed", async () => {
+  let navigation;
+  const { app, dom } = await startExtension(duplicateHunkFixture(), {}, {
+    setupWindow(window) {
+      navigation = new window.EventTarget();
+      Object.defineProperty(window, "navigation", { value: navigation });
+    },
+  });
+  try {
+    const refreshes = [];
+    app.scheduleRefresh = () => refreshes.push(dom.window.location.href);
+    const originalUrl = dom.window.location.href;
+    const emitEntry = (from, navigationType) => {
+      const event = new dom.window.Event("currententrychange");
+      Object.assign(event, { from: { url: from }, navigationType });
+      navigation.dispatchEvent(event);
+    };
+
+    dom.window.history.pushState({}, "", "#diff-first");
+    emitEntry(originalUrl, "push");
+    app.boundPopState({ isTrusted: true });
+    assert.equal(refreshes.length, 0);
+
+    const fromHash = dom.window.location.href;
+    dom.window.history.replaceState({}, "", originalUrl);
+    assert.equal(app.checkForNavigation(), false);
+    emitEntry(fromHash, "traverse");
+    app.boundPopState({ isTrusted: true });
+    assert.equal(refreshes.length, 0);
+
+    // A traversal between distinct entries with the same URL still refreshes.
+    emitEntry(originalUrl, "traverse");
+    app.boundPopState({ isTrusted: true });
+    assert.equal(refreshes.length, 1);
+
+    // Framework-generated popstate notifications retain their old behavior.
+    dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+    assert.equal(refreshes.length, 2);
+
+    app.stop();
+    const generation = app.hunkStickyNavigationGeneration;
+    dom.window.history.pushState({}, "", "#after-stop");
+    emitEntry(originalUrl, "push");
+    dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+    dom.window.dispatchEvent(new dom.window.PageTransitionEvent("pageshow", { persisted: true }));
+    assert.equal(refreshes.length, 2);
+    assert.equal(app.hunkStickyNavigationGeneration, generation);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("preserves same-URL popstate refreshes without Navigation API", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = (...args) => { refreshes += 1; return refresh(...args); };
+    dom.window.history.pushState({ restored: true }, "", dom.window.location.href);
+    dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+    await waitFor(() => assert.equal(refreshes, 1));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("processes diff DOM mutations that accompany a hash change", async () => {
+  const { app, dom } = await startExtension(currentReactContextExpansionFixture());
+  try {
+    const [grid] = dom.window.document.querySelectorAll('[role="grid"][aria-label^="Diff for: "]');
+    dom.window.history.pushState({}, "", "#diff-added");
+    appendAdditionHunk(dom, grid, { lineNumber: 90, text: "+hash-added" });
+    await waitFor(() => {
+      const controller = controllersFor(app).find((entry) =>
+        entry.lines.some((line) => line.text === "+hash-added"),
+      );
+      assert.ok(controller);
+      assert.equal(controller.input.disabled, false);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("retains deferred diff loading through an anchor navigation and completes settlement", async () => {
+  const { app, dom } = await startExtension(currentReactContextExpansionFixture());
+  try {
+    app.constants = {
+      ...app.constants,
+      DIFF_LOAD_FILE_HYDRATION_SETTLE_MS: 20,
+      DIFF_LOAD_REFRESH_SETTLE_MS: 20,
+    };
+    const [grid] = dom.window.document.querySelectorAll('[role="grid"][aria-label^="Diff for: "]');
+    const loader = appendDiffLoader(dom, grid);
+    await waitFor(() => assert.equal(app.deferredDiffLoadRefreshes.size, 1));
+    appendAdditionHunk(dom, grid, { lineNumber: 90, text: "+hash-loaded" });
+    await waitFor(() => {
+      assert.ok(controllersFor(app).some((entry) =>
+        entry.lines.some((line) => line.text === "+hash-loaded"),
+      ));
+      assert.equal(app.diffLoadHydrationRunningStates.size, 0);
+    });
+    const pending = [...app.deferredDiffLoadRefreshes.entries()];
+    let refreshes = 0;
+    const refresh = app.refresh.bind(app);
+    app.refresh = (...args) => { refreshes += 1; return refresh(...args); };
+    dom.window.history.pushState({}, "", "#diff-another-file");
+    assert.equal(app.checkForNavigation(), false);
+    assert.deepEqual([...app.deferredDiffLoadRefreshes.entries()], pending);
+    assert.equal(refreshes, 0);
+
+    loader.remove();
+    await waitFor(() => {
+      assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+      const controller = controllersFor(app).find((entry) =>
+        entry.lines.some((line) => line.text === "+hash-loaded"),
+      );
+      assert.ok(controller);
+      assert.equal(controller.input.disabled, false);
+      assert.ok(refreshes >= 1);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("ignores GitHub viewer metadata changes after activation", async () => {
   const { app, dom } = await startExtension(
     duplicateHunkFixture(),

@@ -1054,17 +1054,29 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
     },
 
-    checkForNavigation() {
+    checkForNavigation({ previousUrl = this.lastObservedUrl, forceRefresh = false } = {}) {
       const nextUrl = this.window.location.href;
-      if (nextUrl === this.lastObservedUrl) {
+      const observedUrl = this.lastObservedUrl;
+      if (nextUrl === observedUrl && !forceRefresh) {
         return false;
       }
-      this.cancelStickyHunkReturn();
-      this.cancelScheduledProgressUpdate();
-      this.deferredDiffLoadRefreshTimedOut = false;
-      this.refreshAfterDiffLoadHydrations = false;
-      this.clearDeferredDiffLoadRefreshes();
+      const nextPage = nextUrl.split("#", 1)[0];
+      const pageChanged = nextPage !== observedUrl.split("#", 1)[0];
+      const hashOnly = nextUrl !== previousUrl &&
+        nextPage === previousUrl.split("#", 1)[0];
       this.lastObservedUrl = nextUrl;
+      // An anchor traversal is still a navigation intent: a queued return
+      // must not override its scroll position, even when no diff scan is due.
+      this.cancelStickyHunkReturn();
+      if (!pageChanged && hashOnly) {
+        return false;
+      }
+      if (pageChanged) {
+        this.cancelScheduledProgressUpdate();
+        this.deferredDiffLoadRefreshTimedOut = false;
+        this.refreshAfterDiffLoadHydrations = false;
+        this.clearDeferredDiffLoadRefreshes();
+      }
       this.scheduleRefresh();
       return true;
     },
@@ -1379,7 +1391,23 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.boundFileVisibilityClick = (event) =>
         this.handleFileVisibilityClick(event);
       this.boundScheduleRefresh = () => this.scheduleRefresh();
-      this.boundNavigationChange = () => this.checkForNavigation();
+      const observesHistoryEntries =
+        typeof this.window.navigation?.addEventListener === "function";
+      this.boundNavigationChange = (event) => this.checkForNavigation({
+        previousUrl: typeof event?.from?.url === "string" ? event.from.url : undefined,
+        forceRefresh: event?.navigationType === "traverse",
+      });
+      // Navigation API handles native traversals, including same-URL entries.
+      // Preserve explicit popstate notifications and the legacy fallback.
+      this.boundPopState = (event) => this.checkForNavigation({
+        forceRefresh: !observesHistoryEntries || !event.isTrusted,
+      });
+      this.boundPageShow = (event) => {
+        if (event.persisted) {
+          this.cancelStickyHunkReturn();
+          this.scheduleRefresh();
+        }
+      };
       this.boundStickyHunkLayout = () => {
         this.scheduleStickyHunkLayout();
         this.scheduleViewportHydrationPriority();
@@ -1486,7 +1514,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundScheduleRefresh,
       );
       this.document.addEventListener("pjax:end", this.boundScheduleRefresh);
-      this.window.addEventListener("popstate", this.boundScheduleRefresh);
+      this.window.addEventListener("popstate", this.boundPopState);
+      this.window.addEventListener("pageshow", this.boundPageShow);
       this.window.addEventListener("scroll", this.boundStickyHunkLayout, {
         passive: true,
       });
@@ -1592,7 +1621,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundScheduleRefresh,
       );
       this.document.removeEventListener("pjax:end", this.boundScheduleRefresh);
-      this.window.removeEventListener("popstate", this.boundScheduleRefresh);
+      this.window.removeEventListener("popstate", this.boundPopState);
+      this.window.removeEventListener("pageshow", this.boundPageShow);
       this.window.removeEventListener("scroll", this.boundStickyHunkLayout);
       this.document.removeEventListener(
         "click",
