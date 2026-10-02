@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.2.2](https://github.com/Pon57/HunkMark/compare/v3.2.1...v3.2.2) - 2026-10-02
+
+### Bug Fixes
+- fix: keep Viewed stable on compact sticky hunk headers by @Pon57 in https://github.com/Pon57/HunkMark/pull/63
+### General Changes
+- test: reduce regression test overhead by @Pon57 in https://github.com/Pon57/HunkMark/pull/65
+
 ## [v3.2.1](https://github.com/Pon57/HunkMark/compare/v3.2.0...v3.2.1) - 2026-10-02
 
 ### Bug Fixes
