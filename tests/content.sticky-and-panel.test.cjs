@@ -1605,6 +1605,45 @@ test("reveals obscured focused controls without moving focus or scrolling visibl
   }
 });
 
+test("does not move a compact sticky header on pointer focus before a Viewed click", async (t) => {
+  for (const focusTarget of ["hunkCell", "input"]) {
+    await t.test(focusTarget, async () => {
+      const { app, dom } = await startExtension(duplicateHunkFixture());
+      try {
+        const controllers = Array.from(app.controllersByRow.values());
+        const [controller] = controllers;
+        const state = app.hunkStickyStateByFile.get(controller.fileElement);
+        const viewport = mockStickyRows(dom, controllers, [500, 700]);
+        state.stickyTop = 40;
+        viewport.scrollY = 550;
+        app.invalidateStickyHunkOrigins(state.fileElement);
+        app.updateStickyHunkState(state);
+        const target = controller[focusTarget];
+        if (focusTarget === "hunkCell") target.tabIndex = -1;
+        // A taller host row is clipped above the file header while sticky.
+        // GitHub focuses its cell when the pointer presses the Viewed label.
+        target.getBoundingClientRect = () => ({ top: 28, height: 48 });
+        const scrollCalls = [];
+        dom.window.scrollTo = (options) => scrollCalls.push(options);
+        controller.label.dispatchEvent(new dom.window.MouseEvent("mousedown", {
+          bubbles: true, button: 0,
+        }));
+        target.focus();
+        assert.equal(target.matches(":focus-visible"), false);
+        assert.deepEqual(scrollCalls, []);
+        assert.equal(controller.marked, false);
+
+        // Activation still runs when the pointer is released over the label.
+        controller.label.click();
+        await waitFor(() => assert.equal(controller.marked, true));
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("updates natural hunk origins after window resize without losing prepared state", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
@@ -3097,7 +3136,8 @@ for (const navigation of ['focus reveal', 'automatic return']) {
       dom.window.scrollTo = (options) => scrollCalls.push(options);
       controller.input.getBoundingClientRect = () => ({ top: 0 });
       if (navigation === 'focus reveal') {
-        app.revealFocusedStickyHunk(controller, controller.input);
+        controller.input.focus();
+        assert.equal(controller.input.matches(':focus-visible'), true);
       } else {
         app.scrollStickyHunkToOrigin(controller);
       }
