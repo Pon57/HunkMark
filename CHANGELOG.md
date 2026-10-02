@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [v3.2.1](https://github.com/Pon57/HunkMark/compare/v3.2.0...v3.2.1) - 2026-10-02
+
+### Bug Fixes
+- fix: validate project release versions consistently by @Pon57 in https://github.com/Pon57/HunkMark/pull/56
+- fix: validate manifest permissions and execution scope by @Pon57 in https://github.com/Pon57/HunkMark/pull/57
+- fix: stop stale content scripts when the extension disconnects by @Pon57 in https://github.com/Pon57/HunkMark/pull/62
+### Enhancements
+- ci: harden release packaging by @Pon57 in https://github.com/Pon57/HunkMark/pull/59
+- ci: package extension before merge by @Pon57 in https://github.com/Pon57/HunkMark/pull/60
+- perf: skip diff refreshes for hash-only navigation by @Pon57 in https://github.com/Pon57/HunkMark/pull/61
+### General Changes
+- docs: clarify retention cleanup timing by @Pon57 in https://github.com/Pon57/HunkMark/pull/54
+- docs: link installation instructions to Chrome Web Store by @Pon57 in https://github.com/Pon57/HunkMark/pull/58
+
 ## [v3.2.0](https://github.com/Pon57/HunkMark/compare/v3.1.1...v3.2.0) - 2026-10-01
 
 ### Bug Fixes
