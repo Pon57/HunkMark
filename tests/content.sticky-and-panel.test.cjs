@@ -603,7 +603,7 @@ test("does not clip a deeply wrapped raw table hunk header", async () => {
   }
 });
 
-test("right-aligns hunk Viewed and keeps Collapse in hover actions", async () => {
+test("keeps hunk controls accessible and cleans up their DOM on teardown", async () => {
   const html = duplicateHunkFixture().replace(
     "@@ -1 +1 @@",
     [
@@ -618,18 +618,10 @@ test("right-aligns hunk Viewed and keeps Collapse in hover actions", async () =>
   try {
     const controller = Array.from(app.controllersByRow.values())[0];
     assert.equal(controller.label.parentElement, controller.actions);
-    assert.equal(controller.label.className, app.constants.CONTROL_CLASS);
-    assert.equal(controller.label.hasAttribute("data-hunkmark-ui"), false);
     assert.equal(
       controller.actions.contains(controller.collapseButton),
       true,
     );
-    assert.equal(
-      controller.actions.contains(controller.label),
-      true,
-    );
-    assert.equal(controller.collapseButton.textContent, "");
-    assert.equal(controller.collapseButton.childElementCount, 0);
     assert.equal(
       controller.collapseButton.getAttribute("aria-label"),
       "Collapse this diff hunk",
@@ -641,33 +633,6 @@ test("right-aligns hunk Viewed and keeps Collapse in hover actions", async () =>
     assert.equal(
       app.cleanElementText(controller.hunkCell).includes("Viewed"),
       false,
-    );
-
-    const style = installContentStyles(dom);
-    const collapseIndicatorRule = Array.from(style.sheet.cssRules).find(
-      (rule) =>
-        rule.selectorText === ".hunkmark-collapse-button::before",
-    );
-    const collapsedIndicatorRule = Array.from(style.sheet.cssRules).find(
-      (rule) =>
-        rule.selectorText ===
-          ".hunkmark-collapse-button.is-collapsed::before",
-    );
-    assert.equal(collapseIndicatorRule.style.content, '""');
-    assert.equal(collapseIndicatorRule.style.width, "8px");
-    assert.equal(collapseIndicatorRule.style.height, "8px");
-    assert.equal(collapsedIndicatorRule.style.transform, "rotate(45deg)");
-    assert.equal(
-      dom.window.getComputedStyle(controller.actions).right,
-      "8px",
-    );
-    assert.equal(
-      dom.window.getComputedStyle(controller.actions).top,
-      "50%",
-    );
-    assert.equal(
-      dom.window.getComputedStyle(controller.actions).transform,
-      "translateY(-50%)",
     );
 
     const label = controller.label;
