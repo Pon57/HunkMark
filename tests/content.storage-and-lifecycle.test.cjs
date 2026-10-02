@@ -819,31 +819,40 @@ test("enforces the review storage limit after later writes", async () => {
   }
 });
 
-test("keeps the maximum line-state payload below Chrome's local quota", async () => {
-  const { app, dom } = await startExtension(duplicateHunkFixture());
+test("keeps saved line review records within the byte budget at the entry limit", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture(), {
+    [`${Core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`]: false,
+  });
   try {
-    assert.equal(app.constants.REVIEW_STORAGE_MAX_ENTRIES, 25_000);
-    const identifier = "A".repeat(43);
-    const stored = {};
-    for (
-      let index = 0;
-      index < app.constants.REVIEW_STORAGE_MAX_ENTRIES;
-      index += 1
-    ) {
-      const key =
-        `${Core.REVIEW_STORAGE_NAMESPACE}:line:` +
-        `${identifier}:${identifier}:${identifier}:${index}`;
-      stored[key] = {
-        baselineContextFingerprint: "B".repeat(43),
-        contextFingerprint: identifier,
-        viewedAt: Number.MAX_SAFE_INTEGER,
-      };
-    }
+    const [controller, other] = controllersFor(app);
+    const [line] = controller.lines;
+    const baseline = other.lines[0].contextFingerprint;
+    assert.notEqual(baseline, line.contextFingerprint);
+    line.hostContextExpansionBaselineContextFingerprint = baseline;
 
-    assert.equal(
-      Buffer.byteLength(JSON.stringify(stored), "utf8") < 10 * 1024 * 1024,
-      true,
-    );
+    await app.setLineViewed(line, true);
+    const records = [chrome.snapshot()[line.key]];
+    await app.setLineViewed(line, false);
+    app.startLineDrag(line, true, 7);
+    assert.equal(app.dragState?.anchorLine, line);
+    await app.finishLineDrag(true);
+    records.push(chrome.snapshot()[line.key]);
+    assert.equal(records[1].dragged, true);
+
+    const maxEntries = app.reviewStorageEntryLimit();
+    for (const record of records) {
+      assert.equal(record.contextFingerprint, line.contextFingerprint);
+      assert.equal(record.baselineContextFingerprint, baseline);
+      // Preserve every field from real writes, allowing for the longest
+      // timestamp and distinct occurrence ordinals at the entry limit.
+      const entryBytes = Buffer.byteLength(JSON.stringify({
+        [line.key]: { ...record, viewedAt: Number.MAX_SAFE_INTEGER },
+      }), "utf8") - 2;
+      const ordinalBytes = String(maxEntries - 1).length;
+      const projectedBytes = 2 + maxEntries * (entryBytes + ordinalBytes + 1);
+      assert.ok(projectedBytes < 10 * 1024 * 1024,
+        `Saved line records require ${projectedBytes} bytes at the entry limit`);
+    }
   } finally {
     app.stop();
     dom.window.close();
