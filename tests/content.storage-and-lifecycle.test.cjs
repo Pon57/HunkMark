@@ -1694,6 +1694,75 @@ test("keeps a committed line review when retention pruning fails", async () => {
   }
 });
 
+test("stops a disconnected runtime on an unchanged-URL poll before background progress", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controller = controllerAt(app);
+    await app.setHunkViewed(controller, true);
+    const stored = chrome.snapshot();
+    const warnings = captureWarnings(dom);
+    let progressUpdates = 0;
+    app.updateProgressForControllers = () => { progressUpdates += 1; };
+    app.scheduleProgressUpdate([controller]);
+    app.scheduleStickyHunkReturn(controller.key);
+
+    // Chrome removes the runtime ID when an unpacked extension is reloaded,
+    // even while its old content-script callbacks remain on the page.
+    chrome.invalidateContext();
+    delete chrome.api.runtime.id;
+    app.boundNavigationChange();
+
+    assert.equal(app.stopped, true);
+    assert.equal(app.observer, null);
+    assert.equal(app.navigationPollTimer, null);
+    assert.equal(app.progressUpdateTimer, null);
+    assert.equal(app.hunkStickyScrollFrameId, null);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(progressUpdates, 0);
+    assert.deepEqual(chrome.snapshot(), stored);
+    assert.equal(warnings.length, 0);
+    assert.ok(dom.window.document.getElementById(app.constants.RECONNECT_NOTICE_ID));
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("stops a disconnected runtime before processing a newly loading diff", async () => {
+  const { app, chrome, dom } = await startExtension(currentReactContextExpansionFixture());
+  try {
+    app.observer.disconnect();
+    const grid = fileGridFor(dom, "src/react-one.js");
+    const loader = appendDiffLoader(dom, grid);
+    let deferredScans = 0;
+    const defer = app.deferRefreshForActiveDiffLoads.bind(app);
+    app.deferRefreshForActiveDiffLoads = (...args) => {
+      deferredScans += 1;
+      return defer(...args);
+    };
+    chrome.invalidateContext();
+    delete chrome.api.runtime.id;
+    const mutation = {
+      type: "childList",
+      target: grid.querySelector("tbody"),
+      addedNodes: [loader],
+      removedNodes: [],
+    };
+    app.handleMutations([mutation]);
+
+    assert.equal(app.stopped, true);
+    assert.equal(deferredScans, 0);
+    assert.equal(app.deferredDiffLoadRefreshes.size, 0);
+    assert.equal(app.diffLoadHydrations.size, 0);
+    assert.equal(app.controllersByRow.size, 0);
+    app.handleMutations([mutation]);
+    assert.equal(deferredScans, 0);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("stops quietly when the extension context is invalidated", async () => {
   const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
   try {

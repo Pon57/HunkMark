@@ -129,6 +129,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     isExtensionContextInvalidated(error) {
       return (
+        !this.chrome?.runtime?.id ||
         !this.chrome?.storage?.local ||
         /extension context invalidated/i.test(
           String(error?.message ?? error ?? ""),
@@ -1055,6 +1056,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     checkForNavigation({ previousUrl = this.lastObservedUrl, forceRefresh = false } = {}) {
+      if (this.stopped || this.stopForInvalidatedContext()) {
+        return false;
+      }
       const nextUrl = this.window.location.href;
       const observedUrl = this.lastObservedUrl;
       if (nextUrl === observedUrl && !forceRefresh) {
@@ -1082,7 +1086,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     handleMutations(mutations) {
-      if (this.checkForNavigation()) {
+      if (
+        this.stopped ||
+        this.stopForInvalidatedContext() ||
+        this.checkForNavigation()
+      ) {
         return;
       }
 
