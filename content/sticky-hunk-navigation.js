@@ -15,12 +15,13 @@
         !state ||
         controller.suppressStickyHunkFocusReveal ||
         !(target instanceof this.window.Element) ||
+        !target.matches(":focus-visible") ||
         !row.classList.contains("hunkmark-sticky-hunk-prepared")
       ) {
         return;
       }
-      // A pushed-away row still has a sticky box inside the viewport, so
-      // native keyboard focusing alone does not scroll it out of the header.
+      // Pointer focus precedes click; moving the row then can lose the click.
+      // Reveal obscured keyboard focus, whose sticky box may remain onscreen.
       if (target.getBoundingClientRect().top < state.stickyTop) {
         this.window.scrollTo({
           behavior: "instant",
