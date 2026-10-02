@@ -364,33 +364,25 @@ test("captures GitHub's current file-header Expand all control", async () => {
   }
 });
 
-test("captures GitHub context expansion with modifier keys", async (t) => {
+test("captures GitHub context expansion with modifier keys", async () => {
   const modifierKeys = ["altKey", "ctrlKey", "metaKey", "shiftKey"];
-
-  for (const modifierKey of modifierKeys) {
-    await t.test(modifierKey, async () => {
-      const { app, dom } = await startExtension(
-        currentReactContextExpansionFixture(),
-      );
-      try {
-        const controller = controllersFor(app).find(
-          (candidate) => candidate.filePath === "src/react-one.js",
-        );
-        const control = controller.hunkRow.querySelector(
-          '[aria-label="Expand file from line 2 to line 9"]',
-        );
-
-        activateTrustedExpansion(app, control, {
-          [modifierKey]: true,
-        });
-
-        const intent = contextExpansionIntentFor(app, "src/react-one.js");
-        assert.ok(intent);
-        assert.equal(intent.source.control, control);
-      } finally {
-        stopExtensions({ app, dom });
-      }
-    });
+  const { app, dom } = await startExtension(currentReactContextExpansionFixture());
+  try {
+    const controller = controllersFor(app).find(
+      (candidate) => candidate.filePath === "src/react-one.js",
+    );
+    const control = controller.hunkRow.querySelector(
+      '[aria-label="Expand file from line 2 to line 9"]',
+    );
+    for (const modifierKey of modifierKeys) {
+      activateTrustedExpansion(app, control, { [modifierKey]: true });
+      const intent = contextExpansionIntentFor(app, "src/react-one.js");
+      assert.ok(intent, modifierKey);
+      assert.equal(intent.source.control, control, modifierKey);
+      app.clearAllHostContextExpansionIntents();
+    }
+  } finally {
+    stopExtensions({ app, dom });
   }
 });
 
