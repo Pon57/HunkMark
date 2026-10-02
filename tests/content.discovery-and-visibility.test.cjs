@@ -631,10 +631,12 @@ test("batches new hunk host reads before controller DOM writes", async () => {
 });
 
 test("yields queued page tasks within discovery of one huge file", async () => {
+  // Cross multiple row chunks and the large-text/lazy-control thresholds.
+  const lineCount = 768;
   let pageTaskRan = false;
   let schedulerYields = 0;
   const { app, dom } = await startExtension(
-    largeChangedBlockFixture(3_000, 48),
+    largeChangedBlockFixture(lineCount, 48),
     {},
     {
       setupWindow(window) {
@@ -660,7 +662,7 @@ test("yields queued page tasks within discovery of one huge file", async () => {
       assert.equal(app.controllersByRow.size, 1);
     }, 30_000);
     const controller = controllerAt(app, 0);
-    assert.equal(controller.lines.length, 3_000);
+    assert.equal(controller.lines.length, lineCount);
     assert.equal(pageTaskRan, true);
     assert.equal(schedulerYields > 0, true);
 
@@ -676,7 +678,7 @@ test("yields queued page tasks within discovery of one huge file", async () => {
       queuedDuringDiscovery = true;
     }, 0);
     const discovered = await app.discoverHunks();
-    assert.equal(discovered?.[0].lines.length, 3_000);
+    assert.equal(discovered?.[0].lines.length, lineCount);
     assert.equal(discoveryYields > 0, true);
     assert.equal(queuedDuringDiscovery, true);
   } finally {
