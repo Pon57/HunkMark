@@ -12,6 +12,12 @@
     "--hunkmark-sticky-hunk-auxiliary-start",
     "--hunkmark-sticky-hunk-auxiliary-end",
   ];
+  const hostClasses = (value) => (value ?? "").split(/\s+/)
+    .filter((name) => name && !name.startsWith("hunkmark-")).join(" ");
+  const hostStyles = (style) => Array.from(style)
+    .filter((property) => !property.startsWith("--hunkmark-"))
+    .map((property) => `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`)
+    .join(";");
   const setSurfacePosition = (element, property, value) => {
     const next = `${Math.round(value * 100) / 100}px`;
     if (element.style.getPropertyValue(property) !== next ||
@@ -75,6 +81,8 @@
 
     removeStickyHunkNaturalSurface(controller) {
       const record = controller.stickyHunkNaturalLayer;
+      controller.stickyHunkNaturalContentObserver?.disconnect();
+      controller.stickyHunkNaturalContentObserver = null;
       controller.stickyHunkNaturalSurface?.remove();
       controller.stickyHunkNaturalSurface = null;
       controller.stickyHunkNaturalRow = null;
@@ -90,6 +98,41 @@
           this.hunkStickyNaturalLayersByParent.delete(record.parent);
         }
       }
+    },
+
+    observeStickyHunkNaturalContent(controller, surface) {
+      controller.stickyHunkNaturalContentObserver = new this.window.MutationObserver((mutations) => {
+        if (this.stopped || controller.stickyHunkNaturalSurface !== surface || !surface.isConnected) {
+          return;
+        }
+        let previousStyle;
+        const contentChanged = mutations.some((mutation) => {
+          if (this.mutationIsExtensionOnly(mutation)) return false;
+          if (mutation.type !== "attributes") return true;
+          const current = mutation.target.getAttribute(mutation.attributeName);
+          if (mutation.oldValue === current) return false;
+          if (mutation.attributeName === "class") {
+            return hostClasses(mutation.oldValue) !== hostClasses(current);
+          }
+          if (mutation.attributeName === "style") {
+            previousStyle ??= this.document.createElement("span").style;
+            previousStyle.cssText = mutation.oldValue ?? "";
+            return hostStyles(previousStyle) !== hostStyles(mutation.target.style);
+          }
+          return true;
+        });
+        if (contentChanged) {
+          controller.stickyHunkNaturalContentDirty = true;
+          this.scheduleStickyHunkLayout();
+        }
+      });
+      controller.stickyHunkNaturalContentObserver.observe(controller.hunkRow, {
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeOldValue: true,
+        subtree: true,
+      });
     },
 
     rebuildStickyHunkNaturalSurface(controller, surface) {
@@ -133,7 +176,7 @@
         const source = sources[index];
         const sourceControl = source?.closest("button, a, [tabindex]") ?? source;
         const targetControl = target.closest("button, a, [tabindex]") ?? target;
-        target.addEventListener("click", (event) => {
+        targetControl.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopImmediatePropagation();
           if (event.button !== 0 || !this.reviewControllerIsCurrent(controller) ||
@@ -204,15 +247,17 @@
       }
       // Host rerenders can remove our class while leaving the layer connected.
       // Recheck native positioning only when its class or inline position changes.
-      if (!record.positionClassAdded) {
-        const parentClass = Array.from(geometry.parent.classList)
-          .filter((value) => value !== "hunkmark-sticky-file-measuring").join(" ");
-        const parentPosition = geometry.parent.style.position;
-        if (record.positionParentClass !== parentClass || record.positionParentPosition !== parentPosition) {
-          record.positionParentClass = parentClass;
-          record.positionParentPosition = parentPosition;
-          record.positionClassAdded = this.window.getComputedStyle(geometry.parent).position === "static";
+      const parentClass = Array.from(geometry.parent.classList)
+        .filter((value) => value !== "hunkmark-sticky-file-measuring" && value !== "hunkmark-sticky-hunk-container")
+        .join(" ");
+      const parentPosition = geometry.parent.style.position;
+      if (record.positionParentClass !== parentClass || record.positionParentPosition !== parentPosition) {
+        if (record.positionClassAdded) {
+          geometry.parent.classList.remove("hunkmark-sticky-hunk-container");
         }
+        record.positionParentClass = parentClass;
+        record.positionParentPosition = parentPosition;
+        record.positionClassAdded = this.window.getComputedStyle(geometry.parent).position === "static";
       }
       if (record.positionClassAdded && !geometry.parent.classList.contains("hunkmark-sticky-hunk-container")) {
         geometry.parent.classList.add("hunkmark-sticky-hunk-container");
@@ -230,6 +275,7 @@
         controller.stickyHunkNaturalState = state;
         controller.stickyHunkNaturalLayer = record;
         controller.stickyHunkNaturalContentDirty = true;
+        this.observeStickyHunkNaturalContent(controller, surface);
       }
       if (controller.stickyHunkNaturalContentDirty) {
         this.rebuildStickyHunkNaturalSurface(controller, surface);

@@ -98,7 +98,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
 test("keeps natural header copies out of diff discovery and forwards their clicks to the real header", async () => {
   const html = duplicateHunkFixture().replace(
     "@@ -1 +1 @@</td>",
-    '@@ -1 +1 @@<button id="native-expand" class="js-expand" aria-label="Expand up"></button></td>',
+    '@@ -1 +1 @@<button id="native-expand" class="js-expand" aria-label="Expand up"></button><button id="native-kebab"><span class="hunk-kebab-icon"></span></button></td>',
   );
   const { app, dom } = await startExtension(html);
   try {
@@ -155,6 +155,20 @@ test("keeps natural header copies out of diff discovery and forwards their click
     const scrollCalls = [];
     dom.window.scrollTo = (options) => scrollCalls.push(options);
     controller.hunkRow.classList.add("hunkmark-sticky-hunk-active");
+    const kebab = sourceRow.querySelector("#native-kebab");
+    const kebabProxy = controller.stickyHunkNaturalRow.querySelector(".hunk-kebab-icon").closest("button");
+    let kebabClicks = 0;
+    kebab.addEventListener("click", () => { kebabClicks += 1; });
+    kebabProxy.click();
+    assert.equal(kebabClicks, 1, "the button padding must activate the original control");
+    kebabProxy.querySelector(".hunk-kebab-icon").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    assert.equal(kebabClicks, 2, "the icon must forward exactly one click");
+    assert.equal(scrollCalls.length, 0);
+    assert.equal(dom.window.document.activeElement, kebab);
+    kebab.disabled = true;
+    kebabProxy.click();
+    assert.equal(kebabClicks, 2);
+
     controller.stickyHunkNaturalRow.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0 }));
     assert.equal(scrollCalls.at(-1).top, 559);
   } finally {
@@ -205,8 +219,13 @@ test("reuses natural surfaces without layout reads, rebuilds changed content, an
         app.updateStickyHunkState(state);
         assert.match(surface.textContent, /updated/);
         const afterChangeReads = reads;
+        const observer = controller.stickyHunkNaturalContentObserver;
+        let disconnects = 0;
+        const disconnect = observer.disconnect.bind(observer);
+        observer.disconnect = () => { disconnects += 1; disconnect(); };
         surface.remove();
         app.updateStickyHunkState(state);
+        assert.equal(disconnects, 1);
         assert.equal(reads, afterChangeReads);
         assert.notEqual(controller.stickyHunkNaturalSurface, surface);
         assert.ok(controller.stickyHunkNaturalSurface.isConnected);
@@ -225,9 +244,71 @@ test("reuses natural surfaces without layout reads, rebuilds changed content, an
   }
 });
 
+test("updates natural copies for same-size host mutations and ignores extension-only changes", async (t) => {
+  for (const [name, html] of [["table", duplicateHunkFixture()], ["grid", modernGridFixture()]]) {
+    await t.test(name, async () => {
+      const fixture = html.replace(/(@@[^<]+)/, '$1<span class="native-caption">Old</span>');
+      const { app, dom } = await startExtension(fixture);
+      try {
+        installContentStyles(dom);
+        const controllers = Array.from(app.controllersByRow.values());
+        const controller = controllers[0];
+        const input = controller.input;
+        const state = app.hunkStickyStateByFile.get(controller.fileElement);
+        const viewport = mockStickyRows(dom, controllers, controllers.map((_, i) => 600 + i * 300));
+        controllers.forEach((c, i) => {
+          c.hunkRow.getBoundingClientRect = () => ({
+            top: 600 + i * 300 - viewport.scrollY, left: 20, width: 800, height: 64,
+          });
+        });
+        state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY, left: 10, width: 900 });
+        app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+        app.markStickyHunkContentDirty(state);
+        app.invalidateStickyHunkOrigins(state.fileElement);
+        app.updateStickyHunkState(state);
+        const surface = controller.stickyHunkNaturalSurface;
+        const caption = controller.hunkRow.querySelector(".native-caption");
+        const copy = () => controller.stickyHunkNaturalRow.querySelector(".native-caption");
+
+        caption.firstChild.data = "New";
+        await waitFor(() => assert.equal(copy().textContent, "New"));
+        caption.textContent = "Now";
+        await waitFor(() => {
+          assert.equal(copy().textContent, "Now");
+          assert.equal(app.refreshRunning || app.refreshQueued, false);
+        });
+        caption.classList.add("host-theme");
+        caption.style.color = "red";
+        caption.setAttribute("title", "Updated");
+        await waitFor(() => {
+          assert.ok(copy().classList.contains("host-theme"));
+          assert.equal(copy().style.color, "red");
+          assert.equal(copy().title, "Updated");
+        });
+        assert.equal(app.controllersByRow.get(controller.hunkRow), controller);
+        assert.equal(controller.input, input);
+        assert.equal(controller.stickyHunkNaturalSurface, surface);
+
+        const naturalRow = controller.stickyHunkNaturalRow;
+        controller.hunkRow.classList.add("hunkmark-sticky-hunk-active");
+        controller.hunkRow.style.setProperty("--hunkmark-sticky-hunk-push-distance", "24px");
+        controller.label.classList.add("is-viewed");
+        viewport.scrollY = 500;
+        app.updateStickyHunkState(state);
+        await new Promise((resolve) => dom.window.setTimeout(resolve, 40));
+        assert.equal(controller.stickyHunkNaturalRow, naturalRow);
+        assert.equal(controller.stickyHunkNaturalContentDirty, false);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("restores natural layer parent positioning after host class rerenders without scroll-time style reads", async (t) => {
   for (const [name, html] of [["table", duplicateHunkFixture()], ["grid", modernGridFixture()]]) {
-    for (const positioning of ["extension", "host class", "host style"]) {
+    for (const positioning of ["extension", "host class", "host style", "inline static", "specific static"]) {
       await t.test(`${name}, ${positioning} positioned`, async () => {
         const { app, dom } = await startExtension(html);
         let parent;
@@ -241,6 +322,13 @@ test("restores natural layer parent positioning after host class rerenders witho
           parent = state.fileElement;
           parent.classList.add(positioning === "host class" ? "host-positioned" : "host-static");
           if (positioning === "host style") parent.style.position = "relative";
+          if (positioning === "inline static") parent.style.position = "static";
+          if (positioning === "specific static") {
+            parent.id = "positioning-parent";
+            const hostStyle = dom.window.document.createElement("style");
+            hostStyle.textContent = "#positioning-parent { position: static; }";
+            dom.window.document.head.append(hostStyle);
+          }
           const viewport = mockStickyRows(dom, controllers, controllers.map((_, i) => 600 + i * 300));
           let rowReads = 0;
           controllers.forEach((c, i) => {
@@ -262,7 +350,8 @@ test("restores natural layer parent positioning after host class rerenders witho
           app.updateStickyHunkState(state);
           const layer = controllers[0].stickyHunkNaturalLayer.layer;
           const surfaces = controllers.map((c) => c.stickyHunkNaturalSurface);
-          assert.equal(parent.classList.contains("hunkmark-sticky-hunk-container"), positioning === "extension");
+          assert.equal(parent.classList.contains("hunkmark-sticky-hunk-container"), !positioning.startsWith("host "));
+          assert.equal(getComputedStyle(parent).position, "relative");
           const initialReads = parentStyleReads;
           const initialRowReads = rowReads;
           viewport.scrollY = 500;
@@ -284,6 +373,15 @@ test("restores natural layer parent positioning after host class rerenders witho
           viewport.scrollY = 550;
           app.updateStickyHunkState(state);
           assert.equal(parentStyleReads, afterRerenderReads);
+
+          parent.style.position = "absolute";
+          app.updateStickyHunkState(state);
+          assert.equal(getComputedStyle(parent).position, "absolute", "preserve new native positioning");
+          assert.equal(parent.classList.contains("hunkmark-sticky-hunk-container"), false);
+          const afterNativePositionReads = parentStyleReads;
+          viewport.scrollY = 575;
+          app.updateStickyHunkState(state);
+          assert.equal(parentStyleReads, afterNativePositionReads);
         } finally {
           app.stop();
           assert.equal(parent?.classList.contains("hunkmark-sticky-hunk-container"), false);
@@ -354,6 +452,7 @@ test("bounds natural surfaces to the prepared window in a large file", async () 
       app.updateStickyHunkState(state);
       const surfaces = state.fileElement.querySelectorAll(".hunkmark-sticky-hunk-natural-surface");
       assert.equal(surfaces.length, state.preparedControllers.size);
+      assert.equal(controllers.filter((c) => c.stickyHunkNaturalContentObserver).length, surfaces.length);
       assert.ok(surfaces.length <= 30);
       assert.equal(app.findHunkMarkers(state.fileElement).length, controllers.length);
     }

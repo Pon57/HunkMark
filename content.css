@@ -57,7 +57,7 @@
 
 /* Natural header copies scroll behind a statically clipped sticky row.
    Their overlap shrinks the header without sampling a clip on each frame. */
-.hunkmark-sticky-hunk-container { position: relative; }
+.hunkmark-sticky-hunk-container { position: relative !important; }
 
 .hunkmark-sticky-hunk-natural-layer {
   position: absolute;
