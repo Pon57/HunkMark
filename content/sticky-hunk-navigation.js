@@ -28,11 +28,12 @@
         // space into a diff table or moving the host's content.
         this.document.documentElement.append(boundary);
       }
+      return this.hunkStickyScrollReservation;
     },
 
     settleStickyHunkScrollRange() {
       const boundary = this.hunkStickyScrollBoundary;
-      if (!boundary) {
+      if (!boundary || this.hunkStickyScrollBoundaryTarget === null) {
         return;
       }
       const top = Number(this.window.scrollY) || 0;
@@ -254,6 +255,13 @@
       }
     },
 
+    releaseStickyHunkScrollReservation(reservation) {
+      if (reservation && this.hunkStickyScrollReservation === reservation &&
+          this.hunkStickyPointerScrollReservation !== reservation) {
+        this.clearPendingStickyHunkScrollRange();
+      }
+    },
+
     deferPendingStickyHunkScrollRangeCleanup(reservation = this.hunkStickyScrollReservation) {
       if (!reservation || this.hunkStickyScrollBoundaryTarget !== null) return;
       // Finish the pointer activation before shrinking the scroll range. A
@@ -284,13 +292,18 @@
         focusTarget = null,
         navigationGeneration = this.hunkStickyNavigationGeneration,
         preserveStickySize = false,
+        reservation = null,
       } = {},
     ) {
       const returnIsCurrent = () =>
         navigationGeneration === this.hunkStickyNavigationGeneration &&
+        (!reservation || this.hunkStickyScrollReservation === reservation) &&
         this.stickyHunkScrollPositionMatches(expectedScrollPosition);
+      const releaseReservation = () => reservation
+        ? this.releaseStickyHunkScrollReservation(reservation)
+        : this.clearPendingStickyHunkScrollRange(targetKey, navigationGeneration);
       if (!returnIsCurrent()) {
-        this.clearPendingStickyHunkScrollRange(targetKey, navigationGeneration);
+        releaseReservation();
         return;
       }
       if (this.hunkStickyScrollFrameId !== null) {
@@ -299,14 +312,14 @@
       this.hunkStickyScrollFrameId = this.window.requestAnimationFrame(() => {
         if (!returnIsCurrent()) {
           this.hunkStickyScrollFrameId = null;
-          this.clearPendingStickyHunkScrollRange(targetKey, navigationGeneration);
+          releaseReservation();
           return;
         }
         this.hunkStickyScrollFrameId = this.window.requestAnimationFrame(
           () => {
             this.hunkStickyScrollFrameId = null;
             if (!returnIsCurrent()) {
-              this.clearPendingStickyHunkScrollRange(targetKey, navigationGeneration);
+              releaseReservation();
               return;
             }
             const target = this.reviewControllerForKey(targetKey);
@@ -317,7 +330,7 @@
               }
               this.scrollStickyHunkToOrigin(target, { preserveStickySize });
             } else {
-              this.clearPendingStickyHunkScrollRange(targetKey, navigationGeneration);
+              releaseReservation();
             }
           },
         );

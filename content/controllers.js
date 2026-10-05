@@ -1120,9 +1120,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const focusReturnTarget =
         Boolean(returnTarget) &&
         this.stickyHunkOriginFocusTarget(controller);
-      if (returnTarget) {
-        this.reserveStickyHunkScrollRange(returnTarget);
-      }
+      const scrollReservation = returnTarget
+        ? this.reserveStickyHunkScrollRange(returnTarget) : null;
       controller.collapsed = collapsed;
       controller.collapsePending = true;
       this.applyControllerAppearance(controller);
@@ -1195,7 +1194,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
               expectedScrollPosition: returnScrollPosition,
               focusTarget: focusReturnTarget,
               navigationGeneration,
+              reservation: scrollReservation,
             });
+          } else {
+            this.releaseStickyHunkScrollReservation(scrollReservation);
           }
         }
       }
@@ -1215,9 +1217,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const navigationGeneration = this.hunkStickyNavigationGeneration;
       const wasViewed = controller.marked;
       const wasSharedCompletion = controller.sharedCompletion;
-      if (viewed && !wasViewed && returnToOriginFromSticky && this.autoCollapseViewed) {
-        this.reserveStickyHunkScrollRange(controller);
-      }
+      const scrollReservation = viewed && !wasViewed && returnToOriginFromSticky && this.autoCollapseViewed
+        ? this.reserveStickyHunkScrollRange(controller) : null;
       controller.marked = viewed;
       controller.sharedCompletion = Boolean(
         viewed && controller.sharedCompletionKey,
@@ -1340,7 +1341,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
               focusTarget: focusReturnTarget,
               navigationGeneration,
               preserveStickySize: true,
+              reservation: scrollReservation,
             });
+          } else {
+            this.releaseStickyHunkScrollReservation(scrollReservation);
           }
         }
       }
@@ -1375,6 +1379,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       let returnTarget = null;
       let focusReturnTarget = null;
+      let scrollReservation = null;
       affectedControllers.forEach((affectedController) => {
         this.updateAggregateFromLines(affectedController);
         affectedController.sharedCompletion = Boolean(
@@ -1384,7 +1389,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const previous = previousControllers.get(affectedController);
         if (!previous.marked && affectedController.marked && this.autoCollapseViewed &&
           affectedController.hunkRow.classList.contains("hunkmark-sticky-hunk-active")) {
-          this.reserveStickyHunkScrollRange(affectedController);
+          scrollReservation = this.reserveStickyHunkScrollRange(affectedController);
         }
         previous.collapseTransition = this.applyViewedCollapseTransition(
           affectedController,
@@ -1529,7 +1534,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
               focusTarget: focusReturnTarget,
               navigationGeneration,
               preserveStickySize: true,
+              reservation: scrollReservation,
             });
+          } else {
+            this.releaseStickyHunkScrollReservation(scrollReservation);
           }
         }
       }
