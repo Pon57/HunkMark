@@ -1129,6 +1129,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       this.finishReadyFileRevealPrepaintRestores();
       this.clearSettledOfficialViewedRestoreGuards();
+      this.pruneStickyHunkScrollRange();
     },
   });
 }

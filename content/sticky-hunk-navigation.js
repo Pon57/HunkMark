@@ -8,6 +8,62 @@
   }
 
   Object.assign(App.prototype, {
+    reserveStickyHunkScrollRange(controller, top = this.window.scrollY) {
+      let boundary = this.hunkStickyScrollBoundary;
+      if (!boundary) {
+        boundary = this.document.createElement("div");
+        boundary.className = "hunkmark-sticky-scroll-boundary";
+        boundary.setAttribute("data-hunkmark-ui", "true");
+        boundary.setAttribute("aria-hidden", "true");
+        this.hunkStickyScrollBoundary = boundary;
+        this.boundStickyHunkScrollEnd = () => this.settleStickyHunkScrollRange();
+        this.window.addEventListener("scrollend", this.boundStickyHunkScrollEnd);
+      }
+      this.hunkStickyScrollBoundaryKey = controller.key;
+      this.hunkStickyScrollBoundaryTarget = null;
+      boundary.style.top = `${Math.max(Math.ceil(Math.max(0, Number(top) || 0)), Number.parseFloat(boundary.style.top) || 0)}px`;
+      if (!boundary.isConnected) {
+        // An absolute overflow point reserves scroll range without inserting
+        // space into a diff table or moving the host's content.
+        this.document.documentElement.append(boundary);
+      }
+    },
+
+    settleStickyHunkScrollRange() {
+      const boundary = this.hunkStickyScrollBoundary;
+      if (!boundary) {
+        return;
+      }
+      const top = Number(this.window.scrollY) || 0;
+      const viewportHeight = this.window.innerHeight;
+      // offsetHeight excludes this absolute overflow point. Remove it once
+      // ordinary content can support the user's current scroll position.
+      if (top + viewportHeight <= this.document.documentElement.offsetHeight) {
+        this.clearStickyHunkScrollRange();
+      } else if (Number.isFinite(this.hunkStickyScrollBoundaryTarget)) {
+        boundary.style.top = `${Math.ceil(Math.max(top, this.hunkStickyScrollBoundaryTarget))}px`;
+      }
+    },
+
+    clearStickyHunkScrollRange(controller = null) {
+      if (controller && controller.key !== this.hunkStickyScrollBoundaryKey) {
+        return;
+      }
+      this.hunkStickyScrollBoundary?.remove();
+      this.hunkStickyScrollBoundary = null;
+      this.hunkStickyScrollBoundaryKey = null;
+      this.hunkStickyScrollBoundaryTarget = null;
+      this.window.removeEventListener("scrollend", this.boundStickyHunkScrollEnd);
+      this.boundStickyHunkScrollEnd = null;
+    },
+
+    pruneStickyHunkScrollRange() {
+      if (this.hunkStickyScrollBoundary &&
+        !this.reviewControllerForKey(this.hunkStickyScrollBoundaryKey)) {
+        this.clearStickyHunkScrollRange();
+      }
+    },
+
     revealFocusedStickyHunk(controller, target) {
       const row = controller.hunkRow;
       const state = this.hunkStickyStateByFile.get(controller.fileElement);
@@ -77,21 +133,33 @@
       return this.document.activeElement === target;
     },
 
-    scrollStickyHunkToOrigin(controller) {
+    setStickyHunkReturnMode(controller, preserveStickySize) {
+      const row = controller.hunkRow;
+      const className = "hunkmark-sticky-hunk-compact-return";
+      if (row.classList.contains(className) !== preserveStickySize) {
+        row.classList.toggle(className, preserveStickySize);
+      }
+    },
+
+    scrollStickyHunkToOrigin(controller, { preserveStickySize = false } = {}) {
+      this.setStickyHunkReturnMode(controller, preserveStickySize);
       const state = this.hunkStickyStateByFile.get(controller.fileElement);
       const naturalTop = this.stickyHunkNaturalDocumentTop(controller, {
         refreshLayout: false,
       });
-      // Land just before sticky activation. Wrapped rows begin fading at this
-      // boundary; compact rows do not begin fading until after it.
-      this.window.scrollTo({
-        behavior: this.window.matchMedia?.(
-          "(prefers-reduced-motion: reduce)",
-        )?.matches
-          ? "auto"
-          : "smooth",
-        top: Math.max(0, naturalTop - (state?.stickyTop ?? 0) - 1),
-      });
+      const bottomInset = Math.max(0, controller.stickyHunkBottomInset ?? 0);
+      // Viewed keeps the compact header, including its visible keyboard focus.
+      // Only explicit origin navigation restores the full natural row.
+      const offset = preserveStickySize
+        ? Math.max(0, controller.stickyHunkContentInset ?? 0) + bottomInset
+        : -1;
+      const top = Math.max(0, naturalTop - (state?.stickyTop ?? 0) + offset);
+      this.reserveStickyHunkScrollRange(controller, Math.max(top, this.window.scrollY));
+      this.hunkStickyScrollBoundaryTarget = top;
+      const behavior = this.window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      )?.matches ? "auto" : "smooth";
+      this.window.scrollTo({ behavior, top });
     },
 
     stickyHunkScrollPosition() {
@@ -181,6 +249,7 @@
         expectedScrollPosition = null,
         focusTarget = null,
         navigationGeneration = this.hunkStickyNavigationGeneration,
+        preserveStickySize = false,
       } = {},
     ) {
       const returnIsCurrent = () =>
@@ -205,10 +274,11 @@
             }
             const target = this.reviewControllerForKey(targetKey);
             if (target) {
+              this.setStickyHunkReturnMode(target, preserveStickySize);
               if (focusTarget) {
                 this.focusStickyHunkOrigin(target, focusTarget);
               }
-              this.scrollStickyHunkToOrigin(target);
+              this.scrollStickyHunkToOrigin(target, { preserveStickySize });
             }
           },
         );

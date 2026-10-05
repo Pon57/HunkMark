@@ -1,15 +1,3 @@
-@property --hunkmark-sticky-hunk-top-clip {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
-}
-
-@property --hunkmark-sticky-hunk-bottom-clip {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
-}
-
 .hunkmark-hunk-cell {
   box-sizing: border-box;
   padding-right: calc(
@@ -58,35 +46,80 @@
   z-index: 5 !important;
 }
 
-/* Cache original row geometry per layout and animate only near the viewport.
-   Prepared rows follow scrolling without an active-row JS handoff. */
+.hunkmark-sticky-scroll-boundary {
+  position: absolute !important;
+  left: 0;
+  width: 1px;
+  height: 100vh;
+  pointer-events: none;
+  overflow-anchor: none;
+}
+
+/* Natural header copies scroll behind a statically clipped sticky row.
+   Their overlap shrinks the header without sampling a clip on each frame. */
+.hunkmark-sticky-hunk-container { position: relative; }
+
+.hunkmark-sticky-hunk-natural-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hunkmark-sticky-hunk-natural-surface {
+  position: absolute !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  overflow: visible !important;
+  transform: none !important;
+  translate: none !important;
+  clip-path: none !important;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.hunkmark-sticky-hunk-natural-row {
+  position: relative !important;
+  inset: auto !important;
+  margin: 0 !important;
+  transform: none !important;
+  translate: none !important;
+  animation: none !important;
+  pointer-events: auto;
+}
+
+.hunkmark-sticky-hunk-natural-row,
+.hunkmark-sticky-hunk-natural-row > :is(td, th) {
+  clip-path: none !important;
+}
+
+.hunkmark-sticky-hunk-natural-layer .hunkmark-sticky-hunk-auxiliary {
+  pointer-events: auto;
+}
+
 .hunkmark-sticky-hunk-active {
   cursor: pointer;
-}
-
-@keyframes hunkmark-sticky-hunk-compress {
-  from { --hunkmark-sticky-hunk-top-clip: 0px; }
-  to {
-    --hunkmark-sticky-hunk-top-clip:
-      var(--hunkmark-sticky-hunk-content-inset, 0px);
-  }
-}
-
-@keyframes hunkmark-sticky-hunk-tail {
-  from { --hunkmark-sticky-hunk-bottom-clip: 0px; }
-  to {
-    --hunkmark-sticky-hunk-bottom-clip:
-      var(--hunkmark-sticky-hunk-bottom-inset, 0px);
-  }
 }
 
 @keyframes hunkmark-sticky-hunk-push {
   from { transform: translateY(0); }
   to {
-    transform: translateY(
-      calc(0px - var(--hunkmark-sticky-hunk-push-distance, 0px))
-    );
+    transform: translateY(calc(0px - var(--hunkmark-sticky-hunk-push-distance, 0px)));
   }
+}
+
+@keyframes hunkmark-sticky-hunk-tail-compensate {
+  from { translate: 0 0; }
+  to { translate: 0 var(--hunkmark-sticky-hunk-tail-compensation, 0px); }
 }
 
 @keyframes hunkmark-sticky-hunk-fade-auxiliary {
@@ -113,33 +146,15 @@
   );
   z-index: 3;
   animation-name:
-    hunkmark-sticky-hunk-compress,
-    hunkmark-sticky-hunk-tail,
-    hunkmark-sticky-hunk-push;
-  animation-duration: 1ms, 1ms, 1ms;
-  animation-fill-mode: both, both, both;
-  animation-timing-function: linear, linear, linear;
+    hunkmark-sticky-hunk-push,
+    hunkmark-sticky-hunk-tail-compensate;
+  animation-duration: 1ms, 1ms;
+  animation-fill-mode: both, both;
+  animation-timing-function: linear, linear;
   animation-timeline:
-    scroll(root block),
     scroll(root block),
     scroll(root block);
   animation-range:
-    calc(
-        var(--hunkmark-sticky-hunk-file-start, 0px) +
-          var(--hunkmark-sticky-hunk-compress-start)
-      )
-      calc(
-        var(--hunkmark-sticky-hunk-file-start, 0px) +
-          var(--hunkmark-sticky-hunk-compress-end)
-      ),
-    calc(
-        var(--hunkmark-sticky-hunk-file-start, 0px) +
-          var(--hunkmark-sticky-hunk-tail-start)
-      )
-      calc(
-        var(--hunkmark-sticky-hunk-file-start, 0px) +
-          var(--hunkmark-sticky-hunk-tail-end)
-      ),
     calc(
         var(--hunkmark-sticky-hunk-file-start, 0px) +
           var(--hunkmark-sticky-hunk-push-start)
@@ -147,20 +162,29 @@
       calc(
         var(--hunkmark-sticky-hunk-file-start, 0px) +
           var(--hunkmark-sticky-hunk-push-end)
+      ),
+    calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-tail-compensate-start)
+      )
+      calc(
+        var(--hunkmark-sticky-hunk-file-start, 0px) +
+          var(--hunkmark-sticky-hunk-tail-compensate-end)
       );
 }
 
 .hunkmark-sticky-hunk-prepared,
 .hunkmark-sticky-hunk-prepared > :is(td, th) {
   clip-path: inset(
-    var(--hunkmark-sticky-hunk-top-clip, 0px)
+    var(--hunkmark-sticky-hunk-content-inset, 0px)
     0
-    var(--hunkmark-sticky-hunk-bottom-clip, 0px)
+    var(--hunkmark-sticky-hunk-bottom-inset, 0px)
     0
   );
 }
 
-.hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
+.hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary,
+.hunkmark-sticky-hunk-natural-layer .hunkmark-sticky-hunk-auxiliary {
   animation:
     hunkmark-sticky-hunk-fade-auxiliary 1ms linear both,
     hunkmark-sticky-hunk-disable-auxiliary 1ms steps(1, start) both;
@@ -177,20 +201,32 @@
 }
 
 /* Keep the actual focused controls visible even after their hunk's handoff. */
-.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) {
+.hunkmark-sticky-hunk-prepared:where(:not(.hunkmark-sticky-hunk-compact-return)):is(:focus-visible, :has(:focus-visible)) {
   animation: none;
   top: var(--hunkmark-sticky-hunk-top, 0px);
   transform: none;
+  translate: none;
   z-index: 4;
 }
 
-.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)),
-.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) > :is(td, th) {
+.hunkmark-sticky-hunk-prepared:where(:not(.hunkmark-sticky-hunk-compact-return)):is(:focus-visible, :has(:focus-visible)),
+.hunkmark-sticky-hunk-prepared:where(:not(.hunkmark-sticky-hunk-compact-return)):is(:focus-visible, :has(:focus-visible)) > :is(td, th) {
   clip-path: none;
 }
 
-.hunkmark-sticky-hunk-prepared:is(:focus-visible, :has(:focus-visible)) .hunkmark-sticky-hunk-auxiliary {
+.hunkmark-sticky-hunk-prepared:where(:not(.hunkmark-sticky-hunk-compact-return)):is(:focus-visible, :has(:focus-visible)) .hunkmark-sticky-hunk-auxiliary {
   animation: none;
+}
+
+/* Viewed retains keyboard focus in the compact header. Keep its controls
+   pinned, while the last-row compensation still follows the table's edge. */
+.hunkmark-sticky-hunk-prepared.hunkmark-sticky-hunk-compact-return:where(:focus-visible, :has(:focus-visible)) {
+  animation-name: hunkmark-sticky-hunk-tail-compensate;
+  animation-range:
+    calc(var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-tail-compensate-start))
+    calc(var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-tail-compensate-end));
+  transform: none;
+  z-index: 4;
 }
 
 /* Unpin every row together while reading natural layout, then restore all
@@ -200,12 +236,15 @@
   top: auto;
   animation: none;
   transform: none;
+  translate: none;
 }
 
 .hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared,
 .hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared > :is(td, th) {
   clip-path: none;
 }
+
+.hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-natural-layer { display: none; }
 
 .hunkmark-hunk-actions {
   align-items: center;
@@ -219,6 +258,11 @@
   transform: translateY(-50%);
   visibility: visible !important;
   z-index: 2;
+}
+
+.hunkmark-sticky-hunk-prepared .hunkmark-hunk-actions {
+  top: calc(var(--hunkmark-sticky-hunk-content-inset, 0px) +
+    var(--hunkmark-sticky-hunk-compact-height, 24px) / 2);
 }
 
 .hunkmark-sticky-return-button {
@@ -703,12 +747,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary {
+  .hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary,
+  .hunkmark-sticky-hunk-natural-layer .hunkmark-sticky-hunk-auxiliary {
     animation-timing-function: steps(1, end), steps(1, start);
   }
 
   .hunkmark-sticky-hunk-prepared {
-    animation-timing-function: linear, linear, steps(1, end);
+    animation-timing-function: steps(1, end), linear;
   }
 
   .hunkmark-collapse-button,

@@ -30,6 +30,7 @@
         "content/controllers.js",
         "content/sticky-hunk-base.js",
         "content/sticky-hunk-geometry.js",
+        "content/sticky-hunk-natural.js",
         "content/sticky-hunk-navigation.js",
         "content/sticky-hunk-layout.js",
         "content/sticky-hunks.js",

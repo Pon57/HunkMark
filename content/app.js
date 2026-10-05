@@ -150,8 +150,12 @@
       this.hunkStickyFileByHeader = new WeakMap();
       this.hunkStickyLayoutFrameId = null;
       this.hunkStickyScrollFrameId = null;
+      this.hunkStickyScrollBoundary = null;
+      this.hunkStickyScrollBoundaryKey = null;
+      this.hunkStickyScrollBoundaryTarget = null;
       this.hunkStickyNavigationGeneration = 0;
       this.hunkStickyStateByFile = new Map();
+      this.hunkStickyNaturalLayersByParent = new Map();
       this.hunkStickyVisibleStates = new Set();
       this.officialViewedProgrammaticClicks = new WeakSet();
       this.officialViewedIntentGenerationByKey = new Map();

@@ -17,6 +17,7 @@
 
   Object.assign(App.prototype, {
     clearStickyHunkTimeline(controller) {
+      this.removeStickyHunkNaturalSurface(controller);
       const hadRanges = this.hunkStickyStateByFile.get(controller.stickyHunkFileElement ?? controller.fileElement)
         ?.controllersWithRanges.delete(controller);
       const prepared = controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared");
@@ -30,7 +31,12 @@
     },
 
     stickyHunkFileDocumentTop(state) {
-      const top = Number(state.fileElement.getBoundingClientRect?.().top);
+      const rect = state.fileElement.getBoundingClientRect?.();
+      const top = Number(rect?.top);
+      state.fileOriginDocumentLeft = (Number(rect?.left) || 0) +
+        (Number(this.window.scrollX) || 0);
+      state.fileOriginBorderLeft = Number(state.fileElement.clientLeft) || 0;
+      state.fileOriginBorderTop = Number(state.fileElement.clientTop) || 0;
       return Number.isFinite(top)
         ? top + (Number(this.window.scrollY) || 0)
         : Number(state.fileOriginDocumentTop) || 0;
@@ -153,24 +159,30 @@
       const inset = Math.max(0, controller.stickyHunkContentInset ?? 0);
       const bottomInset = Math.max(0, controller.stickyHunkBottomInset ?? 0);
       const start = Math.max(0, naturalTop - fileDocumentTop);
-      const tailStart = Math.max(0, naturalTop - fileDocumentTop + inset);
       const distance = nextTop === undefined ? 0 :
         controller.stickyHunkCompactHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX;
       const pushEnd = nextTop === undefined ? 1 : Math.max(0, nextTop - fileDocumentTop);
       // The host can rewrite inline styles while retaining the row and its
       // geometry. Per-property guards restore missing ranges without rewrites.
       this.syncStickyHunkContentStyles(controller);
+      this.syncStickyHunkTailRoom(controller, naturalTop, nextTop !== undefined);
       setPixelStyles(controller.hunkRow, [
-        ["--hunkmark-sticky-hunk-compress-start", start],
-        ["--hunkmark-sticky-hunk-compress-end", start + Math.max(inset, 1)],
-        ["--hunkmark-sticky-hunk-tail-start", tailStart],
-        ["--hunkmark-sticky-hunk-tail-end", tailStart + Math.max(bottomInset, 1)],
         ["--hunkmark-sticky-hunk-auxiliary-start", start],
         ["--hunkmark-sticky-hunk-auxiliary-end", start + (inset > 0 ? inset : AUXILIARY_FADE_DISTANCE_PX)],
         ["--hunkmark-sticky-hunk-push-distance", distance],
         ["--hunkmark-sticky-hunk-push-start", Math.max(0, pushEnd - distance)],
         ["--hunkmark-sticky-hunk-push-end", pushEnd],
       ]);
+      const tailRoom = controller.hunkRow.classList.contains("hunkmark-sticky-hunk-tail-constrained")
+        ? controller.stickyHunkTailRoom ?? 0 : bottomInset;
+      const compensation = Math.max(0, bottomInset - tailRoom);
+      const compensationStart = start + inset + Math.min(bottomInset, tailRoom);
+      setPixelStyles(controller.hunkRow, [
+        ["--hunkmark-sticky-hunk-tail-compensation", compensation],
+        ["--hunkmark-sticky-hunk-tail-compensate-start", compensationStart],
+        ["--hunkmark-sticky-hunk-tail-compensate-end", compensationStart + Math.max(compensation, 1)],
+      ]);
+      this.syncStickyHunkNaturalSurface(controller);
       this.hunkStickyStateByFile.get(controller.fileElement)?.controllersWithRanges.add(controller);
     },
 
@@ -223,6 +235,7 @@
       });
       state.preparedControllers.forEach((controller) => {
         if (!preparedControllers.has(controller)) {
+          this.removeStickyHunkNaturalSurface(controller);
           controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
         }
       });
@@ -250,6 +263,7 @@
         previousActiveController?.hunkRow.classList.remove(
           "hunkmark-sticky-hunk-active",
         );
+        previousActiveController?.stickyHunkNaturalRow?.classList.remove("hunkmark-sticky-hunk-active");
         if (activeController?.returnButton) {
           activeController.returnButton.hidden = false;
           activeController.returnButton.tabIndex = 0;
@@ -266,6 +280,10 @@
       if (activeController && !activeController.hunkRow.classList.contains("hunkmark-sticky-hunk-active")) {
         activeController.hunkRow.classList.add("hunkmark-sticky-hunk-active");
       }
+      const naturalRow = activeController?.stickyHunkNaturalRow;
+      if (naturalRow && !naturalRow.classList.contains("hunkmark-sticky-hunk-active")) {
+        naturalRow.classList.add("hunkmark-sticky-hunk-active");
+      }
     },
 
     updateStickyHunkState(state) {
@@ -274,14 +292,17 @@
       this.updateStickyHunkInteractionState(state, controllers, layout);
     },
 
-    stickyHunkStateCanPrepareDuringRefresh(state) {
+    stickyHunkStateCanPrepareDuringRefresh(
+      state,
+      { allowPendingPersistence = false } = {},
+    ) {
       // Reconciliation can suspend controls after their DOM/order is complete.
       // Before that boundary, only independently usable files may be prepared.
       return !state.orderDirty && Array.from(state.controllers).every(
         (controller) => this.reviewControllerIsCurrent(controller) &&
           (this.refreshStickyLayoutReady ||
             (!this.reviewControllerIsSuspended(controller) &&
-              !controller.input.disabled)),
+              (allowPendingPersistence || !controller.input.disabled))),
       );
     },
 
@@ -306,14 +327,19 @@
         ? controller : null;
     },
 
-    updateStickyHunkInteractionsForControllers(controllers) {
+    updateStickyHunkInteractionsForControllers(
+      controllers,
+      { allowPendingPersistence = false } = {},
+    ) {
       const states = new Set();
       for (const controller of controllers) {
         const state = this.hunkStickyStateByFile.get(controller.fileElement);
         if (
           state?.visible && this.reviewControllerIsCurrent(controller) &&
           (!(this.refreshRunning || this.refreshQueued) ||
-            this.stickyHunkStateCanPrepareDuringRefresh(state))
+            this.stickyHunkStateCanPrepareDuringRefresh(state, {
+              allowPendingPersistence,
+            }))
         ) {
           states.add(state);
         }

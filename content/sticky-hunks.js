@@ -551,6 +551,7 @@
     },
 
     detachStickyHunkRow(controller) {
+      this.removeStickyHunkNaturalSurface(controller);
       this.unobserveStickyHunkRow(controller);
       this.hunkStickyControllerByRow.delete(controller.hunkRow);
       clearClasses(controller.hunkRow, ROW_CLASSES);
@@ -577,6 +578,9 @@
         stickyHunkOriginDocumentTop: null,
         stickyHunkOriginFileDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
+        stickyHunkNaturalGeometry: null,
+        stickyHunkTailRoom: null,
+        stickyHunkTailRoomLayoutGeneration: null,
         stickyHunkOrderIndex: null,
       });
       if (controller.returnButton) {
@@ -617,6 +621,7 @@
     },
 
     cleanupStickyHunks() {
+      this.clearStickyHunkScrollRange();
       this.hunkStickyStateByFile.forEach((state) => {
         this.stopLineControlAttributeObserver(state);
         state.controllers.forEach((controller) => {
@@ -630,6 +635,13 @@
         );
       });
       this.hunkStickyStateByFile.clear();
+      this.hunkStickyNaturalLayersByParent.forEach(({ layer, parent, positionClassAdded }) => {
+        layer.remove();
+        if (positionClassAdded) {
+          parent.classList.remove("hunkmark-sticky-hunk-container");
+        }
+      });
+      this.hunkStickyNaturalLayersByParent.clear();
       this.hunkStickyVisibleStates.clear();
       this.hunkStickyFileVisibilityObserver?.disconnect();
       this.hunkStickyFileVisibilityObserver = null;

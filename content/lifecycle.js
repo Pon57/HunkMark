@@ -1076,6 +1076,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return false;
       }
       if (pageChanged) {
+        this.clearStickyHunkScrollRange();
         this.cancelScheduledProgressUpdate();
         this.deferredDiffLoadRefreshTimedOut = false;
         this.refreshAfterDiffLoadHydrations = false;

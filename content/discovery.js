@@ -349,6 +349,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const addCandidate = (element) => {
         if (
           !(element instanceof Element) ||
+          this.extensionOwnsNode(element) ||
           !this.Core.isHunkHeaderText(this.cleanElementText(element))
         ) {
           return;
@@ -703,6 +704,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       fileElement
         .querySelectorAll(this.constants.ROW_CANDIDATE_SELECTOR)
         .forEach((element) => {
+          if (this.extensionOwnsNode(element)) {
+            return;
+          }
           const row = this.semanticRow(element);
           if (fileElement.contains(row)) {
             rows.add(row);
@@ -1138,7 +1142,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return {
         candidates: Array.from(
           searchRoot.querySelectorAll(fileRootSelector),
-        ),
+        ).filter((candidate) => !this.extensionOwnsNode(candidate)),
         fileRootSelector,
       };
     },
