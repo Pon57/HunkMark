@@ -421,6 +421,72 @@ test("restores natural layer parent positioning after host class rerenders witho
   }
 });
 
+test("rechecks native parent positioning before measuring a resized layout", async (t) => {
+  for (const [name, html] of [["table", duplicateHunkFixture()], ["grid", modernGridFixture()]]) {
+    await t.test(name, async () => {
+      const { app, dom } = await startExtension(html);
+      try {
+        installContentStyles(dom);
+        const controllers = Array.from(app.controllersByRow.values());
+        const controller = controllers[0];
+        const state = app.hunkStickyStateByFile.get(controller.fileElement);
+        const parent = state.fileElement;
+        parent.classList.add("responsive-parent");
+        const style = dom.window.document.createElement("style");
+        style.textContent = ".responsive-parent { position: static; }";
+        dom.window.document.head.prepend(style);
+        const computedStyle = dom.window.getComputedStyle.bind(dom.window);
+        const parentTop = () => computedStyle(parent).position === "absolute" ? 200 : 100;
+        const viewport = mockStickyRows(dom, controllers, controllers.map((_, i) => 600 + i * 300));
+        parent.getBoundingClientRect = () => ({ top: parentTop() - viewport.scrollY, left: 10, width: 900 });
+        controllers.forEach((c, i) => {
+          c.hunkRow.getBoundingClientRect = () => ({
+            top: parentTop() + 500 + i * 300 - viewport.scrollY, left: 20, width: 800, height: 64,
+          });
+        });
+        app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+        app.markStickyHunkContentDirty(state);
+        app.invalidateStickyHunkOrigins(parent);
+        app.updateStickyHunkState(state);
+        const surface = controller.stickyHunkNaturalSurface;
+        assert.equal(surface.style.top, "500px");
+        const inlineStyle = parent.getAttribute("style");
+
+        // Stylesheet changes leave the element's class and inline position
+        // untouched, as responsive CSS can when the viewport changes.
+        style.textContent = ".responsive-parent { position: absolute; }";
+        dom.window.dispatchEvent(new dom.window.Event("resize"));
+        app.updateStickyHunkState(state);
+        assert.equal(computedStyle(parent).position, "absolute");
+        assert.equal(state.fileOriginDocumentTop, 200);
+        assert.equal(app.cachedStickyHunkNaturalDocumentTop(controller), 700);
+        assert.equal(controller.stickyHunkNaturalSurface, surface);
+        assert.equal(surface.style.top, "500px");
+        assert.equal(parent.style.position, "");
+
+        style.textContent = ".responsive-parent { position: static; }";
+        dom.window.dispatchEvent(new dom.window.Event("resize"));
+        app.updateStickyHunkState(state);
+        assert.equal(computedStyle(parent).position, "relative");
+        assert.equal(state.fileOriginDocumentTop, 100);
+        assert.equal(surface.style.top, "500px");
+        assert.equal(parent.getAttribute("style"), inlineStyle);
+        let parentReads = 0;
+        dom.window.getComputedStyle = (element, ...args) => {
+          if (element === parent) parentReads += 1;
+          return computedStyle(element, ...args);
+        };
+        viewport.scrollY = 500;
+        app.updateStickyHunkState(state);
+        assert.equal(parentReads, 0, "clean scrolling must not recheck computed parent positioning");
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
 test("keeps natural surfaces inside the horizontal scroll container", async () => {
   const html = duplicateHunkFixture().replace("<table>",
     '<div class="natural-scroll" style="overflow-x:auto"><table>').replace("</table>", "</table></div>");

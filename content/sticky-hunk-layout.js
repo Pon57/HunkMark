@@ -60,6 +60,15 @@
     },
 
     prepareStickyHunkState(state, controllers) {
+      // Responsive CSS can change native positioning without changing any
+      // attributes. Revalidate existing parents before measuring their origins.
+      const refreshParentLayout = state.fileOriginDirty;
+      for (const parent of state.naturalParentLayouts?.keys() ?? []) {
+        const record = this.hunkStickyNaturalLayersByParent.get(parent);
+        if (record?.layer.isConnected) {
+          this.syncStickyHunkNaturalParentPosition(record, state, { refreshLayout: refreshParentLayout });
+        }
+      }
       if (state.fileOriginDirty) {
         this.updateStickyHunkFileOrigin(state);
       }
