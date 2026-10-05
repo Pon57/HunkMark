@@ -193,11 +193,7 @@
       let record = this.hunkStickyNaturalLayersByParent.get(geometry.parent);
       if (!record?.layer.isConnected) {
         record?.layer.remove();
-        const positionClassAdded = record?.positionClassAdded ||
-          this.window.getComputedStyle(geometry.parent).position === "static";
-        if (positionClassAdded) {
-          geometry.parent.classList.add("hunkmark-sticky-hunk-container");
-        }
+        const positionClassAdded = record?.positionClassAdded ?? false;
         const layer = this.document.createElement("div");
         layer.className = "hunkmark-sticky-hunk-natural-layer";
         layer.setAttribute("data-hunkmark-ui", "true");
@@ -205,6 +201,21 @@
         geometry.parent.append(layer);
         record = { layer, parent: geometry.parent, positionClassAdded };
         this.hunkStickyNaturalLayersByParent.set(geometry.parent, record);
+      }
+      // Host rerenders can remove our class while leaving the layer connected.
+      // Recheck native positioning only when its class or inline position changes.
+      if (!record.positionClassAdded) {
+        const parentClass = Array.from(geometry.parent.classList)
+          .filter((value) => value !== "hunkmark-sticky-file-measuring").join(" ");
+        const parentPosition = geometry.parent.style.position;
+        if (record.positionParentClass !== parentClass || record.positionParentPosition !== parentPosition) {
+          record.positionParentClass = parentClass;
+          record.positionParentPosition = parentPosition;
+          record.positionClassAdded = this.window.getComputedStyle(geometry.parent).position === "static";
+        }
+      }
+      if (record.positionClassAdded && !geometry.parent.classList.contains("hunkmark-sticky-hunk-container")) {
+        geometry.parent.classList.add("hunkmark-sticky-hunk-container");
       }
       if (!surface) {
         const source = controller.hunkRow.tagName === "TR"

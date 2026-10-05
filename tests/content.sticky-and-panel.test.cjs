@@ -225,6 +225,75 @@ test("reuses natural surfaces without layout reads, rebuilds changed content, an
   }
 });
 
+test("restores natural layer parent positioning after host class rerenders without scroll-time style reads", async (t) => {
+  for (const [name, html] of [["table", duplicateHunkFixture()], ["grid", modernGridFixture()]]) {
+    for (const positioning of ["extension", "host class", "host style"]) {
+      await t.test(`${name}, ${positioning} positioned`, async () => {
+        const { app, dom } = await startExtension(html);
+        let parent;
+        try {
+          installContentStyles(dom);
+          const style = dom.window.document.createElement("style");
+          style.textContent = ".host-static { position: static; } .host-positioned { position: relative; }";
+          dom.window.document.head.prepend(style);
+          const controllers = Array.from(app.controllersByRow.values());
+          const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
+          parent = state.fileElement;
+          parent.classList.add(positioning === "host class" ? "host-positioned" : "host-static");
+          if (positioning === "host style") parent.style.position = "relative";
+          const viewport = mockStickyRows(dom, controllers, controllers.map((_, i) => 600 + i * 300));
+          let rowReads = 0;
+          controllers.forEach((c, i) => {
+            c.hunkRow.getBoundingClientRect = () => {
+              rowReads += 1;
+              return { top: 600 + i * 300 - viewport.scrollY, left: 20, width: 800, height: 64 };
+            };
+          });
+          parent.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY, left: 10, width: 900 });
+          const getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+          let parentStyleReads = 0;
+          dom.window.getComputedStyle = (element, ...args) => {
+            if (element === parent) parentStyleReads += 1;
+            return getComputedStyle(element, ...args);
+          };
+          app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+          app.markStickyHunkContentDirty(state);
+          app.invalidateStickyHunkOrigins(parent);
+          app.updateStickyHunkState(state);
+          const layer = controllers[0].stickyHunkNaturalLayer.layer;
+          const surfaces = controllers.map((c) => c.stickyHunkNaturalSurface);
+          assert.equal(parent.classList.contains("hunkmark-sticky-hunk-container"), positioning === "extension");
+          const initialReads = parentStyleReads;
+          const initialRowReads = rowReads;
+          viewport.scrollY = 500;
+          app.updateStickyHunkState(state);
+          assert.equal(parentStyleReads, initialReads);
+
+          parent.className = parent.className.split(/\s+/)
+            .filter((value) => !["hunkmark-sticky-hunk-container", "host-positioned"].includes(value)).join(" ");
+          parent.classList.add("host-static");
+          parent.style.removeProperty("position");
+          assert.equal(getComputedStyle(parent).position, "static");
+          // Recover on sync even when class changes leave geometry clean.
+          app.updateStickyHunkState(state);
+          assert.equal(getComputedStyle(parent).position, "relative");
+          assert.equal(controllers[0].stickyHunkNaturalLayer.layer, layer);
+          controllers.forEach((c, i) => assert.equal(c.stickyHunkNaturalSurface, surfaces[i]));
+          assert.equal(rowReads, initialRowReads);
+          const afterRerenderReads = parentStyleReads;
+          viewport.scrollY = 550;
+          app.updateStickyHunkState(state);
+          assert.equal(parentStyleReads, afterRerenderReads);
+        } finally {
+          app.stop();
+          assert.equal(parent?.classList.contains("hunkmark-sticky-hunk-container"), false);
+          dom.window.close();
+        }
+      });
+    }
+  }
+});
+
 test("keeps natural surfaces inside the horizontal scroll container", async () => {
   const html = duplicateHunkFixture().replace("<table>",
     '<div class="natural-scroll" style="overflow-x:auto"><table>').replace("</table>", "</table></div>");
