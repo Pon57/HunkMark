@@ -7,11 +7,15 @@ const {
   duplicateHunkFixture,
 } = require("./content-test-support.cjs");
 
-async function startNaturalHeader(controls) {
-  const fixture = duplicateHunkFixture().replace(
+async function startNaturalHeader(controls, { inForm = false } = {}) {
+  let fixture = duplicateHunkFixture().replace(
     "@@ -1 +1 @@</td>",
     `<span class="native-header-text">@@ -1 +1 @@</span>${controls}</td>`,
   );
+  if (inForm) {
+    fixture = fixture.replace("<body>", '<body><form id="native-form">')
+      .replace("</body>", "</form></body>");
+  }
   const context = await startExtension(fixture);
   const { app, dom } = context;
   installContentStyles(dom);
@@ -187,3 +191,97 @@ test("forwards overlapping natural control selectors only once and keeps header 
     dom.window.close();
   }
 });
+
+
+test("keeps natural form controls out of the host form and its submitted entries", async () => {
+  const { app, dom, controller } = await startNaturalHeader(`
+    <button data-native-kind="button" name="action" type="button" form="native-form">Action</button>
+    <input data-native-kind="input" name="title" value="original" required form="native-form">
+    <select data-native-kind="select" name="choice" form="native-form"><option selected value="one">One</option></select>
+    <textarea data-native-kind="textarea" name="comment" form="native-form">body</textarea>
+    <fieldset data-native-kind="fieldset" name="group" form="native-form"></fieldset>
+    <object data-native-kind="object" name="preview" form="native-form"></object>
+    <output data-native-kind="output" name="status" form="native-form">ready</output>
+  `, { inForm: true });
+  try {
+    const form = dom.window.document.getElementById("native-form");
+    assert.deepEqual(Array.from(new dom.window.FormData(form).entries()), [
+      ["title", "original"], ["choice", "one"], ["comment", "body"],
+    ]);
+    const sources = Array.from(controller.hunkRow.querySelectorAll("[data-native-kind]"));
+    const proxies = Array.from(controller.stickyHunkNaturalRow.querySelectorAll("[data-native-kind]"));
+    assert.equal(sources.length, 7);
+    assert.equal(proxies.length, sources.length);
+    sources.forEach((source, index) => {
+      const proxy = proxies[index];
+      assert.equal(source.form, form);
+      assert.equal(source.getAttribute("form"), "native-form");
+      assert.ok(source.hasAttribute("name"));
+      assert.equal(proxy.form, null, `${source.tagName} copy must not join the host form`);
+      assert.equal(proxy.hasAttribute("name"), false);
+      assert.equal(proxy.matches(":disabled"), source.matches(":disabled"));
+      assert.equal(Array.from(form.elements).includes(proxy), false);
+    });
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("does not validate a natural input copy with the host form", async () => {
+  const { app, dom, controller } = await startNaturalHeader(
+    '<input class="native-required" name="title" value="valid" required>',
+    { inForm: true },
+  );
+  try {
+    const form = dom.window.document.getElementById("native-form");
+    const source = controller.hunkRow.querySelector(".native-required");
+    const proxy = controller.stickyHunkNaturalRow.querySelector(".native-required");
+    proxy.value = "";
+    assert.equal(source.checkValidity(), true);
+    assert.equal(proxy.validity.valueMissing, true);
+    assert.equal(form.checkValidity(), true, "a presentation copy cannot block native submission");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+for (const inForm of [true, false]) {
+  test(`keeps natural radio copies out of the original group ${inForm ? "with" : "without"} a form`, async () => {
+    const { app, dom, controller, scrollCalls } = await startNaturalHeader(`
+      <input class="native-first" type="radio" name="review-choice" value="first" checked>
+      <input class="native-second" type="radio" name="review-choice" value="second">
+    `, { inForm });
+    try {
+      const first = controller.hunkRow.querySelector(".native-first");
+      const second = controller.hunkRow.querySelector(".native-second");
+      assert.equal(first.checked, true, "inserting the checked copy must not uncheck its source");
+      assert.equal(second.checked, false);
+      let clicks = 0;
+      let changes = 0;
+      second.addEventListener("click", () => { clicks += 1; });
+      second.addEventListener("change", () => { changes += 1; });
+      controller.stickyHunkNaturalRow.querySelector(".native-second").click();
+      assert.equal(first.checked, false);
+      assert.equal(second.checked, true, "only the original group performs native radio activation");
+      assert.equal(clicks, 1);
+      assert.equal(changes, 1);
+      assert.equal(scrollCalls.length, 0);
+      await waitFor(() => {
+        const copies = controller.stickyHunkNaturalRow;
+        assert.equal(copies.querySelector(".native-first").checked, false);
+        assert.equal(copies.querySelector(".native-second").checked, true);
+        assert.equal(first.checked, false);
+        assert.equal(second.checked, true, "rebuilding copies must not alter the original selection");
+      });
+      if (inForm) {
+        const form = dom.window.document.getElementById("native-form");
+        assert.deepEqual(new dom.window.FormData(form).getAll("review-choice"), ["second"]);
+      }
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  });
+}

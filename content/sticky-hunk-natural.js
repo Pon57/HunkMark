@@ -152,6 +152,13 @@
       row.removeAttribute("id");
       row.querySelectorAll("[id]").forEach((element) => element.removeAttribute("id"));
       row.querySelectorAll("[data-hunkmark-ui]").forEach((element) => element.remove());
+      // Detach copies before insertion: they must neither join a native form
+      // nor uncheck an original radio, including radios with no form owner.
+      row.querySelectorAll("button, input, select, textarea, fieldset, object, output")
+        .forEach((element) => {
+          element.setAttribute("form", "");
+          element.removeAttribute("name");
+        });
       row.querySelectorAll(NATIVE_CONTROL_SELECTOR)
         .forEach((element) => { element.tabIndex = -1; });
       row.addEventListener("click", (event) => {
