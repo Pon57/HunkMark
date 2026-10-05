@@ -505,6 +505,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const previous = this.fileIdentityByElement.get(fileElement);
       this.fileIdentityByElement.set(fileElement, {
         path,
+        renameDestination:
+          previous?.path === path ? previous.renameDestination : null,
         presentedPath:
           presentedPath === undefined && previous?.path === path
             ? previous.presentedPath
@@ -604,7 +606,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
         ),
       ];
       if (gridPaths.length === 1) {
-        return rememberAuthoritativePath(gridPaths[0]);
+        const path = rememberAuthoritativePath(gridPaths[0]);
+        // GitHub labels a renamed grid with both paths, but its expansion
+        // control carries only the destination. Remember that observed alias
+        // before the grid disappears; never infer it from hidden metadata.
+        const destinations = [...new Set(pathElements.flatMap((element) =>
+          ["data-file-path", "data-path", "value"].map((attribute) =>
+            element.getAttribute(attribute),
+          ),
+        ).filter((value) => this.trustedFilePath(value) && value !== path &&
+          path.endsWith(` renamed to ${value}`)))];
+        this.fileIdentityByElement.get(fileElement).renameDestination =
+          destinations.length === 1 ? destinations[0] : null;
+        return path;
       }
 
       if (
@@ -639,6 +653,19 @@ if (globalThis.HunkMarkContent?.extendApp) {
           element.getAttribute("value"),
         ];
         for (const value of authoritativeValues) {
+          // A renamed diff's grid describes both paths, while its expansion
+          // button names only the destination. Keep the already established
+          // identity when that same header is collapsed and the grid goes
+          // away, so cached hunks and existing review keys still match.
+          if (
+            cachedPath &&
+            cachedIdentity?.presentedPath &&
+            currentPresentedPath === cachedIdentity.presentedPath &&
+            cachedIdentity.renameDestination &&
+            value === cachedIdentity.renameDestination
+          ) {
+            return cachedPath;
+          }
           const path = rememberAuthoritativePath(value);
           if (path) {
             return path;

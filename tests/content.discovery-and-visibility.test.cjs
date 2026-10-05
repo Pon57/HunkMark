@@ -398,6 +398,124 @@ test("prefers the rendered grid path over a stale expansion control", async () =
   }
 });
 
+test("keeps a renamed file identity while its diff is hidden and revealed", async () => {
+  const oldPath = "src/original.js";
+  const newPath = "src/renamed.js";
+  const renamedDescription = `${oldPath} renamed to ${newPath}`;
+  const fixture = currentReactContextEvidenceFixture()
+    .replaceAll("src/react-overlap.js", newPath)
+    .replace(
+      `${newPath}</code>`,
+      `<span class="sr-only">${renamedDescription}</span></code>`,
+    )
+    .replace(`Diff for: ${newPath}`, `Diff for: ${renamedDescription}`);
+  const { app, dom } = await startExtension(fixture);
+  try {
+    const [controller] = controllersFor(app);
+    const fileElement = controller.fileElement;
+    const grid = fileElement.querySelector('table[role="grid"]');
+    const expandAll = fileElement.querySelector(
+      ".js-expand-all-difflines-button",
+    );
+    const initialIdentity = discoveryIdentity(
+      app.discoverCachedHunks(fileElement),
+    );
+    const progressKey = app.fileProgressStateKey(renamedDescription);
+    const progress = app.fileProgressStateByKey.get(progressKey);
+    const snapshot = app.fileReviewSnapshotsByKey.get(progressKey);
+
+    assert.equal(controller.filePath, renamedDescription);
+    assert.equal(expandAll.dataset.filePath, newPath);
+    assert.equal(
+      fileElement.querySelector("h3 code").textContent,
+      renamedDescription,
+    );
+    assert.ok(initialIdentity.length > 0);
+    assert.ok(progress);
+    assert.ok(snapshot);
+
+    grid.remove();
+    const hiddenPath = app.resolveFilePath(fileElement, 0);
+    assert.equal(hiddenPath, renamedDescription);
+    assert.equal(app.knownFilePath(fileElement), renamedDescription);
+    assert.equal(
+      app.fileProgressStateByKey.get(app.fileProgressStateKey(hiddenPath)),
+      progress,
+    );
+    assert.equal(
+      app.fileReviewSnapshotsByKey.get(app.fileProgressStateKey(hiddenPath)),
+      snapshot,
+    );
+
+    fileElement.append(grid);
+    assert.equal(app.resolveFilePath(fileElement, 0), renamedDescription);
+    assert.deepEqual(
+      discoveryIdentity(app.discoverCachedHunks(fileElement)),
+      initialIdentity,
+    );
+  } finally {
+    stopExtensions({ app, dom });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "a literal path containing rename wording",
+    gridPath: "src/a renamed to src/b.js",
+    machinePath: "src/a renamed to src/b.js",
+    replacementPath: "src/b.js",
+  },
+  {
+    name: "a renamed destination containing rename wording",
+    gridPath: "src/original.js renamed to src/b renamed to src/c.js",
+    machinePath: "src/b renamed to src/c.js",
+    replacementPath: "src/c.js",
+  },
+]) {
+  test(`rejects changed hidden metadata for ${scenario.name}`, async () => {
+    const fixture = currentReactContextEvidenceFixture()
+      .replaceAll("src/react-overlap.js", scenario.machinePath)
+      .replace(
+        `${scenario.machinePath}</code>`,
+        `<span class="sr-only">${scenario.gridPath}</span></code>`,
+      )
+      .replace(
+        `Diff for: ${scenario.machinePath}`,
+        `Diff for: ${scenario.gridPath}`,
+      );
+    const { app, dom } = await startExtension(fixture);
+    try {
+      const [controller] = controllersFor(app);
+      const fileElement = controller.fileElement;
+      const grid = fileElement.querySelector('table[role="grid"]');
+      const expandAll = fileElement.querySelector(
+        ".js-expand-all-difflines-button",
+      );
+
+      assert.equal(controller.filePath, scenario.gridPath);
+      grid.remove();
+      assert.equal(app.resolveFilePath(fileElement, 0), scenario.gridPath);
+
+      expandAll.dataset.filePath = scenario.replacementPath;
+      expandAll.setAttribute(
+        "aria-label",
+        `Expand all lines: ${scenario.replacementPath}`,
+      );
+      assert.equal(
+        fileElement.querySelector("h3 code").textContent,
+        scenario.gridPath,
+      );
+      assert.equal(
+        app.resolveFilePath(fileElement, 0),
+        scenario.replacementPath,
+      );
+      assert.equal(app.knownFilePath(fileElement), scenario.replacementPath);
+    } finally {
+      stopExtensions({ app, dom });
+    }
+  });
+}
+
 test("distinguishes stable presentation text from a reused React file", async () => {
   const fixture = currentReactContextEvidenceFixture().replace(
     "src/react-overlap.js</code>",
