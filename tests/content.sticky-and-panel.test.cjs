@@ -150,7 +150,9 @@ test("keeps natural header copies out of diff discovery and forwards their click
     });
     app.handleHostContextExpansionClick({ isTrusted: false, target: native, button: 0 });
     assert.equal(app.hostContextExpansionIntents.size, 0, "untrusted native events remain ignored");
-    proxy.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    const controlDown = new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    proxy.dispatchEvent(controlDown);
+    assert.equal(controlDown.defaultPrevented, true);
     proxy.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0, shiftKey: true, clientX: 25 }));
     assert.deepEqual(received, [true, 25]);
     assert.ok(intentAtNativeClick, "capture the source snapshot before dispatching the forwarded click");
@@ -181,6 +183,20 @@ test("keeps natural header copies out of diff discovery and forwards their click
     kebabProxy.click();
     assert.equal(kebabClicks, 2);
     assert.equal(app.hostContextExpansionIntents.size, 0, "menu controls are not context expansion intents");
+
+    const headerCell = controller.stickyHunkNaturalRow.querySelector(".blob-code-hunk");
+    const headerDown = new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    headerCell.dispatchEvent(headerDown);
+    assert.equal(headerDown.defaultPrevented, false, "header text remains selectable");
+    const selection = dom.window.getSelection();
+    const range = dom.window.document.createRange();
+    range.selectNodeContents(headerCell);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    assert.equal(selection.isCollapsed, false);
+    headerCell.click();
+    assert.equal(scrollCalls.length, 0, "selecting text must not navigate to the original header");
+    selection.removeAllRanges();
 
     controller.stickyHunkNaturalRow.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0 }));
     assert.equal(scrollCalls.at(-1).top, 559);
@@ -2739,6 +2755,9 @@ for (const scenario of [
         dom.window.document.body.dispatchEvent(
           new dom.window.Event("pointerdown", { bubbles: true }),
         );
+        dom.window.document.body.dispatchEvent(
+          new dom.window.Event("pointerup", { bubbles: true }),
+        );
       };
     },
   },
@@ -2800,12 +2819,85 @@ for (const scenario of [
 
       assert.equal(current.collapsed, true);
       assert.equal(scrollCalls.length, scenario.expectedScrollCalls);
+      if (scenario.expectedScrollCalls === 0) {
+        assert.equal(app.hunkStickyScrollBoundary, null, "cancelled returns must release their reserved range");
+      }
     } finally {
       app.stop();
       dom.window.close();
     }
   });
 }
+
+test("keeps pointer activation stable while releasing cancelled scroll reservations", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [controller] = app.controllersByRow.values();
+    Object.defineProperty(dom.window, "scrollY", { configurable: true, get: () =>
+      Math.min(700, Math.max(500, Number.parseFloat(app.hunkStickyScrollBoundary?.style.top) || 0)),
+    });
+    const signal = (type) => dom.window.document.body.dispatchEvent(
+      new dom.window.Event(type, { bubbles: true }),
+    );
+    app.reserveStickyHunkScrollRange(controller, 700);
+    signal("pointerdown");
+    assert.equal(dom.window.scrollY, 700, "do not move the click target before pointer activation finishes");
+    signal("pointerup");
+    app.reserveStickyHunkScrollRange(controller, 700);
+    const newerReservation = app.hunkStickyScrollBoundary;
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 40));
+    assert.equal(app.hunkStickyScrollBoundary, newerReservation, "deferred cleanup cannot remove a newer reservation for the same hunk");
+    app.cancelStickyHunkReturn();
+    assert.equal(dom.window.scrollY, 500);
+
+    app.reserveStickyHunkScrollRange(controller, 700);
+    signal("pointerdown");
+    signal("pointerup");
+    await waitFor(() => assert.equal(app.hunkStickyScrollBoundary, null));
+    assert.equal(dom.window.scrollY, 500);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("releases cancelled reservations without clearing newer or committed sticky return ranges", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [controller] = app.controllersByRow.values();
+    const oldGeneration = app.hunkStickyNavigationGeneration;
+    app.reserveStickyHunkScrollRange(controller, 600);
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, null);
+
+    app.reserveStickyHunkScrollRange(controller, 600);
+    const newerBoundary = app.hunkStickyScrollBoundary;
+    app.scheduleStickyHunkReturn(controller.key, { navigationGeneration: oldGeneration });
+    assert.equal(app.hunkStickyScrollBoundary, newerBoundary, "a stale operation cannot discard the new reservation");
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, null);
+
+    dom.window.scrollTo = () => {};
+    app.stickyHunkNaturalDocumentTop = () => 600;
+    app.scrollStickyHunkToOrigin(controller, { preserveStickySize: true });
+    const committedBoundary = app.hunkStickyScrollBoundary;
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, committedBoundary, "retain the range supporting a compact return target");
+    assert.equal(app.hunkStickyScrollBoundaryTarget, 600);
+
+    Object.defineProperty(dom.window, "scrollY", { configurable: true, get: () => 700 });
+    Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+      configurable: true, get: () => dom.window.innerHeight + 500,
+    });
+    app.reserveStickyHunkScrollRange(controller, 1000);
+    app.stickyHunkNaturalDocumentTop = () => 700;
+    app.scrollStickyHunkToOrigin(controller, { preserveStickySize: true });
+    assert.equal(app.hunkStickyScrollBoundary.style.top, "700px", "a no-op scroll must release excess range without waiting for scrollend");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
 
 test("cancels a scheduled sticky return when the user navigates", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());

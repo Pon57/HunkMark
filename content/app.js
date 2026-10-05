@@ -153,6 +153,8 @@
       this.hunkStickyScrollBoundary = null;
       this.hunkStickyScrollBoundaryKey = null;
       this.hunkStickyScrollBoundaryTarget = null;
+      this.hunkStickyScrollReservation = null;
+      this.hunkStickyPointerScrollReservation = null;
       this.hunkStickyNavigationGeneration = 0;
       this.hunkStickyStateByFile = new Map();
       this.hunkStickyNaturalLayersByParent = new Map();

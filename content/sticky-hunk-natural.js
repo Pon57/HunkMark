@@ -150,8 +150,11 @@
       row.querySelectorAll("[data-hunkmark-ui]").forEach((element) => element.remove());
       row.querySelectorAll("a, button, input, select, textarea, [tabindex]")
         .forEach((element) => { element.tabIndex = -1; });
-      row.addEventListener("mousedown", (event) => event.preventDefault());
       row.addEventListener("click", (event) => {
+        const selection = this.window.getSelection();
+        if (selection && !selection.isCollapsed) {
+          return;
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
         if (this.reviewControllerIsCurrent(controller)) {
@@ -176,6 +179,7 @@
         const source = sources[index];
         const sourceControl = source?.closest("button, a, [tabindex]") ?? source;
         const targetControl = target.closest("button, a, [tabindex]") ?? target;
+        targetControl.addEventListener("mousedown", (event) => event.preventDefault());
         targetControl.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopImmediatePropagation();

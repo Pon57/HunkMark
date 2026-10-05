@@ -1423,8 +1423,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
       };
       this.boundStickyHunkNavigationIntent = (event) => {
         if (this.hunkStickyStateByFile.size > 0) {
+          if (event.type === "pointerup" || event.type === "pointercancel") {
+            const reservation = this.hunkStickyPointerScrollReservation;
+            this.hunkStickyPointerScrollReservation = null;
+            this.deferPendingStickyHunkScrollRangeCleanup(reservation);
+            return;
+          }
           if (event.type !== "click" || event.isTrusted) {
-            this.cancelStickyHunkReturn();
+            if (event.type === "pointerdown") {
+              this.hunkStickyPointerScrollReservation = this.hunkStickyScrollBoundaryTarget === null
+                ? this.hunkStickyScrollReservation : null;
+            }
+            this.cancelStickyHunkReturn({
+              preservePendingRange: event.type === "pointerdown" || event.type === "click",
+            });
+            if (event.type === "click") {
+              this.hunkStickyPointerScrollReservation = null;
+              this.deferPendingStickyHunkScrollRangeCleanup();
+            }
           }
           // CSS may have crossed a hunk boundary before the scroll callback.
           // Synchronize interaction state before an activation, not on wheel.
@@ -1444,6 +1460,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       };
       this.boundWindowBlur = () => {
+        if (this.hunkStickyPointerScrollReservation &&
+            this.hunkStickyPointerScrollReservation === this.hunkStickyScrollReservation) {
+          this.cancelStickyHunkReturn();
+        }
         if (this.dragState) {
           void this.finishLineDrag(true);
         }
@@ -1485,6 +1505,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundStickyHunkNavigationIntent,
         true,
       );
+      for (const type of ["pointerup", "pointercancel"]) {
+        this.document.addEventListener(type, this.boundStickyHunkNavigationIntent, true);
+      }
       this.document.addEventListener(
         "click",
         this.boundStickyHunkNavigationIntent,
@@ -1597,6 +1620,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundStickyHunkNavigationIntent,
         true,
       );
+      for (const type of ["pointerup", "pointercancel"]) {
+        this.document.removeEventListener(type, this.boundStickyHunkNavigationIntent, true);
+      }
       this.document.removeEventListener(
         "click",
         this.boundHostContextExpansionClick,
