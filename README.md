@@ -51,7 +51,7 @@ See [PRIVACY.md](PRIVACY.md) for retention and data-handling details, and [ARCHI
 - GitHub.com pull request **Files changed** pages
 - Unified and split source diffs
 - Legacy table-based diffs and React/grid-based diffs
-- Chrome 116 or later with Manifest V3
+- Chrome 152 or later with Manifest V3
 
 GitHub Enterprise Server, individual commit diffs, and rich diffs are not currently supported.
 

@@ -13,11 +13,11 @@
     suffixes.map((suffix) => `--hunkmark-sticky-hunk-${suffix}`),
   );
   const TIMELINE_STYLES = styleNames(
-    "compress-start", "compress-end", "tail-start", "tail-end",
     "auxiliary-start", "auxiliary-end", "push-distance", "push-start", "push-end",
+    "tail-compensation", "tail-compensate-start", "tail-compensate-end",
   );
-  const CONTENT_STYLES = styleNames("content-inset", "bottom-inset");
-  const ROW_CLASSES = classNames("active", "row", "prepared");
+  const CONTENT_STYLES = styleNames("content-inset", "bottom-inset", "compact-height", "actions-top", "focus-height");
+  const ROW_CLASSES = classNames("active", "row", "prepared", "tail-constrained", "compact-return");
 
   function clearClasses(element, classes) {
     element?.classList.remove(...classes);

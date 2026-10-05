@@ -19,8 +19,8 @@ validateManifestBoundary(manifest);
 assert.equal(manifest.manifest_version, 3, "Manifest V3 is required");
 assert.equal(
   manifest.minimum_chrome_version,
-  "116",
-  "Chrome 116 or later is required",
+  "152",
+  "Chrome 152 or later is required",
 );
 assert.equal(
   manifest.name,

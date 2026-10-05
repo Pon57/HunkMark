@@ -186,7 +186,22 @@
       const inset = Math.round(rawInset * 100) / 100;
       const bottomInset =
         Math.round(Math.max(0, height - compactHeight - inset) * 100) / 100;
-      return { bottomInset, compactHeight, inset };
+      // The compact band is row-relative, but actions are positioned inside
+      // the cell's padding box. Cache that conversion with the content metrics.
+      const cellRect = controller.hunkCell?.getBoundingClientRect?.();
+      const cellTop = Number(cellRect?.top);
+      const cellOffset = Number.isFinite(cellTop) && Number.isFinite(Number(rect.top))
+        ? cellTop - Number(rect.top) + (Number(controller.hunkCell.clientTop) || 0)
+        : 0;
+      const actionsTop = Math.round((inset + compactHeight / 2 - cellOffset) * 100) / 100;
+      // The host's inset focus frame fills the padding box, excluding borders.
+      // Non-layout environments can fall back to the bounded natural cell box.
+      const fallbackHeight = firstPositiveNumber(cellRect?.height, height, baseHeight);
+      const focusHeight = firstPositiveNumber(
+        controller.hunkCell?.clientHeight,
+        Math.min(fallbackHeight, height || fallbackHeight),
+      );
+      return { actionsTop, bottomInset, compactHeight, focusHeight, inset };
     },
 
     syncStickyHunkAuxiliaryElements(controller) {
@@ -215,8 +230,15 @@
 
     applyStickyHunkContentInset(
       controller,
-      { bottomInset, compactHeight, inset },
+      {
+        bottomInset, compactHeight, inset,
+        actionsTop = inset + compactHeight / 2,
+        focusHeight = compactHeight + inset + bottomInset,
+      },
     ) {
+      controller.stickyHunkActionsTop = actionsTop;
+      controller.stickyHunkFocusHeight = focusHeight;
+      controller.stickyHunkTailRoomLayoutGeneration = null;
       controller.stickyHunkCompactHeight = compactHeight;
       this.syncStickyHunkAuxiliaryElements(controller);
       controller.stickyHunkContentInset = inset;
@@ -225,6 +247,21 @@
     },
 
     syncStickyHunkContentStyles(controller) {
+      setPixelStyle(
+        controller.hunkRow,
+        "--hunkmark-sticky-hunk-focus-height",
+        controller.stickyHunkFocusHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX,
+      );
+      setPixelStyle(
+        controller.hunkRow,
+        "--hunkmark-sticky-hunk-actions-top",
+        controller.stickyHunkActionsTop ?? 0,
+      );
+      setPixelStyle(
+        controller.hunkRow,
+        "--hunkmark-sticky-hunk-compact-height",
+        controller.stickyHunkCompactHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX,
+      );
       setPixelStyle(
         controller.hunkRow,
         "--hunkmark-sticky-hunk-content-inset",
@@ -237,6 +274,39 @@
         Math.max(0, controller.stickyHunkBottomInset ?? 0),
         true,
       );
+    },
+
+    syncStickyHunkTailRoom(controller, naturalTop, hasFollowingHunk) {
+      const row = controller.hunkRow;
+      const constrained = controller.collapsed && !hasFollowingHunk &&
+        (controller.stickyHunkBottomInset ?? 0) > 0;
+      if (
+        row.classList.contains("hunkmark-sticky-hunk-tail-constrained") !==
+        constrained
+      ) {
+        row.classList.toggle("hunkmark-sticky-hunk-tail-constrained", constrained);
+      }
+      if (!constrained) {
+        controller.stickyHunkTailRoom = null;
+        controller.stickyHunkTailRoomLayoutGeneration = null;
+        return;
+      }
+      const state = this.hunkStickyStateByFile.get(controller.fileElement);
+      if (
+        controller.stickyHunkTailRoomLayoutGeneration !==
+        state?.originLayoutGeneration
+      ) {
+        const container = row.tagName === "TR"
+          ? row.closest("table") : row.parentElement;
+        const bottom = Number(container?.getBoundingClientRect().bottom) +
+          (Number(this.window.scrollY) || 0);
+        const height =
+          (controller.stickyHunkCompactHeight ?? this.constants.STICKY_HUNK_HEIGHT_PX) +
+          (controller.stickyHunkContentInset ?? 0) + (controller.stickyHunkBottomInset ?? 0);
+        controller.stickyHunkTailRoom = Number.isFinite(bottom)
+          ? Math.max(0, bottom - naturalTop - height) : 0;
+        controller.stickyHunkTailRoomLayoutGeneration = state?.originLayoutGeneration;
+      }
     },
 
     stickyHunkContentMetrics(state, controller, measurements) {
@@ -252,6 +322,8 @@
         );
       }
       return measurements.get(controller) ?? {
+        actionsTop: controller.stickyHunkActionsTop,
+        focusHeight: controller.stickyHunkFocusHeight,
         bottomInset: controller.stickyHunkBottomInset ?? 0,
         compactHeight:
           controller.stickyHunkCompactHeight ??

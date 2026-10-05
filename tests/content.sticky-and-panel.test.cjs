@@ -52,7 +52,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
     assert.ok(Number(ruleFor(".hunkmark-sticky-file-header").style.zIndex) >
       Number(prepared.zIndex));
     assert.match(prepared.animationTimeline, /scroll\(root block\)/);
-    for (const effect of ["compress", "tail", "push"]) {
+    for (const effect of ["push", "tail-compensate"]) {
       assert.match(prepared.animationName, new RegExp("hunkmark-sticky-hunk-" + effect));
       assert.match(prepared.animationRange, new RegExp("--hunkmark-sticky-hunk-" + effect));
     }
@@ -71,9 +71,10 @@ test("keeps sticky positioning and scroll effects independent of active controls
     assert.equal(measuring.animation, "none");
     assert.equal(measuring.transform, "none");
 
-    const auxiliary = ruleFor(
+    const auxiliary = rules.find((rule) => rule.selectorText?.includes(
       ".hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary",
-    ).style;
+    )).style;
+    assert.doesNotMatch(style.textContent, /@property|--hunkmark-sticky-hunk-(top-clip|bottom-clip|push-offset)/);
     assert.match(auxiliary.animationTimeline, /scroll\(root block\)/);
     assert.match(auxiliary.animation, /disable-auxiliary 1ms steps\(1, start\) both/);
     assert.match(auxiliary.animationRange, /--hunkmark-sticky-hunk-auxiliary-end/);
@@ -1005,7 +1006,7 @@ test("bounds animated hunks and reuses geometry and ranges within a prepared win
         const index = controllers.indexOf(controller);
         assert.equal(controller.stickyHunkOriginDocumentTop, tops[index]);
         assert.equal(
-          controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-compress-start"),
+          controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-auxiliary-start"),
           (tops[index] - state.fileOriginDocumentTop) + "px",
         );
       });
@@ -1635,7 +1636,7 @@ test("updates natural hunk origins after window resize without losing prepared s
 
 
 
-test("returns to each sticky hunk's cached origin after marking it viewed", async () => {
+test("keeps a keyboard-focused Viewed hunk compact and restores its origin only for explicit navigation", async () => {
   const html = duplicateHunkFixture().replace(
     '<div class="file-header">',
     '<div class="file-header" style="position: sticky; top: 0; height: 40px">',
@@ -1671,18 +1672,303 @@ test("returns to each sticky hunk's cached origin after marking it viewed", asyn
 
     current.input.getBoundingClientRect = () => ({ top: 40 });
     current.input.focus();
-    current.input.click();
+    current.input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    changeCheckbox(dom, current.input, true);
     await waitFor(() => {
       assert.equal(current.input.disabled, false);
       assert.equal(current.marked, true);
       assert.equal(scrollCalls.length, 1);
     });
     assert.equal(scrollCalls[0].behavior, "smooth");
-    assert.equal(scrollCalls[0].top, 559);
+    assert.equal(scrollCalls[0].top, 560);
+    assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), true);
     assert.ok(refreshLayoutCalls.includes(true));
     assert.equal(refreshLayoutCalls.at(-1), false);
     assert.equal(previous.marked, false);
     assert.equal(dom.window.document.activeElement, current.input);
+    app.scrollStickyHunkToOrigin(current);
+    assert.equal(scrollCalls[1].top, 559);
+    assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps tall sticky headers compact when collapsed and restores their origin for explicit navigation", async (t) => {
+  const scenarios = [
+    { name: "hunk Viewed", compact: true, interact: ({ controller }) => controller.input.click() },
+    { name: "final hunk Viewed", compact: true, controllerIndex: 1, interact: ({ controller }) => controller.input.click() },
+    { name: "keyboard Viewed", compact: true, interact: ({ controller, dom }) => {
+      controller.input.getBoundingClientRect = () => ({ top: 40 });
+      controller.input.focus();
+      controller.input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      changeCheckbox(dom, controller.input, true);
+    } },
+    { name: "final line Viewed", compact: true, interact: ({ app, controller }) => app.setLineViewed(controller.lines[0], true) },
+    { name: "drag completion", compact: true, interact: async ({ app, controller }) => {
+      app.startLineDrag(controller.lines[0], true, 17);
+      await app.finishLineDrag(true);
+    } },
+    { name: "header click", compact: false, interact: ({ controller, dom }) => {
+      controller.hunkCell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0 }));
+    } },
+    { name: "return button", compact: false, interact: ({ controller }) => controller.returnButton.click() },
+    { name: "manual collapse", compact: true, viewed: false, interact: ({ controller }) => controller.collapseButton.click() },
+    { name: "manual final collapse", compact: true, viewed: false, controllerIndex: 1, interact: ({ controller }) => controller.collapseButton.click() },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const { app, dom } = await startExtension(duplicateHunkFixture());
+      try {
+        const controllers = Array.from(app.controllersByRow.values());
+        const controllerIndex = scenario.controllerIndex ?? 0;
+        const controller = controllers[controllerIndex];
+        const state = app.hunkStickyStateByFile.get(controller.fileElement);
+        const viewport = mockStickyRows(dom, controllers, [600, 900]);
+        state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+        // An asymmetric tall row must finish clipping both edges, not just
+        // reach the point where its text first becomes pinned.
+        app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+        state.stickyTop = 40;
+        viewport.scrollY = controllerIndex === 0 ? 700 : 1_000;
+        app.markStickyHunkContentDirty(state);
+        app.invalidateStickyHunkOrigins(state.fileElement);
+        app.updateStickyHunkState(state);
+        assert.equal(state.activeController, controller);
+        const scrollCalls = [];
+        dom.window.scrollTo = (options) => scrollCalls.push(options);
+
+        await scenario.interact({ app, controller, dom });
+        await waitFor(() => assert.equal(scrollCalls.length, 1));
+        assert.equal(scrollCalls[0].top,
+          scenario.compact ? (controllerIndex === 0 ? 600 : 900) : (controllerIndex === 0 ? 559 : 859));
+        if (scenario.compact) {
+          assert.equal(controller.marked, scenario.viewed ?? true);
+          assert.equal(controller.collapsed, true);
+          assert.equal(controller.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), true);
+        }
+        // Navigation leaves the static clip and full native row size intact.
+        assert.equal(controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-content-inset"), "14px");
+        assert.equal(controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-bottom-inset"), "26px");
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+for (const action of ["collapse", "hunk", "line", "drag"]) {
+  test(`keeps the compact ${action} stop reachable when collapsing reduces the page's scroll range`, async () => {
+    const { app, dom } = await startExtension(duplicateHunkFixture());
+    try {
+      installContentStyles(dom);
+      const controllers = Array.from(app.controllersByRow.values());
+      const controller = controllers[0];
+      const state = app.hunkStickyStateByFile.get(controller.fileElement);
+      const viewport = mockStickyRows(dom, controllers, [600, 900]);
+      const root = dom.window.document.documentElement;
+      const naturalHeight = () => dom.window.innerHeight +
+        (controller.groupRows.some(row => row.classList.contains("hunkmark-collapsed")) ? 500 : 1_000);
+      Object.defineProperty(root, "offsetHeight", { configurable: true, get: naturalHeight });
+      Object.defineProperty(root, "scrollHeight", { configurable: true, get: () => Math.max(
+        naturalHeight(), (Number.parseFloat(app.hunkStickyScrollBoundary?.style.top) || 0) + dom.window.innerHeight,
+      ) });
+      Object.defineProperty(dom.window, "scrollY", { configurable: true, get: () => {
+        viewport.scrollY = Math.min(viewport.scrollY, root.scrollHeight - dom.window.innerHeight);
+        return viewport.scrollY;
+      } });
+      state.fileElement.getBoundingClientRect = () => ({ top: 100 - dom.window.scrollY });
+      app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+      state.stickyTop = 40;
+      viewport.scrollY = 700;
+      app.markStickyHunkContentDirty(state);
+      app.invalidateStickyHunkOrigins(state.fileElement);
+      app.updateStickyHunkState(state);
+      const scrollCalls = [];
+      dom.window.scrollTo = options => {
+        scrollCalls.push(options);
+        viewport.scrollY = Math.min(options.top, root.scrollHeight - dom.window.innerHeight);
+      };
+      if (action === "collapse") {
+        controller.collapseButton.click();
+      } else if (action === "hunk") {
+        controller.input.click();
+      } else if (action === "line") {
+        await app.setLineViewed(controller.lines[0], true);
+      } else {
+        app.startLineDrag(controller.lines[0], true, 17);
+        await app.finishLineDrag(true);
+      }
+      await waitFor(() => assert.equal(scrollCalls.length, 1));
+      assert.equal(scrollCalls[0].top, 600);
+      assert.equal(dom.window.scrollY, 600, "the browser must reach the requested stop, not clamp it to 500");
+      assert.equal(app.hunkStickyScrollBoundary.parentElement, root);
+      assert.equal(dom.window.getComputedStyle(app.hunkStickyScrollBoundary).position, "absolute");
+      assert.equal(root.offsetHeight - dom.window.innerHeight, 500, "the diff's natural layout stays unchanged");
+      dom.window.dispatchEvent(new dom.window.Event("scrollend"));
+      assert.equal(root.scrollHeight - dom.window.innerHeight, 600, "release the temporary range above the final stop");
+      assert.equal(dom.window.scrollY, 600);
+      app.scrollStickyHunkToOrigin(controller);
+      dom.window.dispatchEvent(new dom.window.Event("scrollend"));
+      assert.equal(dom.window.scrollY, 559, "explicit header navigation still restores the full origin");
+      viewport.scrollY = 400;
+      dom.window.dispatchEvent(new dom.window.Event("scrollend"));
+      assert.equal(app.hunkStickyScrollBoundary, null, "scrolling back into the natural range releases the boundary");
+      assert.equal(dom.window.scrollY, 400);
+      app.scrollStickyHunkToOrigin(controller, { preserveStickySize: true });
+      if (action === "collapse") {
+        assert.equal(controller.marked, false, "manual collapse does not mark the hunk as viewed");
+        await app.setCollapsed(controller, false);
+      } else {
+        await app.setHunkViewed(controller, false);
+      }
+      assert.equal(scrollCalls.length, 3, "expanding does not schedule another return");
+      assert.equal(app.hunkStickyScrollBoundary, null);
+      assert.equal(root.querySelector(".hunkmark-sticky-scroll-boundary"), null);
+    } finally {
+      app.stop();
+      assert.equal(dom.window.document.querySelector(".hunkmark-sticky-scroll-boundary"), null);
+      dom.window.close();
+    }
+  });
+}
+
+test("releases failed persistence reservations without removing a newer operation's range", async (t) => {
+  for (const action of ["collapse", "hunk", "line", "drag"]) {
+    for (const completion of ["no newer reservation", "newer reservation", "pointer activation"]) {
+      await t.test(`${action}, ${completion}`, async () => {
+        const { app, dom } = await startExtension(duplicateHunkFixture());
+        try {
+          const controllers = Array.from(app.controllersByRow.values());
+          const [controller] = controllers;
+          const state = app.hunkStickyStateByFile.get(controller.fileElement);
+          const viewport = mockStickyRows(dom, controllers, [600, 900]);
+          viewport.scrollY = 700;
+          state.stickyTop = 40;
+          app.invalidateStickyHunkOrigins(state.fileElement);
+          app.updateStickyHunkState(state);
+          let reconciliations = 0;
+          let newerReservation;
+          const failSaving = async () => {
+            assert.ok(app.hunkStickyScrollBoundary?.isConnected, "reserve before persistence");
+            throw new Error("save failed");
+          };
+          app.setReviewStorage = failSaving;
+          app.mutateReviewStorage = failSaving;
+          app.mutateReviewStorageAndReleaseOfficialViewed = failSaving;
+          app.reconcileReviewControllersFromStorage = async () => {
+            reconciliations += 1;
+            if (completion === "newer reservation") {
+              app.reserveStickyHunkScrollRange(controller, 900);
+              newerReservation = app.hunkStickyScrollReservation;
+            } else if (completion === "pointer activation") {
+              dom.window.document.body.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+            }
+            throw new Error("reconciliation failed");
+          };
+          dom.window.console.warn = () => {};
+          const scrolls = [];
+          dom.window.scrollTo = (options) => scrolls.push(options);
+          if (action === "collapse") await app.setCollapsed(controller, true);
+          if (action === "hunk") await app.setHunkViewed(controller, true, { returnToOriginFromSticky: true });
+          if (action === "line") await app.setLineViewed(controller.lines[0], true);
+          if (action === "drag") {
+            app.startLineDrag(controller.lines[0], true, 17);
+            await app.finishLineDrag(true);
+          }
+          assert.equal(reconciliations, 1);
+          assert.equal(scrolls.length, 0);
+          assert.equal(app.hunkStickyScrollFrameId, null);
+          if (completion === "newer reservation") {
+            assert.equal(app.hunkStickyScrollReservation, newerReservation);
+            assert.ok(app.hunkStickyScrollBoundary.isConnected);
+          } else {
+            if (completion === "pointer activation") {
+              assert.ok(app.hunkStickyScrollBoundary.isConnected, "failure cleanup must not move a pressed pointer target");
+              dom.window.document.body.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
+              await waitFor(() => assert.equal(app.hunkStickyScrollBoundary, null));
+            }
+            assert.equal(app.hunkStickyScrollBoundary, null);
+            assert.equal(dom.window.document.querySelector(".hunkmark-sticky-scroll-boundary"), null);
+          }
+        } finally {
+          app.stop();
+          dom.window.close();
+        }
+      });
+    }
+  }
+});
+
+test("a scrollend while persistence is pending does not cancel the intended return", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const [controller] = controllers;
+    const state = app.hunkStickyStateByFile.get(controller.fileElement);
+    const viewport = mockStickyRows(dom, controllers, [600, 900]);
+    viewport.scrollY = 700;
+    state.stickyTop = 40;
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+      configurable: true, get: () => dom.window.innerHeight + 2000,
+    });
+    let finishSaving;
+    app.setReviewStorage = () => new Promise((resolve) => { finishSaving = resolve; });
+    const scrolls = [];
+    dom.window.scrollTo = (options) => { scrolls.push(options); viewport.scrollY = options.top; };
+    const operation = app.setCollapsed(controller, true);
+    dom.window.dispatchEvent(new dom.window.Event("scrollend"));
+    finishSaving();
+    await operation;
+    await waitFor(() => assert.equal(scrolls.length, 1));
+    assert.equal(app.hunkStickyScrollBoundary, null, "natural content supports the final return position");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("an older queued return cannot replace a newer reservation for the same hunk", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [controller] = app.controllersByRow.values();
+    const scrolls = [];
+    dom.window.scrollTo = (options) => scrolls.push(options);
+    app.stickyHunkNaturalDocumentTop = () => 600;
+    const reservation = app.reserveStickyHunkScrollRange(controller, 600);
+    app.scheduleStickyHunkReturn(controller.key, { reservation });
+    app.reserveStickyHunkScrollRange(controller, 800);
+    const newerReservation = app.hunkStickyScrollReservation;
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 50));
+    assert.equal(scrolls.length, 0);
+    assert.equal(app.hunkStickyScrollReservation, newerReservation);
+    assert.equal(app.hunkStickyScrollBoundary.style.top, "800px");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps reserved scroll range across a refresh and removes it when its hunk disappears", async () => {
+  const { app, dom } = await startExtension(largeChangedBlockFixture(4, 48, { hunkSize: 1 }));
+  try {
+    const [controller] = app.controllersByRow.values();
+    app.reserveStickyHunkScrollRange(controller, 600);
+    const boundary = app.hunkStickyScrollBoundary;
+    await app.refresh();
+    assert.equal(app.hunkStickyScrollBoundary, boundary);
+    controller.groupRows.forEach(row => row.remove());
+    await app.refresh();
+    assert.equal(app.hunkStickyScrollBoundary, null);
+    assert.equal(boundary.isConnected, false);
+    const [surviving] = app.controllersByRow.values();
+    app.reserveStickyHunkScrollRange(surviving, 600);
+    app.stop();
+    assert.equal(app.hunkStickyScrollBoundary, null);
   } finally {
     app.stop();
     dom.window.close();
@@ -1714,7 +2000,102 @@ test("does not return an expanded sticky hunk when auto-collapse is disabled", a
   }
 });
 
-test("returns a sticky hunk after its final line is marked viewed", async () => {
+test("caches final-row tail space, restores rewritten styles, and clears it on expansion", async (t) => {
+  for (const room of [0, 10, 60]) {
+    await t.test(`remaining space ${room}px`, async () => {
+      const { app, dom } = await startExtension(duplicateHunkFixture());
+      try {
+        const controllers = Array.from(app.controllersByRow.values());
+        const last = controllers.at(-1);
+        const state = app.hunkStickyStateByFile.get(last.fileElement);
+        const viewport = mockStickyRows(dom, controllers, [600, 900]);
+        state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+        app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+        let remaining = room;
+        let reads = 0;
+        last.hunkRow.closest("table").getBoundingClientRect = () => {
+          reads += 1;
+          return { bottom: 964 + remaining - viewport.scrollY };
+        };
+        last.collapsed = true;
+        app.applyControllerAppearance(last);
+        app.markStickyHunkContentDirty(state);
+        app.invalidateStickyHunkOrigins(state.fileElement);
+        app.updateStickyHunkState(state);
+        assert.equal(last.stickyHunkTailRoom, room);
+        assert.equal(reads, 1);
+        viewport.scrollY = 800;
+        app.updateStickyHunkState(state);
+        assert.equal(reads, 1, "scrolling must reuse the container measurement");
+
+        last.hunkRow.classList.remove("hunkmark-sticky-hunk-tail-constrained");
+        last.hunkRow.style.setProperty("--hunkmark-sticky-hunk-tail-compensation", "999px");
+        app.updateStickyHunkState(state);
+        assert.ok(last.hunkRow.classList.contains("hunkmark-sticky-hunk-tail-constrained"));
+        assert.equal(last.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-tail-compensation"), `${Math.max(0, 26 - room)}px`);
+        assert.equal(reads, 1, "restoring styles must not remeasure the table");
+
+        remaining += 5;
+        app.invalidateStickyHunkOrigins(state.fileElement);
+        app.updateStickyHunkState(state);
+        assert.equal(last.stickyHunkTailRoom, room + 5);
+        assert.equal(reads, 2);
+        last.collapsed = false;
+        app.applyControllerAppearance(last);
+        app.updateStickyHunkState(state);
+        assert.equal(last.hunkRow.classList.contains("hunkmark-sticky-hunk-tail-constrained"), false);
+        assert.equal(last.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-tail-compensation"), "0px");
+        assert.equal(last.stickyHunkTailRoom, null);
+        assert.equal(reads, 2);
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});
+
+test("prepares owned collapse geometry before persistence yields during refresh", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  let release;
+  try {
+    const controllers = Array.from(app.controllersByRow.values());
+    const [other, last] = controllers;
+    const state = app.hunkStickyStateByFile.get(last.fileElement);
+    const viewport = mockStickyRows(dom, controllers, [600, 900]);
+    state.stickyTop = 40;
+    state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+    last.hunkRow.closest("table").getBoundingClientRect = () => ({ bottom: 974 - viewport.scrollY });
+    app.measureStickyHunkContentInset = () => ({ inset: 14, bottomInset: 26, compactHeight: 24 });
+    viewport.scrollY = 950;
+    app.markStickyHunkContentDirty(state);
+    app.invalidateStickyHunkOrigins(state.fileElement);
+    app.updateStickyHunkState(state);
+    const original = app.mutateReviewStorageAndReleaseOfficialViewed.bind(app);
+    const gate = new Promise((resolve) => { release = resolve; });
+    app.mutateReviewStorageAndReleaseOfficialViewed = async (...args) => { await gate; return original(...args); };
+    app.refreshRunning = true;
+    other.input.disabled = true;
+    const saving = app.setHunkViewed(last, true, { returnToOriginFromSticky: true });
+    assert.equal(last.collapsed, true);
+    assert.ok(last.hunkRow.classList.contains("hunkmark-sticky-hunk-tail-constrained"));
+    assert.equal(last.stickyHunkTailRoom, 10);
+    assert.equal(last.stickyHunkOriginLayoutGeneration, state.originLayoutGeneration);
+    // No animation frame or storage completion has run yet.
+    assert.equal(last.input.disabled, true);
+    app.refreshRunning = false;
+    other.input.disabled = false;
+    release();
+    await saving;
+  } finally {
+    release?.();
+    app.refreshRunning = false;
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("keeps final-line Viewed returns compact with keyboard or pointer focus", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
     const controllers = Array.from(app.controllersByRow.values());
@@ -1736,7 +2117,7 @@ test("returns a sticky hunk after its final line is marked viewed", async () => 
 
     assert.equal(controller.marked, true);
     assert.equal(controller.collapsed, true);
-    assert.equal(scrollCalls[0].top, 559);
+    assert.equal(scrollCalls[0].top, 560);
     assert.equal(dom.window.document.activeElement, controller.input);
 
     // Scrolling while the pointer is held must not skip return on release.
@@ -1746,6 +2127,7 @@ test("returns a sticky hunk after its final line is marked viewed", async () => 
     app.invalidateStickyHunkOrigins(controller.fileElement);
     app.updateStickyHunkState(state);
     dragged.lines[0].control.getBoundingClientRect = () => ({ top: 200 });
+    dragged.lines[0].control.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
     dragged.lines[0].control.focus();
     app.startLineDrag(dragged.lines[0], true, 7);
     viewport.scrollY = 600;
@@ -1756,7 +2138,7 @@ test("returns a sticky hunk after its final line is marked viewed", async () => 
     await waitFor(() => assert.equal(scrollCalls.length, 2));
     assert.equal(dragged.marked, true);
     assert.equal(dragged.collapsed, true);
-    assert.equal(scrollCalls[1].top, 559);
+    assert.equal(scrollCalls[1].top, 560);
     assert.equal(dom.window.document.activeElement, dragged.input);
   } finally {
     app.stop();
@@ -1890,7 +2272,7 @@ test("syncs prepared file interactions while another file is dirty during refres
           dom,
         });
         await waitFor(() => assert.equal(secondSecond.collapsed, true));
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await waitFor(() => assert.equal(scrollCalls.length, 1));
 
         assert.equal(firstOriginReads, 0);
         assert.equal(secondOriginReads, scenario.dirtyGeometry ? 4 : 2);
@@ -1921,7 +2303,7 @@ test("syncs prepared file interactions while another file is dirty during refres
           true,
         );
         assert.equal(scrollCalls.length, 1);
-        assert.equal(scrollCalls[0].top, scenario.dirtyGeometry ? 1_823 : 1_799);
+        assert.equal(scrollCalls[0].top, scenario.dirtyGeometry ? 1_824 : 1_800);
         assert.equal(firstSecond.marked, false);
       } finally {
         app.refreshQueued = false;
@@ -2025,7 +2407,7 @@ test("offers keyboard return navigation and honors reduced motion", async () => 
   }
 });
 
-test("returns a manually collapsed sticky hunk to its cached origin", async () => {
+test("returns a manually collapsed sticky hunk to its compact boundary without losing focus", async () => {
   const html = duplicateHunkFixture().replace(
     '<div class="file-header">',
     '<div class="file-header" style="position: sticky; top: 0; height: 40px">',
@@ -2058,7 +2440,9 @@ test("returns a manually collapsed sticky hunk to its cached origin", async () =
       assert.equal(scrollCalls.length, 1);
     });
     assert.equal(scrollCalls[0].behavior, "smooth");
-    assert.equal(scrollCalls[0].top, 359);
+    assert.equal(scrollCalls[0].top, 360);
+    assert.equal(current.marked, false);
+    assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), true);
     assert.equal(
       dom.window.document.activeElement,
       current.collapseButton,
@@ -2102,6 +2486,9 @@ for (const scenario of [
       return () => {
         dom.window.document.body.dispatchEvent(
           new dom.window.Event("pointerdown", { bubbles: true }),
+        );
+        dom.window.document.body.dispatchEvent(
+          new dom.window.Event("pointerup", { bubbles: true }),
         );
       };
     },
@@ -2164,12 +2551,85 @@ for (const scenario of [
 
       assert.equal(current.collapsed, true);
       assert.equal(scrollCalls.length, scenario.expectedScrollCalls);
+      if (scenario.expectedScrollCalls === 0) {
+        assert.equal(app.hunkStickyScrollBoundary, null, "cancelled returns must release their reserved range");
+      }
     } finally {
       app.stop();
       dom.window.close();
     }
   });
 }
+
+test("keeps pointer activation stable while releasing cancelled scroll reservations", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [controller] = app.controllersByRow.values();
+    Object.defineProperty(dom.window, "scrollY", { configurable: true, get: () =>
+      Math.min(700, Math.max(500, Number.parseFloat(app.hunkStickyScrollBoundary?.style.top) || 0)),
+    });
+    const signal = (type) => dom.window.document.body.dispatchEvent(
+      new dom.window.Event(type, { bubbles: true }),
+    );
+    app.reserveStickyHunkScrollRange(controller, 700);
+    signal("pointerdown");
+    assert.equal(dom.window.scrollY, 700, "do not move the click target before pointer activation finishes");
+    signal("pointerup");
+    app.reserveStickyHunkScrollRange(controller, 700);
+    const newerReservation = app.hunkStickyScrollBoundary;
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 40));
+    assert.equal(app.hunkStickyScrollBoundary, newerReservation, "deferred cleanup cannot remove a newer reservation for the same hunk");
+    app.cancelStickyHunkReturn();
+    assert.equal(dom.window.scrollY, 500);
+
+    app.reserveStickyHunkScrollRange(controller, 700);
+    signal("pointerdown");
+    signal("pointerup");
+    await waitFor(() => assert.equal(app.hunkStickyScrollBoundary, null));
+    assert.equal(dom.window.scrollY, 500);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("releases cancelled reservations without clearing newer or committed sticky return ranges", async () => {
+  const { app, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    const [controller] = app.controllersByRow.values();
+    const oldGeneration = app.hunkStickyNavigationGeneration;
+    app.reserveStickyHunkScrollRange(controller, 600);
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, null);
+
+    app.reserveStickyHunkScrollRange(controller, 600);
+    const newerBoundary = app.hunkStickyScrollBoundary;
+    app.scheduleStickyHunkReturn(controller.key, { navigationGeneration: oldGeneration });
+    assert.equal(app.hunkStickyScrollBoundary, newerBoundary, "a stale operation cannot discard the new reservation");
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, null);
+
+    dom.window.scrollTo = () => {};
+    app.stickyHunkNaturalDocumentTop = () => 600;
+    app.scrollStickyHunkToOrigin(controller, { preserveStickySize: true });
+    const committedBoundary = app.hunkStickyScrollBoundary;
+    app.cancelStickyHunkReturn();
+    assert.equal(app.hunkStickyScrollBoundary, committedBoundary, "retain the range supporting a compact return target");
+    assert.equal(app.hunkStickyScrollBoundaryTarget, 600);
+
+    Object.defineProperty(dom.window, "scrollY", { configurable: true, get: () => 700 });
+    Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+      configurable: true, get: () => dom.window.innerHeight + 500,
+    });
+    app.reserveStickyHunkScrollRange(controller, 1000);
+    app.stickyHunkNaturalDocumentTop = () => 700;
+    app.scrollStickyHunkToOrigin(controller, { preserveStickySize: true });
+    assert.equal(app.hunkStickyScrollBoundary.style.top, "700px", "a no-op scroll must release excess range without waiting for scrollend");
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
 
 test("cancels a scheduled sticky return when the user navigates", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
@@ -2513,7 +2973,7 @@ test("remeasures file-relative hunk origins after an identity-safe diff mutation
       );
       assert.equal(
         innerControllers[1].hunkRow.style.getPropertyValue(
-          "--hunkmark-sticky-hunk-compress-start",
+          "--hunkmark-sticky-hunk-auxiliary-start",
         ),
         "320px",
       );
@@ -2937,15 +3397,17 @@ test("restores rewritten animation styles even when row geometry stays cached", 
     const style = controller.hunkRow.style;
     const properties = Array.from(style).filter((name) =>
       name.startsWith('--hunkmark-sticky-hunk-') &&
-      !['--hunkmark-sticky-hunk-content-inset', '--hunkmark-sticky-hunk-bottom-inset'].includes(name),
+      !['--hunkmark-sticky-hunk-content-inset', '--hunkmark-sticky-hunk-bottom-inset', '--hunkmark-sticky-hunk-compact-height', '--hunkmark-sticky-hunk-actions-top', '--hunkmark-sticky-hunk-focus-height'].includes(name),
     );
     const ranges = properties.map((name) => [name, style.getPropertyValue(name)]);
-    assert.equal(ranges.length, 9);
+    assert.equal(ranges.length, 8);
     style.cssText = 'color: red';
     await app.refresh();
     assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
     assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-content-inset'), '12px');
     assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-bottom-inset'), '24px');
+    assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-actions-top'), '24px');
+    assert.equal(style.getPropertyValue('--hunkmark-sticky-hunk-focus-height'), '60px');
     assert.equal(style.color, 'red');
     style.setProperty('--hunkmark-sticky-hunk-push-end', '999px');
     let rangeWrites = 0;
@@ -3001,7 +3463,7 @@ test("remeasures enclosing hunk positions when only a nested file resizes", asyn
       controller !== controllers[0]);
     assert.ok(shifted);
     const index = controllers.indexOf(shifted);
-    const oldRange = shifted.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-compress-start');
+    const oldRange = shifted.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-auxiliary-start');
     tops[index] += 80;
     app.hunkStickyFileLayoutObserver.callback([{ target: innerFile }]);
     assert.equal(states[0].originLayoutGeneration, generations[0] + 1);
@@ -3010,7 +3472,7 @@ test("remeasures enclosing hunk positions when only a nested file resizes", asyn
     assert.equal(states[2].fileOriginDirty, true);
     app.updateStickyHunkLayouts();
     assert.equal(app.stickyHunkNaturalDocumentTop(shifted), tops[index]);
-    assert.equal(Number.parseFloat(shifted.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-compress-start')),
+    assert.equal(Number.parseFloat(shifted.hunkRow.style.getPropertyValue('--hunkmark-sticky-hunk-auxiliary-start')),
       Number.parseFloat(oldRange) + 80);
   } finally {
     app.stop(); dom.window.close();
@@ -3234,7 +3696,7 @@ test("clears ranges only from previously prepared rows when a large file exits",
     observer.callback([{ target: state.fileElement, isIntersecting: false }]);
     assert.equal(cleanupTargets.length, installed.length);
     assert.deepEqual(new Set(cleanupTargets), new Set(installed));
-    assert.equal(removals, installed.length * 9);
+    assert.equal(removals, installed.length * 8);
     assert.equal(state.preparedControllers.size, 0);
     installed.forEach((c) => {
       assert.equal(state.controllersWithRanges.has(c), false);
@@ -3245,7 +3707,7 @@ test("clears ranges only from previously prepared rows when a large file exits",
   }
 });
 
-test("returns a viewed focused outgoing hunk to its own origin", async () => {
+test("returns a viewed keyboard-focused outgoing hunk to its own compact position", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
     const controllers = Array.from(app.controllersByRow.values());
@@ -3268,7 +3730,7 @@ test("returns a viewed focused outgoing hunk to its own origin", async () => {
       assert.equal(focused.marked, true);
       assert.equal(scrollCalls.length, 1);
     });
-    assert.equal(scrollCalls[0].top, 159);
+    assert.equal(scrollCalls[0].top, 160);
   } finally {
     app.stop(); dom.window.close();
   }
@@ -3358,5 +3820,81 @@ test("installs ranges and clears a never-prepared focused hunk outside the windo
     assert.equal(state.controllersWithRanges.size, 0);
   } finally {
     app.stop(); dom.window.close();
+  }
+});
+
+
+test("preserves a completed return while a later reservation is abandoned", async (t) => {
+  for (const reason of ["failed save", "same owner", "cancelled", "pointer cancellation", "newer pending", "expanded pending", "removed pending", "expanded prior", "removed prior", "newer committed"]) {
+    await t.test(reason, async () => {
+      const { app, dom } = await startExtension(duplicateHunkFixture());
+      try {
+        const [completed, second] = app.controllersByRow.values();
+        const pending = reason === "same owner" ? completed : second;
+        let requestedTop = 700;
+        Object.defineProperty(dom.window, "scrollY", {
+          configurable: true,
+          get: () => Math.min(requestedTop, Math.max(500,
+            Number.parseFloat(app.hunkStickyScrollBoundary?.style.top) || 0)),
+        });
+        Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+          configurable: true, get: () => dom.window.innerHeight + 500,
+        });
+        dom.window.scrollTo = ({ top }) => { requestedTop = top; };
+        app.stickyHunkNaturalDocumentTop = () => 700;
+        app.scrollStickyHunkToOrigin(completed, { preserveStickySize: true });
+        const boundary = app.hunkStickyScrollBoundary;
+        const token = app.reserveStickyHunkScrollRange(pending, 1100);
+        if (reason === "failed save" || reason === "same owner") {
+          app.releaseStickyHunkScrollReservation(token);
+        }
+        if (reason === "cancelled") app.cancelStickyHunkReturn();
+        if (reason === "pointer cancellation") {
+          const signal = (type) => dom.window.document.body.dispatchEvent(
+            new dom.window.Event(type, { bubbles: true }),
+          );
+          signal("pointerdown");
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundaryTarget, null);
+          assert.equal(dom.window.scrollY, 700);
+          signal("pointercancel");
+          await waitFor(() => assert.equal(app.hunkStickyScrollBoundaryTarget, 700));
+        }
+        if (reason === "newer pending") {
+          const newer = app.reserveStickyHunkScrollRange(pending, 1200);
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollReservation, newer);
+          app.releaseStickyHunkScrollReservation(newer);
+        }
+        if (reason === "expanded pending") app.clearStickyHunkScrollRange(pending);
+        if (reason === "removed pending") {
+          pending.hunkRow.remove();
+          app.pruneStickyHunkScrollRange();
+        }
+        if (reason === "expanded prior") app.clearStickyHunkScrollRange(completed);
+        if (reason === "removed prior") completed.hunkRow.remove();
+        if (reason === "expanded prior" || reason === "removed prior") {
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundary, null, "do not restore an invalid prior owner");
+          return;
+        }
+        if (reason === "newer committed") {
+          app.stickyHunkNaturalDocumentTop = () => 900;
+          app.scrollStickyHunkToOrigin(pending, { preserveStickySize: true });
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundaryTarget, 900);
+          assert.equal(app.hunkStickyScrollBoundaryKey, pending.key);
+          return;
+        }
+        assert.equal(app.hunkStickyScrollBoundary, boundary);
+        assert.equal(app.hunkStickyScrollBoundaryKey, completed.key);
+        assert.equal(app.hunkStickyScrollBoundaryTarget, 700);
+        assert.equal(dom.window.scrollY, 700, "abandoning the next operation must not clamp the completed return");
+        assert.equal(boundary.style.top, "700px", "release the abandoned operation's excess range");
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
   }
 });

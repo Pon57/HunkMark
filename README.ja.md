@@ -51,7 +51,7 @@ git clone https://github.com/Pon57/HunkMark.git
 - GitHub.com の Pull Request にある **Files changed** 画面
 - Unified / Split のソース diff
 - 従来のテーブル形式と React/grid 形式の diff
-- Chrome 116 以降（Manifest V3）
+- Chrome 152 以降（Manifest V3）
 
 GitHub Enterprise Server、コミット単体の diff、リッチ diff は現在の対象外です。
 
