@@ -142,15 +142,27 @@ test("keeps natural header copies out of diff discovery and forwards their click
     const proxy = controller.stickyHunkNaturalSurface.querySelector(".js-expand");
     assert.equal(proxy.tabIndex, -1);
     let received = null;
-    native.addEventListener("click", (event) => { received = [event.shiftKey, event.clientX]; });
+    let intentAtNativeClick;
+    native.addEventListener("click", (event) => {
+      received = [event.shiftKey, event.clientX];
+      intentAtNativeClick = app.activeHostContextExpansionIntents()
+        .find((intent) => intent.source.control === native);
+    });
+    app.handleHostContextExpansionClick({ isTrusted: false, target: native, button: 0 });
+    assert.equal(app.hostContextExpansionIntents.size, 0, "untrusted native events remain ignored");
     proxy.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     proxy.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0, shiftKey: true, clientX: 25 }));
     assert.deepEqual(received, [true, 25]);
+    assert.ok(intentAtNativeClick, "capture the source snapshot before dispatching the forwarded click");
+    assert.deepEqual(Array.from(intentAtNativeClick.capture.lineKeys), controllers.flatMap((c) => c.lines.map((line) => line.key)));
+    assert.equal(app.hostContextExpansionIntents.size, 1, "capture the forwarded expansion only once");
     assert.equal(dom.window.document.activeElement, native);
+    app.clearAllHostContextExpansionIntents();
     native.disabled = true;
     received = null;
     proxy.click();
     assert.equal(received, null);
+    assert.equal(app.hostContextExpansionIntents.size, 0);
 
     const scrollCalls = [];
     dom.window.scrollTo = (options) => scrollCalls.push(options);
@@ -168,6 +180,7 @@ test("keeps natural header copies out of diff discovery and forwards their click
     kebab.disabled = true;
     kebabProxy.click();
     assert.equal(kebabClicks, 2);
+    assert.equal(app.hostContextExpansionIntents.size, 0, "menu controls are not context expansion intents");
 
     controller.stickyHunkNaturalRow.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, button: 0 }));
     assert.equal(scrollCalls.at(-1).top, 559);

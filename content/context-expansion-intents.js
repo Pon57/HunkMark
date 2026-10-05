@@ -15,6 +15,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const control = target?.closest(
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
       );
+      this.captureHostContextExpansionControl(control);
+    },
+
+    captureHostContextExpansionControl(control) {
       if (!control || control.closest("[data-hunkmark-ui]")) {
         return;
       }

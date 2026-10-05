@@ -183,6 +183,11 @@
               !source?.isConnected || sourceControl.disabled) {
             return;
           }
+          // The dispatched native event is synthetic, so capture the source
+          // snapshot explicitly before GitHub can replace its diff rows.
+          this.captureHostContextExpansionControl(source.closest(
+            this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
+          ));
           this.focusStickyHunkWithoutReveal(controller, sourceControl);
           source.dispatchEvent(new this.window.MouseEvent("click", {
             bubbles: true,
