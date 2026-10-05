@@ -4272,3 +4272,79 @@ test("installs ranges and clears a never-prepared focused hunk outside the windo
     app.stop(); dom.window.close();
   }
 });
+
+
+test("preserves a completed return while a later reservation is abandoned", async (t) => {
+  for (const reason of ["failed save", "same owner", "cancelled", "pointer cancellation", "newer pending", "expanded pending", "removed pending", "expanded prior", "removed prior", "newer committed"]) {
+    await t.test(reason, async () => {
+      const { app, dom } = await startExtension(duplicateHunkFixture());
+      try {
+        const [completed, second] = app.controllersByRow.values();
+        const pending = reason === "same owner" ? completed : second;
+        let requestedTop = 700;
+        Object.defineProperty(dom.window, "scrollY", {
+          configurable: true,
+          get: () => Math.min(requestedTop, Math.max(500,
+            Number.parseFloat(app.hunkStickyScrollBoundary?.style.top) || 0)),
+        });
+        Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+          configurable: true, get: () => dom.window.innerHeight + 500,
+        });
+        dom.window.scrollTo = ({ top }) => { requestedTop = top; };
+        app.stickyHunkNaturalDocumentTop = () => 700;
+        app.scrollStickyHunkToOrigin(completed, { preserveStickySize: true });
+        const boundary = app.hunkStickyScrollBoundary;
+        const token = app.reserveStickyHunkScrollRange(pending, 1100);
+        if (reason === "failed save" || reason === "same owner") {
+          app.releaseStickyHunkScrollReservation(token);
+        }
+        if (reason === "cancelled") app.cancelStickyHunkReturn();
+        if (reason === "pointer cancellation") {
+          const signal = (type) => dom.window.document.body.dispatchEvent(
+            new dom.window.Event(type, { bubbles: true }),
+          );
+          signal("pointerdown");
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundaryTarget, null);
+          assert.equal(dom.window.scrollY, 700);
+          signal("pointercancel");
+          await waitFor(() => assert.equal(app.hunkStickyScrollBoundaryTarget, 700));
+        }
+        if (reason === "newer pending") {
+          const newer = app.reserveStickyHunkScrollRange(pending, 1200);
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollReservation, newer);
+          app.releaseStickyHunkScrollReservation(newer);
+        }
+        if (reason === "expanded pending") app.clearStickyHunkScrollRange(pending);
+        if (reason === "removed pending") {
+          pending.hunkRow.remove();
+          app.pruneStickyHunkScrollRange();
+        }
+        if (reason === "expanded prior") app.clearStickyHunkScrollRange(completed);
+        if (reason === "removed prior") completed.hunkRow.remove();
+        if (reason === "expanded prior" || reason === "removed prior") {
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundary, null, "do not restore an invalid prior owner");
+          return;
+        }
+        if (reason === "newer committed") {
+          app.stickyHunkNaturalDocumentTop = () => 900;
+          app.scrollStickyHunkToOrigin(pending, { preserveStickySize: true });
+          app.releaseStickyHunkScrollReservation(token);
+          assert.equal(app.hunkStickyScrollBoundaryTarget, 900);
+          assert.equal(app.hunkStickyScrollBoundaryKey, pending.key);
+          return;
+        }
+        assert.equal(app.hunkStickyScrollBoundary, boundary);
+        assert.equal(app.hunkStickyScrollBoundaryKey, completed.key);
+        assert.equal(app.hunkStickyScrollBoundaryTarget, 700);
+        assert.equal(dom.window.scrollY, 700, "abandoning the next operation must not clamp the completed return");
+        assert.equal(boundary.style.top, "700px", "release the abandoned operation's excess range");
+      } finally {
+        app.stop();
+        dom.window.close();
+      }
+    });
+  }
+});

@@ -8,6 +8,10 @@
     return;
   }
   const { AUXILIARY_SELECTOR } = Sticky;
+  const NATIVE_CONTROL_SELECTOR = [
+    "a", "button", "input", "select", "textarea", "label", "summary",
+    '[role="button"]', "[tabindex]", '[contenteditable="true"]',
+  ].join(", ");
   const AUXILIARY_RANGES = [
     "--hunkmark-sticky-hunk-auxiliary-start",
     "--hunkmark-sticky-hunk-auxiliary-end",
@@ -88,7 +92,7 @@
       controller.stickyHunkNaturalRow = null;
       controller.stickyHunkNaturalState = null;
       controller.stickyHunkNaturalLayer = null;
-      controller.stickyHunkNaturalAuxiliaries = [];
+      controller.stickyHunkNaturalControls = [];
       if (record && !record.layer.children.length) {
         record.layer.remove();
         if (this.hunkStickyNaturalLayersByParent.get(record.parent) === record) {
@@ -148,7 +152,7 @@
       row.removeAttribute("id");
       row.querySelectorAll("[id]").forEach((element) => element.removeAttribute("id"));
       row.querySelectorAll("[data-hunkmark-ui]").forEach((element) => element.remove());
-      row.querySelectorAll("a, button, input, select, textarea, [tabindex]")
+      row.querySelectorAll(NATIVE_CONTROL_SELECTOR)
         .forEach((element) => { element.tabIndex = -1; });
       row.addEventListener("click", (event) => {
         const selection = this.window.getSelection();
@@ -172,19 +176,28 @@
         }
       });
 
-      const sources = Array.from(sourceRow.querySelectorAll(AUXILIARY_SELECTOR))
-        .filter((element) => !element.closest("[data-hunkmark-ui]"));
-      const targets = Array.from(row.querySelectorAll(AUXILIARY_SELECTOR));
-      controller.stickyHunkNaturalAuxiliaries = targets.map((target, index) => {
-        const source = sources[index];
-        const sourceControl = source?.closest("button, a, [tabindex]") ?? source;
-        const targetControl = target.closest("button, a, [tabindex]") ?? target;
+      // Keep auxiliary targets first so expansion snapshots and icon clicks
+      // still use the original native target. Shared button ancestors get one
+      // listener, even when both an icon and the button match these selectors.
+      const pairs = [AUXILIARY_SELECTOR, NATIVE_CONTROL_SELECTOR].flatMap((selector) => {
+        const sources = Array.from(sourceRow.querySelectorAll(selector))
+          .filter((element) => !element.closest("[data-hunkmark-ui]"));
+        return Array.from(row.querySelectorAll(selector), (target, index) => ({
+          source: sources[index], target,
+        }));
+      });
+      const boundControls = new Set();
+      controller.stickyHunkNaturalControls = pairs.flatMap(({ source, target }) => {
+        const sourceControl = source?.closest(NATIVE_CONTROL_SELECTOR) ?? source;
+        const targetControl = target.closest(NATIVE_CONTROL_SELECTOR) ?? target;
+        if (!sourceControl || boundControls.has(targetControl)) return [];
+        boundControls.add(targetControl);
         targetControl.addEventListener("mousedown", (event) => event.preventDefault());
         targetControl.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopImmediatePropagation();
           if (event.button !== 0 || !this.reviewControllerIsCurrent(controller) ||
-              !source?.isConnected || sourceControl.disabled) {
+              !source?.isConnected || sourceControl.matches(":disabled")) {
             return;
           }
           // The dispatched native event is synthetic, so capture the source
@@ -208,8 +221,12 @@
             detail: event.detail,
             view: this.window,
           }));
+          // Native inputs can change properties without attribute mutations.
+          // Rebuild from the real control after its default activation settles.
+          controller.stickyHunkNaturalContentDirty = true;
+          this.scheduleStickyHunkLayout();
         });
-        return { source: sourceControl, target: targetControl };
+        return [{ source: sourceControl, target: targetControl }];
       });
       if (sourceRow.tagName === "TR") {
         const body = this.document.createElement("tbody");
@@ -315,7 +332,7 @@
           controller.stickyHunkNaturalRow.style.setProperty(property, value);
         }
       });
-      (controller.stickyHunkNaturalAuxiliaries ?? []).forEach(({ source, target }) => {
+      (controller.stickyHunkNaturalControls ?? []).forEach(({ source, target }) => {
         if (source && "disabled" in target && target.disabled !== source.disabled) {
           target.disabled = source.disabled;
         }
