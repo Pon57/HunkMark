@@ -1679,7 +1679,7 @@ test("keeps a keyboard-focused Viewed hunk compact and restores its origin only 
       assert.equal(current.marked, true);
       assert.equal(scrollCalls.length, 1);
     });
-    assert.equal(scrollCalls[0].behavior, "smooth");
+    assert.equal(scrollCalls[0].behavior, "instant");
     assert.equal(scrollCalls[0].top, 560);
     assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), true);
     assert.ok(refreshLayoutCalls.includes(true));
@@ -1802,6 +1802,7 @@ for (const action of ["collapse", "hunk", "line", "drag"]) {
         await app.finishLineDrag(true);
       }
       await waitFor(() => assert.equal(scrollCalls.length, 1));
+      await waitFor(() => assert.equal(app.hunkStickyScrollBoundaryTarget, 600));
       assert.equal(scrollCalls[0].top, 600);
       assert.equal(dom.window.scrollY, 600, "the browser must reach the requested stop, not clamp it to 500");
       assert.equal(app.hunkStickyScrollBoundary.parentElement, root);
@@ -1847,6 +1848,9 @@ test("releases failed persistence reservations without removing a newer operatio
           const viewport = mockStickyRows(dom, controllers, [600, 900]);
           viewport.scrollY = 700;
           state.stickyTop = 40;
+          Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+            configurable: true, get: () => dom.window.innerHeight + 2000,
+          });
           app.invalidateStickyHunkOrigins(state.fileElement);
           app.updateStickyHunkState(state);
           let reconciliations = 0;
@@ -1879,7 +1883,8 @@ test("releases failed persistence reservations without removing a newer operatio
             await app.finishLineDrag(true);
           }
           assert.equal(reconciliations, 1);
-          assert.equal(scrolls.length, 0);
+          assert.equal(scrolls.length, 1, "collapse aligns before persistence, including a failed save");
+          assert.equal(scrolls[0].behavior, "instant");
           assert.equal(app.hunkStickyScrollFrameId, null);
           if (completion === "newer reservation") {
             assert.equal(app.hunkStickyScrollReservation, newerReservation);
@@ -1925,7 +1930,7 @@ test("a scrollend while persistence is pending does not cancel the intended retu
     finishSaving();
     await operation;
     await waitFor(() => assert.equal(scrolls.length, 1));
-    assert.equal(app.hunkStickyScrollBoundary, null, "natural content supports the final return position");
+    await waitFor(() => assert.equal(app.hunkStickyScrollBoundary, null, "natural content supports the final return position"));
   } finally {
     app.stop();
     dom.window.close();
@@ -2113,6 +2118,7 @@ test("keeps final-line Viewed returns compact with keyboard or pointer focus", a
     await app.setLineViewed(controller.lines[0], true);
     await waitFor(() => {
       assert.equal(scrollCalls.length, 1);
+      assert.equal(dom.window.document.activeElement, controller.input);
     });
 
     assert.equal(controller.marked, true);
@@ -2135,7 +2141,10 @@ test("keeps final-line Viewed returns compact with keyboard or pointer focus", a
     const pointerUp = new dom.window.Event("pointerup", { bubbles: true });
     Object.defineProperty(pointerUp, "pointerId", { value: 7 });
     dragged.lines[0].control.dispatchEvent(pointerUp);
-    await waitFor(() => assert.equal(scrollCalls.length, 2));
+    await waitFor(() => {
+      assert.equal(scrollCalls.length, 2);
+      assert.equal(dom.window.document.activeElement, dragged.input);
+    });
     assert.equal(dragged.marked, true);
     assert.equal(dragged.collapsed, true);
     assert.equal(scrollCalls[1].top, 560);
@@ -2272,7 +2281,7 @@ test("syncs prepared file interactions while another file is dirty during refres
           dom,
         });
         await waitFor(() => assert.equal(secondSecond.collapsed, true));
-        await waitFor(() => assert.equal(scrollCalls.length, 1));
+        assert.equal(scrollCalls.length, 0, "an already aligned header needs no scroll");
 
         assert.equal(firstOriginReads, 0);
         assert.equal(secondOriginReads, scenario.dirtyGeometry ? 4 : 2);
@@ -2302,8 +2311,8 @@ test("syncs prepared file interactions while another file is dirty during refres
           ),
           true,
         );
-        assert.equal(scrollCalls.length, 1);
-        assert.equal(scrollCalls[0].top, scenario.dirtyGeometry ? 1_824 : 1_800);
+        assert.equal(scrollCalls.length, 0);
+        assert.equal(dom.window.scrollY, scenario.dirtyGeometry ? 1_824 : 1_800);
         assert.equal(firstSecond.marked, false);
       } finally {
         app.refreshQueued = false;
@@ -2439,7 +2448,7 @@ test("returns a manually collapsed sticky hunk to its compact boundary without l
       assert.equal(current.collapsed, true);
       assert.equal(scrollCalls.length, 1);
     });
-    assert.equal(scrollCalls[0].behavior, "smooth");
+    assert.equal(scrollCalls[0].behavior, "instant");
     assert.equal(scrollCalls[0].top, 360);
     assert.equal(current.marked, false);
     assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-compact-return"), true);
@@ -2480,8 +2489,7 @@ test("looks up a scheduled sticky return without sorting every hunk", async () =
 
 for (const scenario of [
   {
-    expectedScrollCalls: 0,
-    name: "does not auto-return after the user points elsewhere while collapse state saves",
+    name: "does not repeat a prepaint return after the user points elsewhere while collapse state saves",
     prepare({ dom }) {
       return () => {
         dom.window.document.body.dispatchEvent(
@@ -2494,8 +2502,7 @@ for (const scenario of [
     },
   },
   {
-    expectedScrollCalls: 1,
-    name: "keeps auto-return pending across layout-only scroll and programmatic clicks",
+    name: "settles a prepaint return across layout-only scroll and programmatic clicks",
     prepare({ app, dom }) {
       const navigationGeneration = app.hunkStickyNavigationGeneration;
       return () => {
@@ -2509,16 +2516,11 @@ for (const scenario of [
     },
   },
   {
-    expectedScrollCalls: 0,
-    name: "cancels auto-return after scroll-only user movement",
-    prepare({ dom }) {
-      let virtualScroll = 0;
-      Object.defineProperty(dom.window, "scrollY", {
-        configurable: true,
-        get: () => virtualScroll,
-      });
+    expectedTop: 240,
+    name: "does not repeat a prepaint return after scroll-only user movement",
+    prepare({ dom, viewport }) {
       return () => {
-        virtualScroll = 240;
+        viewport.scrollY = 240;
         dom.window.dispatchEvent(new dom.window.Event("scroll"));
       };
     },
@@ -2531,8 +2533,17 @@ for (const scenario of [
     );
     const { app, dom } = await startExtension(html);
     try {
-      const [current] = Array.from(app.controllersByRow.values());
-      current.hunkRow.classList.add("hunkmark-sticky-hunk-active");
+      const controllers = Array.from(app.controllersByRow.values());
+      const [current] = controllers;
+      const viewport = mockStickyRows(dom, controllers, [600, 900]);
+      viewport.scrollY = 700;
+      const state = app.hunkStickyStateByFile.get(current.fileElement);
+      state.fileElement.getBoundingClientRect = () => ({ top: 100 - viewport.scrollY });
+      Object.defineProperty(dom.window.document.documentElement, "offsetHeight", {
+        configurable: true, get: () => dom.window.innerHeight + 2000,
+      });
+      app.invalidateStickyHunkOrigins(current.fileElement);
+      app.updateStickyHunkState(state);
 
       let finishSaving;
       app.setReviewStorage = () =>
@@ -2540,20 +2551,21 @@ for (const scenario of [
           finishSaving = resolve;
         });
       const scrollCalls = [];
-      dom.window.scrollTo = (options) => scrollCalls.push(options);
-      const signalNavigation = scenario.prepare({ app, dom });
+      dom.window.scrollTo = (options) => { scrollCalls.push(options); viewport.scrollY = options.top; };
+      const signalNavigation = scenario.prepare({ app, dom, viewport });
 
       const collapsing = app.setCollapsed(current, true);
+      assert.equal(scrollCalls.length, 1, "align before the save yields");
+      assert.equal(scrollCalls[0].behavior, "instant");
       signalNavigation();
       finishSaving();
       await collapsing;
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       assert.equal(current.collapsed, true);
-      assert.equal(scrollCalls.length, scenario.expectedScrollCalls);
-      if (scenario.expectedScrollCalls === 0) {
-        assert.equal(app.hunkStickyScrollBoundary, null, "cancelled returns must release their reserved range");
-      }
+      assert.equal(scrollCalls.length, 1, "saving must not scroll again");
+      assert.equal(viewport.scrollY, scenario.expectedTop ?? 560);
+      assert.equal(app.hunkStickyScrollBoundary, null, "natural content supports the current position");
     } finally {
       app.stop();
       dom.window.close();

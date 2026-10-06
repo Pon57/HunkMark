@@ -1128,9 +1128,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.updateStickyHunkInteractionsForControllers([controller], {
         allowPendingPersistence: true,
       });
-      const returnScrollPosition = returnTarget
-        ? this.stickyHunkScrollPosition()
-        : null;
+      const returnScrollPosition = this.prepareStickyHunkReturn(
+        returnTarget, scrollReservation,
+      );
 
       let collapseStateKnown = true;
       try {
@@ -1249,9 +1249,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           allowPendingPersistence: true,
         });
       }
-      const returnScrollPosition = returnTarget
-        ? this.stickyHunkScrollPosition()
-        : null;
+      const returnScrollPosition = this.prepareStickyHunkReturn(
+        returnTarget, scrollReservation,
+      );
 
       controller.input.disabled = true;
       const officialViewedPendingKeys =
@@ -1422,9 +1422,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           allowPendingPersistence: true,
         });
       }
-      const returnScrollPosition = returnTarget
-        ? this.stickyHunkScrollPosition()
-        : null;
+      const returnScrollPosition = this.prepareStickyHunkReturn(
+        returnTarget, scrollReservation,
+      );
 
       affectedLines.forEach((line) => {
         if (line.control) {

@@ -164,7 +164,26 @@
       }
     },
 
-    scrollStickyHunkToOrigin(controller, { preserveStickySize = false } = {}) {
+    prepareStickyHunkReturn(controller, reservation) {
+      if (!controller || !reservation) return null;
+      // Collapse and align in one task, before persistence can yield a paint.
+      this.scrollStickyHunkToOrigin(controller, {
+        preserveStickySize: true,
+        behavior: "instant",
+        reservation,
+      });
+      this.updateStickyHunkInteractionsForControllers([controller], {
+        allowPendingPersistence: true,
+      });
+      return this.stickyHunkScrollPosition();
+    },
+
+    scrollStickyHunkToOrigin(controller, {
+      preserveStickySize = false,
+      behavior = null,
+      reservation = null,
+    } = {}) {
+      if (reservation && this.hunkStickyScrollReservation !== reservation) return;
       this.setStickyHunkReturnMode(controller, preserveStickySize);
       const state = this.hunkStickyStateByFile.get(controller.fileElement);
       const naturalTop = this.stickyHunkNaturalDocumentTop(controller, {
@@ -177,14 +196,25 @@
         ? Math.max(0, controller.stickyHunkContentInset ?? 0) + bottomInset
         : -1;
       const top = Math.max(0, naturalTop - (state?.stickyTop ?? 0) + offset);
-      this.reserveStickyHunkScrollRange(controller, Math.max(top, this.window.scrollY));
-      this.hunkStickyScrollBoundaryTarget = top;
-      const behavior = this.window.matchMedia?.(
+      if (reservation) {
+        this.hunkStickyScrollBoundary.style.top = `${Math.ceil(Math.max(top, this.window.scrollY))}px`;
+        // The visual return has already happened. Cancelling a pending save
+        // must retain the range supporting that position, just as for a
+        // completed return. Expansion still removes its reservation.
+        reservation.previous = { key: controller.key, target: top, top };
+        reservation.prepaintTarget = top;
+      } else {
+        this.reserveStickyHunkScrollRange(controller, Math.max(top, this.window.scrollY));
+        this.hunkStickyScrollBoundaryTarget = top;
+      }
+      behavior ??= this.window.matchMedia?.(
         "(prefers-reduced-motion: reduce)",
       )?.matches ? "auto" : "smooth";
-      this.window.scrollTo({ behavior, top });
+      if (Math.abs((Number(this.window.scrollY) || 0) - top) > 0.5) {
+        this.window.scrollTo({ behavior, top });
+      }
       // No-op scrolls need cleanup too: they may never emit scrollend.
-      if (Math.abs((Number(this.window.scrollY) || 0) - top) <= 0.5) {
+      if (!reservation && Math.abs((Number(this.window.scrollY) || 0) - top) <= 0.5) {
         this.settleStickyHunkScrollRange();
       }
     },
@@ -360,7 +390,14 @@
               if (focusTarget) {
                 this.focusStickyHunkOrigin(target, focusTarget);
               }
-              this.scrollStickyHunkToOrigin(target, { preserveStickySize });
+              if (Number.isFinite(reservation?.prepaintTarget)) {
+                // Persistence completion may restore focus, but must not
+                // perform another visible return after the atomic collapse.
+                this.hunkStickyScrollBoundaryTarget = reservation.prepaintTarget;
+                this.settleStickyHunkScrollRange();
+              } else {
+                this.scrollStickyHunkToOrigin(target, { preserveStickySize });
+              }
             } else {
               releaseReservation();
             }

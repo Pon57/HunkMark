@@ -327,9 +327,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.updateStickyHunkInteractionsForControllers(state.controllers, {
             allowPendingPersistence: true,
           });
-          if (returnTarget) {
-            returnScrollPosition = this.stickyHunkScrollPosition();
-          }
+          returnScrollPosition = this.prepareStickyHunkReturn(
+            returnTarget, scrollReservation,
+          );
           await this.mutateReviewStorageAndReleaseOfficialViewed(
             state.controllers,
             reviewMutation,
