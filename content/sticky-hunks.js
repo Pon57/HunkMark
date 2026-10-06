@@ -551,6 +551,7 @@
     },
 
     detachStickyHunkRow(controller) {
+      this.clearStickyHunkClipAnimation(controller);
       this.unobserveStickyHunkRow(controller);
       this.hunkStickyControllerByRow.delete(controller.hunkRow);
       clearClasses(controller.hunkRow, ROW_CLASSES);
@@ -577,6 +578,8 @@
         stickyHunkOriginDocumentTop: null,
         stickyHunkOriginFileDocumentTop: null,
         stickyHunkOriginLayoutGeneration: null,
+        stickyHunkTailRoom: null,
+        stickyHunkTailRoomLayoutGeneration: null,
         stickyHunkOrderIndex: null,
       });
       if (controller.returnButton) {
@@ -617,6 +620,7 @@
     },
 
     cleanupStickyHunks() {
+      this.clearStickyHunkScrollRange();
       this.hunkStickyStateByFile.forEach((state) => {
         this.stopLineControlAttributeObserver(state);
         state.controllers.forEach((controller) => {
@@ -630,6 +634,7 @@
         );
       });
       this.hunkStickyStateByFile.clear();
+      this.hunkStickyClipTimeline = null;
       this.hunkStickyVisibleStates.clear();
       this.hunkStickyFileVisibilityObserver?.disconnect();
       this.hunkStickyFileVisibilityObserver = null;

@@ -315,6 +315,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const focusReturnTarget =
         Boolean(returnTarget) &&
         this.stickyHunkOriginFocusTarget(returnTarget);
+      const scrollReservation = returnTarget
+        ? this.reserveStickyHunkScrollRange(returnTarget) : null;
       let returnScrollPosition = null;
       let reviewStateKnown = true;
 
@@ -322,6 +324,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         if (persist) {
           const reviewMutation =
             this.buildLineDragReviewMutation(state);
+          this.updateStickyHunkInteractionsForControllers(state.controllers, {
+            allowPendingPersistence: true,
+          });
           if (returnTarget) {
             returnScrollPosition = this.stickyHunkScrollPosition();
           }
@@ -374,7 +379,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
               expectedScrollPosition: returnScrollPosition,
               focusTarget: focusReturnTarget,
               navigationGeneration,
+              preserveStickySize: true,
+              reservation: scrollReservation,
             });
+          } else {
+            this.releaseStickyHunkScrollReservation(scrollReservation);
           }
           this.window.setTimeout(() => {
             state.touched.forEach((lineController) => {

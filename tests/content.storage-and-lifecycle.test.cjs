@@ -2396,7 +2396,7 @@ test("yields before, between, and after stable and cold controller refreshes", a
             assert.equal(controller.stickyHunkOriginDocumentTop, rowTop);
             assert.equal(
               controller.hunkRow.style.getPropertyValue(
-                "--hunkmark-sticky-hunk-compress-start",
+                "--hunkmark-sticky-hunk-auxiliary-start",
               ),
               `${rowTop - 100}px`,
             );
