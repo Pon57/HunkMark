@@ -984,6 +984,7 @@ test("shrinks a dragged line range before persisting it", async () => {
     await app.finishLineDrag(true);
     await waitFor(() => {
       assert.equal(scrollCalls.length, 1);
+      assert.equal(dom.window.document.activeElement, controller.input);
     });
     assert.equal(controller.marked, true);
     assert.equal(controller.collapsed, true);
