@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.0](https://github.com/Pon57/HunkMark/compare/v3.2.2...v4.0.0) - 2026-10-06
+
+### Breaking Changes
+- feat!: preserve compact sticky hunk returns and require Chrome 152+ by @Pon57 in https://github.com/Pon57/HunkMark/pull/69
+### Bug Fixes
+- fix: reuse cached Viewed restores for renamed files by @Pon57 in https://github.com/Pon57/HunkMark/pull/67
+- fix: prevent viewport jumps when collapsing sticky hunks by @Pon57 in https://github.com/Pon57/HunkMark/pull/72
+### Dependency Updates
+- chore(deps): update songmu/tagpr action to v1.21.1 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/70
+- bump source-map-js from 1.2.1 to 1.2.2 by @dependabot[bot] in https://github.com/Pon57/HunkMark/pull/71
+
 ## [v3.2.2](https://github.com/Pon57/HunkMark/compare/v3.2.1...v3.2.2) - 2026-10-02
 
 ### Bug Fixes
