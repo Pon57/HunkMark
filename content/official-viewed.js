@@ -73,6 +73,32 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
     },
 
+    deferOfficialViewedSyncAfterReveal(controllers) {
+      const keys = this.beginOfficialViewedReviewPersistence(controllers);
+      // Keep automatic Viewed sync behind the earlier manual intent, without
+      // occupying a file hydration slot or holding up another file's paint.
+      void (async () => {
+        try {
+          await this.withReviewStorageLock(() => {}, { mode: "shared" });
+        } catch (error) {
+          if (!this.stopped && !this.stopForInvalidatedContext(error)) {
+            console.warn("HunkMark could not settle a file reveal.", error);
+          }
+        } finally {
+          this.endOfficialViewedReviewPersistence(keys);
+        }
+      })();
+    },
+
+    fileRevealCanHydrateImmediately(fileElement) {
+      const restore = this.fileRevealPrepaintRestores.get(fileElement);
+      return Boolean(
+        restore && !restore.waitForResolvedContent && fileElement.isConnected &&
+        !this.fileDiffHasActiveLoadingContent(fileElement) &&
+        this.findHunkMarkers(fileElement).length > 0,
+      );
+    },
+
     createOfficialViewedIntentGeneration() {
       this.nextOfficialViewedIntentGeneration += 1;
       return this.nextOfficialViewedIntentGeneration;
@@ -816,6 +842,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         headerElement,
         loadingPresentationElement: null,
         loadingStateAttributeObserver: null,
+        officialViewedReveal: control.matches(
+          this.constants.OFFICIAL_FILE_VIEWED_SELECTOR,
+        ),
         readinessFrameId: null,
         timeoutId: null,
         waitForResolvedContent,
@@ -993,13 +1022,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
               // not an unfinished storage restore. The loaded content may
               // paint while its review controls stay inert until refresh.
               return (
-                !this.reviewControllerSuspensionAllowsFileReveal(
+                controller.reviewStateRestoring ||
+                (!this.reviewControllerSuspensionAllowsFileReveal(
                   controller,
                 ) &&
                 (controller.input.disabled ||
                   controller.lines.some(
                     (line) => line.control?.disabled === true,
-                  ))
+                  )))
               );
             },
           )

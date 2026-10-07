@@ -1465,12 +1465,57 @@ test("hides a cold-cache Viewed removal until review state is restored", async (
       );
       assertFileRevealState(dom, fileElement, table, false);
     });
-    assert.equal(scheduled[0]?.immediate, true);
+    await waitFor(() => assert.ok(scheduled.some((options) => options.immediate)));
     assert.equal(app.fileDiffVisibilityPending.size, 0);
   } finally {
     reviewRead.release();
     app.stop();
     dom.window.close();
+  }
+});
+
+test("shows a cold Viewed reveal before whole-page discovery completes", async () => {
+  const { app, dom } = await startExtension(initiallyViewedCommitSelectionFixture());
+  const wholePageStarted = createDeferred();
+  const wholePageGate = createDeferred();
+  const reviewRead = delayReviewStorageRead(app);
+  try {
+    installContentStyles(dom);
+    const file = dom.window.document.querySelector(".js-file");
+    const control = file.querySelector("button");
+    const clean = new JSDOM(commitSelectionFixture());
+    const tableHtml = clean.window.document.querySelector("table").outerHTML;
+    clean.window.close();
+    const discoveryRoots = [];
+    const discover = app.discoverHunks.bind(app);
+    app.discoverHunks = async (root, options) => {
+      discoveryRoots.push(root);
+      if (root === dom.window.document) {
+        wholePageStarted.resolve();
+        await wholePageGate.promise;
+      }
+      return discover(root, options);
+    };
+    control.addEventListener("click", () => {
+      setOfficialViewed(control, false);
+      file.insertAdjacentHTML("beforeend", tableHtml);
+    });
+    control.click();
+    await waitFor(() => assert.equal(discoveryRoots.length, 1));
+    assert.equal(discoveryRoots[0], file, "restore the opened file before scanning the page");
+    await reviewRead.started;
+    assertFileRevealState(dom, file, file.querySelector("table"), true);
+    reviewRead.release();
+    await wholePageStarted.promise;
+    assertFileRevealState(dom, file, file.querySelector("table"), false);
+    assert.equal(app.controllersByRow.size, 2);
+    assert.ok(controllersFor(app).every((controller) => !controller.input.disabled));
+    assert.equal(control.getAttribute("aria-pressed"), "false");
+  } finally {
+    reviewRead.release();
+    wholePageGate.resolve();
+    await waitFor(() => assert.equal(app.refreshRunning, false));
+    stopExtensions({ app, dom });
   }
 });
 
@@ -1674,11 +1719,16 @@ test("reconciles known cached identities when an unreviewed reveal changes conte
           childList: true,
           subtree: true,
         });
-        const refresh = app.refresh.bind(app);
-        app.refresh = async () => { await held.promise; return refresh(); };
+        const reconcile = app.reconcileNewReviewControllers.bind(app);
+        app.reconcileNewReviewControllers = async (options) => {
+          await held.promise;
+          return reconcile(options);
+        };
         control.click();
-        await Promise.resolve();
-        assert.equal(app.refreshRunning || app.refreshQueued, true);
+        await waitFor(() => {
+          assert.equal(app.controllersByRow.size, 1);
+          assert.equal(controllerAt(app).reviewStateRestoring, true);
+        });
         controllersFor(app).forEach((controller) => {
           assert.equal(controller.input.disabled, true);
           assert.equal(app.reviewControllerIsSuspended(controller), true);
@@ -1690,6 +1740,7 @@ test("reconciles known cached identities when an unreviewed reveal changes conte
         held.resolve();
         await waitFor(() => {
           assert.equal(app.refreshRunning || app.refreshQueued, false);
+          assert.equal(app.diffLoadHydrationRunningStates.size, 0);
           assert.equal(app.controllersByRow.size, 1);
           assert.equal(controllerAt(app).input.disabled, false);
           assert.equal(controllerAt(app).marked, false);
