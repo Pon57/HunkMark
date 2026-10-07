@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.1](https://github.com/Pon57/HunkMark/compare/v4.0.0...v4.0.1) - 2026-10-07
+
+### Bug Fixes
+- fix: keep Viewed diff reveals responsive by @Pon57 in https://github.com/Pon57/HunkMark/pull/73
+
 ## [v4.0.0](https://github.com/Pon57/HunkMark/compare/v3.2.2...v4.0.0) - 2026-10-06
 
 ### Breaking Changes
