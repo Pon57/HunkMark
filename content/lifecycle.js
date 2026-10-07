@@ -570,7 +570,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
           }
           return;
         }
-        if (status.active) {
+        if (status.active || this.diffLoadHydrationRunningStates.size > 0) {
+          // A mounted diff may still be hashing or reading review storage.
+          // Keep its current job alive instead of discarding it and forcing
+          // whole-page discovery; completion and the max timeout still settle.
           this.ensureDeferredDiffLoadRefreshTimeout();
           return;
         }
@@ -724,6 +727,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             ),
           fileElement,
           filePath,
+          reveal: this.fileRevealCanHydrateImmediately(fileElement),
           unsafe: unsafeFilePaths.has(filePath),
         }),
       );
@@ -733,7 +737,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
       const trackBatch =
         this.deferredDiffLoadRefreshes.size > 0 ||
-        files.some(({ active }) => active);
+        files.some(({ active, reveal }) => active || reveal);
       if (!trackBatch) {
         this.clearDeferredDiffLoadRefreshes();
         return false;

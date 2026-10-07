@@ -56,30 +56,41 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.scheduleRefresh({ immediate: true });
     },
 
+    canHydrateDiffLoadFiles() {
+      // Once discovery is committed and controller layout is synchronized,
+      // a full refresh's storage wait need not block independent file work.
+      return !this.stopped && !this.refreshQueued && (
+        !this.refreshRunning ||
+        (this.refreshStickyLayoutReady && this.activeHostContextExpansionIntents().length === 0)
+      );
+    },
+
     async hydrateDiffLoadFile(
       fileElement,
       filePath,
-      { isCurrent = () => true } = {},
+      {
+        isCurrent = () => true,
+        onAwaitingReviewState = () => {},
+      } = {},
     ) {
       if (
         this.stopped ||
         !isCurrent() ||
         !this.currentReviewScope ||
         !fileElement?.isConnected ||
-        this.refreshRunning ||
-        this.refreshQueued
+        !this.canHydrateDiffLoadFiles()
       ) {
         return null;
       }
       const reviewScope = this.currentReviewScope;
+      const revealRestore = this.fileRevealPrepaintRestores.get(fileElement);
       const hydrationSnapshot = this.hunkDiscoverySnapshot(fileElement, {
         isCurrent,
       });
       const hydrationIsCurrent = () =>
         this.currentReviewScope === reviewScope &&
         fileElement.isConnected &&
-        !this.refreshRunning &&
-        !this.refreshQueued &&
+        this.canHydrateDiffLoadFiles() &&
         this.hunkDiscoverySnapshotIsCurrent(hydrationSnapshot);
       const discovered = await this.discoverHunks(fileElement, {
         snapshot: hydrationSnapshot,
@@ -94,6 +105,34 @@ if (globalThis.HunkMarkContent?.extendApp) {
           hunk.hunkRow.isConnected &&
           fileElement.contains(hunk.hunkRow),
       );
+      if (
+        revealRestore?.cachedProgress && revealRestore.officialViewedReveal &&
+        this.fileRevealPrepaintRestores.get(fileElement) === revealRestore &&
+        this.fileRevealCanHydrateImmediately(fileElement) &&
+        this.activeHostContextExpansionIntents().length === 0 &&
+        fileHunks.length === discovered.length &&
+        fileHunks.every((hunk) => {
+          const existing = this.controllersByRow.get(hunk.hunkRow);
+          return !existing || existing.reviewStateRestoring;
+        }) &&
+        this.cachedFileSnapshotMatchesHunks(filePath, fileHunks)
+      ) {
+        // Fresh identifiers can validate a retained snapshot even when the
+        // synchronous restore missed the bounded identifier cache.
+        fileHunks.forEach((hunk) => {
+          const existing = this.controllersByRow.get(hunk.hunkRow);
+          if (existing) this.destroyController(existing);
+        });
+        this.attachCachedHostContextExpansionBaselines(fileHunks);
+        const restoration = { discovered: fileHunks };
+        this.restoreCachedFileControllers(fileElement, restoration);
+        if (restoration.complete) {
+          const controllers = fileHunks.map((hunk) => this.controllersByRow.get(hunk.hunkRow));
+          this.deferOfficialViewedSyncAfterReveal(controllers);
+          this.finishReadyFileRevealPrepaintRestores();
+          return controllers.length;
+        }
+      }
       const previousControllers = Array.from(
         this.controllersByRow.values(),
       ).filter((controller) => controller.filePath === filePath);
@@ -108,7 +147,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
       fileHunks.forEach((hunk) => {
         const existing = this.controllersByRow.get(hunk.hunkRow);
-        if (existing && !this.controllerMatchesHunk(existing, hunk)) {
+        if (existing && (existing.reviewStateRestoring || !this.controllerMatchesHunk(existing, hunk))) {
           this.destroyController(existing);
           return;
         }
@@ -133,6 +172,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         );
       }
       if (newHunks.length === 0) {
+        this.finishReadyFileRevealPrepaintRestores();
         return 0;
       }
 
@@ -173,6 +213,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           hunk,
           controllerOptionsByHunk.get(hunk),
         );
+        controller.reviewStateRestoring = true;
         expansionAssessmentByController.set(
           controller,
           expansionAssessmentByHunk.get(hunk),
@@ -188,18 +229,29 @@ if (globalThis.HunkMarkContent?.extendApp) {
           { allowFileReveal: true },
         );
       }
-      const reconciled = await this.reconcileNewReviewControllers({
-        deferStorageMigrations: true,
-        expansionAssessmentByController,
-        isCurrent: hydrationIsCurrent,
-        newControllers,
-      });
+      let reconciled;
+      try {
+        const reconciliation = this.reconcileNewReviewControllers({
+          deferStorageMigrations: true,
+          expansionAssessmentByController,
+          isCurrent: hydrationIsCurrent,
+          newControllers,
+        });
+        onAwaitingReviewState();
+        reconciled = await reconciliation;
+      } catch (error) {
+        newControllers.forEach((controller) => {
+          if (this.controllersByRow.get(controller.hunkRow) === controller) this.destroyController(controller);
+        });
+        throw error;
+      }
       if (!reconciled || !hydrationIsCurrent()) {
-        newControllers.forEach((controller) =>
-          this.destroyController(controller),
-        );
+        newControllers.forEach((controller) => {
+          if (this.controllersByRow.get(controller.hunkRow) === controller) this.destroyController(controller);
+        });
         return null;
       }
+      newControllers.forEach((controller) => { controller.reviewStateRestoring = false; });
       const currentControllers = newControllers.filter((controller) =>
         this.reviewControllerIsCurrent(controller),
       );
@@ -292,15 +344,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     pumpDiffLoadFileHydrations() {
-      if (
-        this.stopped ||
-        this.refreshQueued ||
-        this.refreshRunning
-      ) {
+      if (!this.canHydrateDiffLoadFiles()) {
         return;
       }
       while (
-        this.diffLoadHydrationRunningStates.size <
+        Array.from(this.diffLoadHydrationRunningStates).filter(
+          (state) => !state.awaitingReviewState,
+        ).length <
         this.constants.DIFF_LOAD_FILE_HYDRATION_CONCURRENCY
       ) {
         const activeOffscreen = Array.from(
@@ -315,6 +365,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           return;
         }
         next.state.ready = false;
+        next.state.awaitingReviewState = false;
         next.state.running = true;
         this.diffLoadHydrationRunningStates.add(next.state);
         void next.state.run();
@@ -522,14 +573,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (previous) {
         this.window.clearTimeout(previous.timerId);
       }
+      const immediateReveal = this.fileRevealCanHydrateImmediately(fileElement);
+      const settleDelay = immediateReveal ? 0 : this.constants.DIFF_LOAD_FILE_HYDRATION_SETTLE_MS;
       const state = {
+        awaitingReviewState: false,
         dueAt: null,
         fileElement,
         filePath,
         viewportPriority: this.diffLoadFileViewportPriority(fileElement),
-        quietUntil:
-          Date.now() +
-          this.constants.DIFF_LOAD_FILE_HYDRATION_SETTLE_MS,
+        quietUntil: Date.now() + settleDelay,
         ready: false,
         run: null,
         running: false,
@@ -556,6 +608,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
                 {
                   isCurrent: () =>
                     this.diffLoadHydrations.get(filePath) === state,
+                  onAwaitingReviewState: () => {
+                    state.awaitingReviewState = true;
+                    this.pumpDiffLoadFileHydrations();
+                  },
                 },
               )) !== null;
           }
@@ -602,8 +658,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
       this.armDiffLoadFileHydration(
         filePath,
         state,
-        this.constants.DIFF_LOAD_FILE_HYDRATION_SETTLE_MS +
-          (state.nearViewport
+        settleDelay +
+          (immediateReveal || state.nearViewport
             ? 0
             : this.constants.DIFF_LOAD_FILE_HYDRATION_OFFSCREEN_DELAY_MS),
       );
@@ -951,6 +1007,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             hunk,
             newControllerOptionsByHunk.get(hunk),
           );
+          controller.reviewStateRestoring = true;
           newControllers.push(controller);
           this.suspendReviewControllersForDiffMutation(null, { controllers: [controller] });
           expansionAssessmentByController.set(
@@ -1065,6 +1122,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
           ? previouslyVisibleStickyHunkFileElements
           : null,
       });
+      // Discovery is committed and layout is synchronized. Independent file
+      // hydration may now proceed during the remaining review-storage waits.
       this.refreshStickyLayoutReady = true;
 
       const unsettledPaths = this.unsettledDiffLoadReviewSuspensionPaths();
@@ -1099,6 +1158,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!reconciliationCompleted) {
         return;
       }
+      newControllers.forEach((controller) => { controller.reviewStateRestoring = false; });
 
       this.restoreDiffMutationSuspendedReviewControls({
         keepFilePaths: this.unsettledDiffLoadReviewSuspensionPaths(),
