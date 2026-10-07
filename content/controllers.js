@@ -18,8 +18,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const returnButton = this.document.createElement("button");
       returnButton.type = "button";
       returnButton.className = "hunkmark-sticky-return-button";
-      returnButton.hidden = true;
-      returnButton.tabIndex = -1;
       returnButton.textContent = "Return to hunk";
       returnButton.title = "Return to this hunk's original position";
       returnButton.setAttribute(

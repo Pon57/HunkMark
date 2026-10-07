@@ -167,6 +167,9 @@
           if (!bodyResized && resizedFileElements.size === 0) {
             return;
           }
+          // Keep full-scroll animation curves aligned with the compositor's
+          // new scroll range before this resize can paint.
+          this.syncStickyHunkScrollExtent();
           const states = this.hunkStickyFileVisibilityObserver
             ? this.hunkStickyVisibleStates
             : this.hunkStickyStateByFile.values();
@@ -240,12 +243,11 @@
       state.activeController?.hunkRow.classList.remove(
         "hunkmark-sticky-hunk-active",
       );
-      if (state.activeController?.returnButton) {
-        state.activeController.returnButton.hidden = true;
-        state.activeController.returnButton.tabIndex = -1;
-      }
       state.activeController = null;
       this.markStickyHunkOriginsDirty(state);
+      if (this.hunkStickyVisibleStates.size === 0) {
+        this.clearStickyHunkWindow();
+      }
     },
 
     markStickyHunkOriginsDirty(state) {
@@ -426,6 +428,46 @@
       }
     },
 
+    observeStickyHunkWindow() {
+      if (typeof this.window.IntersectionObserver !== "function" ||
+          this.hunkStickyVisibleStates.size === 0) return;
+      // Refill after half a viewport, while the overscan still covers both
+      // directions. Exclude any temporary scroll-range reservation.
+      const scrollY = Number(this.window.scrollY) || 0;
+      const top = Math.min(
+        scrollY + this.window.innerHeight / 2,
+        Math.max(0, this.document.documentElement.offsetHeight - 1),
+      );
+      if (top < scrollY) {
+        this.clearStickyHunkWindow();
+        return;
+      }
+      if (!this.hunkStickyWindowMarker) {
+        const marker = this.document.createElement("div");
+        marker.className = "hunkmark-sticky-window-marker";
+        marker.setAttribute("data-hunkmark-ui", "true");
+        marker.setAttribute("aria-hidden", "true");
+        this.hunkStickyWindowMarker = marker;
+        this.hunkStickyWindowObserver = new this.window.IntersectionObserver((entries) => {
+          if (this.hunkStickyWindowMarker === marker &&
+              entries.some((entry) => !entry.isIntersecting)) {
+            this.scheduleStickyHunkLayout();
+          }
+        });
+        this.document.documentElement.append(marker);
+        this.hunkStickyWindowObserver.observe(marker);
+      }
+      setPixelStyle(this.hunkStickyWindowMarker, "top", top);
+      setPixelStyle(this.hunkStickyWindowMarker, "left", (Number(this.window.scrollX) || 0) + this.window.innerWidth / 2);
+    },
+
+    clearStickyHunkWindow() {
+      this.hunkStickyWindowObserver?.disconnect();
+      this.hunkStickyWindowObserver = null;
+      this.hunkStickyWindowMarker?.remove();
+      this.hunkStickyWindowMarker = null;
+    },
+
     scheduleStickyHunkLayout() {
       if (
         this.stopped ||
@@ -500,10 +542,6 @@
         state.preparedControllers.delete(controller);
         if (state.activeController === controller) {
           state.activeController = null;
-          if (controller.returnButton) {
-            controller.returnButton.hidden = true;
-            controller.returnButton.tabIndex = -1;
-          }
         }
       }
       const controllerAdded = !state.controllers.has(controller);
@@ -551,7 +589,7 @@
     },
 
     detachStickyHunkRow(controller) {
-      this.clearStickyHunkClipAnimation(controller);
+      this.unobserveStickyHunkContent(controller);
       this.unobserveStickyHunkRow(controller);
       this.hunkStickyControllerByRow.delete(controller.hunkRow);
       clearClasses(controller.hunkRow, ROW_CLASSES);
@@ -582,10 +620,6 @@
         stickyHunkTailRoomLayoutGeneration: null,
         stickyHunkOrderIndex: null,
       });
-      if (controller.returnButton) {
-        controller.returnButton.hidden = true;
-        controller.returnButton.tabIndex = -1;
-      }
       const fileElement = controller.stickyHunkFileElement;
       controller.stickyHunkFileElement = null;
       if (!fileElement) {
@@ -614,12 +648,16 @@
       this.hunkStickyFileVisibilityObserver?.unobserve?.(fileElement);
       this.hunkStickyVisibleStates.delete(state);
       this.hunkStickyStateByFile.delete(fileElement);
+      if (this.hunkStickyVisibleStates.size === 0) {
+        this.clearStickyHunkWindow();
+      }
       if (this.hunkStickyStateByFile.size === 0 && this.document.body) {
         this.hunkStickyFileLayoutObserver?.unobserve?.(this.document.body);
       }
     },
 
     cleanupStickyHunks() {
+      this.clearStickyHunkWindow();
       this.clearStickyHunkScrollRange();
       this.hunkStickyStateByFile.forEach((state) => {
         this.stopLineControlAttributeObserver(state);
@@ -634,7 +672,7 @@
         );
       });
       this.hunkStickyStateByFile.clear();
-      this.hunkStickyClipTimeline = null;
+      this.document.documentElement.style.removeProperty("--hunkmark-sticky-scroll-extent");
       this.hunkStickyVisibleStates.clear();
       this.hunkStickyFileVisibilityObserver?.disconnect();
       this.hunkStickyFileVisibilityObserver = null;

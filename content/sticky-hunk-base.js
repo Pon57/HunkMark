@@ -14,7 +14,8 @@
   );
   const TIMELINE_STYLES = styleNames(
     "auxiliary-start", "auxiliary-end", "push-distance", "push-start", "push-end",
-    "tail-compensation", "tail-compensate-start", "tail-compensate-end",
+    "tail-compensation",
+    "return-end",
   );
   const CONTENT_STYLES = styleNames("content-inset", "bottom-inset", "compact-height", "actions-top", "focus-height");
   const ROW_CLASSES = classNames("active", "row", "prepared", "tail-constrained", "compact-return");

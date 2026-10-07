@@ -35,6 +35,7 @@
         // space into a diff table or moving the host's content.
         this.document.documentElement.append(boundary);
       }
+      this.syncStickyHunkScrollExtent();
       return this.hunkStickyScrollReservation;
     },
 
@@ -51,6 +52,7 @@
         this.clearStickyHunkScrollRange();
       } else if (Number.isFinite(this.hunkStickyScrollBoundaryTarget)) {
         boundary.style.top = `${Math.ceil(Math.max(top, this.hunkStickyScrollBoundaryTarget))}px`;
+        this.syncStickyHunkScrollExtent();
       }
     },
 
@@ -67,6 +69,7 @@
         }
       }
       this.hunkStickyScrollBoundary?.remove();
+      if (!this.stopped) this.syncStickyHunkScrollExtent();
       this.hunkStickyScrollBoundary = null;
       this.hunkStickyScrollBoundaryKey = null;
       this.hunkStickyScrollBoundaryTarget = null;
@@ -198,6 +201,7 @@
       const top = Math.max(0, naturalTop - (state?.stickyTop ?? 0) + offset);
       if (reservation) {
         this.hunkStickyScrollBoundary.style.top = `${Math.ceil(Math.max(top, this.window.scrollY))}px`;
+        this.syncStickyHunkScrollExtent();
         // The visual return has already happened. Cancelling a pending save
         // must retain the range supporting that position, just as for a
         // completed return. Expansion still removes its reservation.

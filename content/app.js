@@ -149,6 +149,8 @@
       this.hunkStickyFileVisibilityObserver = null;
       this.hunkStickyFileByHeader = new WeakMap();
       this.hunkStickyLayoutFrameId = null;
+      this.hunkStickyWindowObserver = null;
+      this.hunkStickyWindowMarker = null;
       this.hunkStickyScrollFrameId = null;
       this.hunkStickyScrollBoundary = null;
       this.hunkStickyScrollBoundaryKey = null;
@@ -157,7 +159,6 @@
       this.hunkStickyPointerScrollReservation = null;
       this.hunkStickyNavigationGeneration = 0;
       this.hunkStickyStateByFile = new Map();
-      this.hunkStickyClipTimeline = null;
       this.hunkStickyVisibleStates = new Set();
       this.officialViewedProgrammaticClicks = new WeakSet();
       this.officialViewedIntentGenerationByKey = new Map();

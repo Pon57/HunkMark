@@ -1422,7 +1422,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       };
       this.boundStickyHunkLayout = () => {
-        this.scheduleStickyHunkLayout();
+        // Prepared headers follow the browser's scroll timeline. Only keyboard
+        // return focus needs a per-scroll handoff; older hosts retain a fallback.
+        if (!this.hunkStickyWindowObserver ||
+            this.document.activeElement?.classList.contains("hunkmark-sticky-return-button")) {
+          this.scheduleStickyHunkLayout();
+        }
         this.scheduleViewportHydrationPriority();
       };
       this.boundStickyHunkNavigationIntent = (event) => {
@@ -1458,6 +1463,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       };
       this.boundStickyHunkResize = () => {
         if (this.hunkStickyStateByFile.size > 0) {
+          this.syncStickyHunkScrollExtent();
           this.invalidateVisibleStickyHunkLayouts({ refreshHeaders: true });
           this.updateLineControlHostLayouts(Array.from(this.hunkStickyVisibleStates)
             .flatMap((state) => this.materializedLinesForStickyState(state)));
