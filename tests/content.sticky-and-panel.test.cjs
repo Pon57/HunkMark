@@ -3619,6 +3619,7 @@ test("keeps an outgoing focused hunk prepared and unclipped while scrolling", as
     assert.ok(state.preparedControllers.has(focused));
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).clipPath, 'none');
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).transform, 'none');
+    assert.equal(dom.window.getComputedStyle(focused.returnButton).animationRangeEnd, 'calc(100% + 1px)');
     focused.hunkRow.classList.remove('hunkmark-sticky-hunk-prepared');
     app.updateStickyHunkState(state);
     assert.ok(focused.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
@@ -3626,6 +3627,7 @@ test("keeps an outgoing focused hunk prepared and unclipped while scrolling", as
     focused.input.blur();
     app.updateStickyHunkState(state);
     assert.equal(state.preparedControllers.has(focused), false);
+    assert.notEqual(dom.window.getComputedStyle(focused.returnButton).animationRangeEnd, 'calc(100% + 1px)');
   } finally {
     app.stop(); dom.window.close();
   }

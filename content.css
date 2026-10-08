@@ -335,6 +335,11 @@
     calc(var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-return-end, calc(100% + 1px)));
 }
 
+.hunkmark-sticky-hunk-prepared:focus-within .hunkmark-sticky-return-button {
+  /* Keep Return reachable while focus moves between an outgoing row's controls. */
+  animation-range-end: calc(100% + 1px);
+}
+
 .hunkmark-sticky-return-button:focus-visible {
   clip-path: none;
   height: 22px;

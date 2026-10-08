@@ -495,7 +495,7 @@ async function startExtension(
     lineLayoutReads = null,
     lockManager = null,
     resizeObserverClass = null,
-    scopeWaitTimeoutMs = 2500,
+    scopeWaitTimeoutMs = 10000,
     setupWindow = null,
     url = "https://github.com/octo/repo/pull/123/files",
     waitForScope = true,
