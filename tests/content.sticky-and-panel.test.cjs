@@ -54,18 +54,29 @@ test("keeps sticky positioning and scroll effects independent of active controls
     for (const effect of ["push", "trim-bottom"]) {
       assert.match(prepared.animationName, new RegExp("hunkmark-sticky-hunk-" + effect));
     }
-    assert.match(prepared.animationRange, /^-1px calc\(100% \+ 1px\)/);
+    const timelineLength = "--hunkmark-sticky-hunk-timeline-length";
+    const absoluteRange = `-1px calc(var(${timelineLength}) - 1px)`;
+    assert.ok(prepared.animationRange.startsWith(absoluteRange));
+    assert.match(prepared.getPropertyValue(timelineLength), /100vh/);
+    // A typed length resolves viewport units before linear() parses its stops.
+    assert.match(style.textContent, /@property --hunkmark-sticky-hunk-timeline-length\s*\{\s*syntax: "<length>";/);
     assert.match(prepared.animationTimingFunction, /--hunkmark-sticky-hunk-push-easing/);
     assert.equal(prepared.clipPath, "inset(0)");
     const content = ruleFor(".hunkmark-sticky-hunk-prepared > *").style;
     assert.match(content.animation, /hunkmark-sticky-hunk-restore-content/);
-    assert.equal(content.animationRange, "-1px calc(100% + 1px)");
+    assert.equal(content.animationRange, absoluteRange);
+    assert.ok(content.animationTimingFunction.includes(`var(${timelineLength})`));
+    const compactFocus = ruleFor(
+      ".hunkmark-sticky-hunk-prepared.hunkmark-sticky-hunk-compact-return:where(:focus-visible, :has(:focus-visible))",
+    ).style;
+    assert.equal(compactFocus.animationRange, absoluteRange);
     assert.equal(rules.some((rule) => rule.selectorText === ".hunkmark-sticky-hunk-active"), false);
     assert.match(prepared.animationName, /hunkmark-sticky-hunk-cursor/);
     const returnControl = ruleFor(".hunkmark-sticky-hunk-prepared .hunkmark-sticky-return-button").style;
     assert.match(returnControl.animationTimeline, /scroll\(root block\)/);
     assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-active-start/);
     assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-return-end/);
+    assert.match(returnControl.animationRange, /calc\(100% \+ 1px - var\(--hunkmark-sticky-hunk-file-start, 0px\)\)/);
     assert.equal(ruleFor(".hunkmark-sticky-return-button").style.visibility, "hidden");
     const measuring = ruleFor(
       ".hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared",
@@ -78,7 +89,12 @@ test("keeps sticky positioning and scroll effects independent of active controls
     const auxiliary = rules.find((rule) => rule.selectorText?.includes(
       ".hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary",
     )).style;
-    assert.doesNotMatch(style.textContent, /@property|--hunkmark-sticky-hunk-(top-clip|bottom-clip|push-offset)/);
+    assert.doesNotMatch(style.textContent, /--hunkmark-sticky-hunk-(top-clip|bottom-clip|push-offset)/);
+    for (const rule of rules.filter((rule) => rule.type === dom.window.CSSRule.KEYFRAMES_RULE)) {
+      // The shared length is static; animating it would require style work on
+      // every frame instead of the compositor's native transform animation.
+      assert.doesNotMatch(rule.cssText, /--hunkmark-sticky-hunk-timeline-length\s*:/);
+    }
     assert.match(auxiliary.animationTimeline, /scroll\(root block\)/);
     assert.match(auxiliary.animation, /disable-auxiliary 1ms steps\(1, start\) both/);
     assert.match(auxiliary.animationRange, /--hunkmark-sticky-hunk-auxiliary-end/);

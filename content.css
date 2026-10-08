@@ -107,7 +107,17 @@
   to { pointer-events: none; }
 }
 
+/* Resolve viewport units to pixels before linear() evaluates its stops. */
+@property --hunkmark-sticky-hunk-timeline-length {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 1px;
+}
+
 .hunkmark-sticky-hunk-prepared {
+  --hunkmark-sticky-hunk-timeline-length: calc(
+    var(--hunkmark-sticky-scroll-extent, 1px) + 100vh + 2px
+  );
   --hunkmark-sticky-hunk-active-start: calc(
     var(--hunkmark-sticky-hunk-file-start, 0px) +
       var(--hunkmark-sticky-hunk-auxiliary-start) +
@@ -119,11 +129,11 @@
   ));
   --hunkmark-sticky-hunk-push-start-progress: calc(
     (var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-push-start) + 1px) /
-      (var(--hunkmark-sticky-scroll-extent, 1px) + 2px) * 100%
+      var(--hunkmark-sticky-hunk-timeline-length) * 100%
   );
   --hunkmark-sticky-hunk-push-end-progress: calc(
     (var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-push-end) + 1px) /
-      (var(--hunkmark-sticky-scroll-extent, 1px) + 2px) * 100%
+      var(--hunkmark-sticky-hunk-timeline-length) * 100%
   );
   --hunkmark-sticky-hunk-push-easing: linear(
     0, 0 var(--hunkmark-sticky-hunk-push-start-progress),
@@ -131,12 +141,12 @@
   );
   --hunkmark-sticky-hunk-trim-start-progress: calc(
     (var(--hunkmark-sticky-hunk-active-start) + 1px) /
-      (var(--hunkmark-sticky-scroll-extent, 1px) + 2px) * 100%
+      var(--hunkmark-sticky-hunk-timeline-length) * 100%
   );
   --hunkmark-sticky-hunk-trim-easing: linear(
     0, 0 var(--hunkmark-sticky-hunk-trim-start-progress),
     1 calc((var(--hunkmark-sticky-hunk-active-start) + max(1px, var(--hunkmark-sticky-hunk-bottom-travel)) + 1px) /
-      (var(--hunkmark-sticky-scroll-extent, 1px) + 2px) * 100%), 1
+      var(--hunkmark-sticky-hunk-timeline-length) * 100%), 1
   );
   position: sticky;
   top: calc(
@@ -162,11 +172,12 @@
     scroll(root block),
     scroll(root block),
     scroll(root block);
-  /* Stay active even at the page endpoints. Finite hunk ranges must otherwise
-     wait for the main thread to restart their animations on reverse scrolling. */
+  /* Match the easing denominator with an absolute range. Root-only overflow
+     changes can alter 100% without resizing an observed box. Viewport padding
+     keeps the range beyond natural hunk positions and their transitions. */
   animation-range:
-    -1px calc(100% + 1px),
-    -1px calc(100% + 1px),
+    -1px calc(var(--hunkmark-sticky-hunk-timeline-length) - 1px),
+    -1px calc(var(--hunkmark-sticky-hunk-timeline-length) - 1px),
     calc(var(--hunkmark-sticky-hunk-active-start) - 1px)
       var(--hunkmark-sticky-hunk-active-start);
 }
@@ -174,11 +185,11 @@
 .hunkmark-sticky-hunk-prepared > * {
   animation: hunkmark-sticky-hunk-restore-content 1ms both;
   animation-timeline: scroll(root block);
-  animation-range: -1px calc(100% + 1px);
+  animation-range: -1px calc(var(--hunkmark-sticky-hunk-timeline-length) - 1px);
   animation-timing-function: linear(
     0, 0 var(--hunkmark-sticky-hunk-trim-start-progress),
     1 calc((var(--hunkmark-sticky-hunk-active-start) + max(1px, var(--hunkmark-sticky-hunk-bottom-inset, 0px)) + 1px) /
-      (var(--hunkmark-sticky-scroll-extent, 1px) + 2px) * 100%), 1
+      var(--hunkmark-sticky-hunk-timeline-length) * 100%), 1
   );
 }
 
@@ -223,7 +234,7 @@
    Keep them pinned while last-row compensation follows the table's edge. */
 .hunkmark-sticky-hunk-prepared.hunkmark-sticky-hunk-compact-return:where(:focus-visible, :has(:focus-visible)) {
   animation-name: hunkmark-sticky-hunk-trim-bottom;
-  animation-range: -1px calc(100% + 1px);
+  animation-range: -1px calc(var(--hunkmark-sticky-hunk-timeline-length) - 1px);
   animation-timing-function: var(--hunkmark-sticky-hunk-trim-easing);
   transform: none;
   z-index: 4;
@@ -330,9 +341,12 @@
 .hunkmark-sticky-hunk-prepared .hunkmark-sticky-return-button {
   animation: hunkmark-sticky-return-available 1ms linear;
   animation-timeline: scroll(root block);
+  /* The final hunk ends at the root boundary, including when file-start < 0. */
   animation-range:
     var(--hunkmark-sticky-hunk-active-start)
-    calc(var(--hunkmark-sticky-hunk-file-start, 0px) + var(--hunkmark-sticky-hunk-return-end, calc(100% + 1px)));
+    calc(var(--hunkmark-sticky-hunk-file-start, 0px) +
+      var(--hunkmark-sticky-hunk-return-end,
+        calc(100% + 1px - var(--hunkmark-sticky-hunk-file-start, 0px))));
 }
 
 .hunkmark-sticky-hunk-prepared:focus-within .hunkmark-sticky-return-button {
