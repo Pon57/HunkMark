@@ -128,12 +128,15 @@ test("restores host-replaced preparation without waiting for another scroll", as
       await waitFor(() => {
         assert.ok(row.classList.contains("hunkmark-sticky-hunk-prepared"));
         assert.equal(row.style.getPropertyValue("--hunkmark-sticky-hunk-auxiliary-start"), "500px");
+        assert.equal(row.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "1px");
       });
     }
+    row.style.removeProperty("--hunkmark-sticky-scroll-extent");
+    await waitFor(() => assert.equal(row.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "1px"));
   } finally { stop(context); }
 });
 
-test("updates scroll extent before a body resize paints and clears it on cleanup", async () => {
+test("updates scroll extent only on prepared headers before a body resize paints", async () => {
   class ResizeObserver {
     constructor(callback) { this.callback = callback; }
     observe() {} unobserve() {} disconnect() {}
@@ -141,23 +144,31 @@ test("updates scroll extent before a body resize paints and clears it on cleanup
   const { app, dom } = await startExtension(duplicateHunkFixture(), {}, { resizeObserverClass: ResizeObserver });
   try {
     const root = dom.window.document.documentElement;
+    const controller = Array.from(app.controllersByRow.values())[0];
+    const state = app.hunkStickyStateByFile.get(controller.fileElement);
+    app.updateStickyHunkLayouts();
+    const extent = () => controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-scroll-extent");
     let height = 2400;
     Object.defineProperty(root, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(root, "clientHeight", { configurable: true, value: 800 });
     app.hunkStickyFileLayoutObserver.callback([{ target: dom.window.document.body }]);
-    assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "1600px");
+    assert.equal(extent(), "1600px");
+    assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "");
+    assert.equal(state.fileElement.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "");
     height = 3000;
-    const controller = Array.from(app.controllersByRow.values())[0];
     app.reserveStickyHunkScrollRange(controller);
-    assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "2200px");
+    assert.equal(extent(), "2200px");
     height = 2400;
     app.clearStickyHunkScrollRange();
-    assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "1600px");
+    assert.equal(extent(), "1600px");
     height = 800;
     app.hunkStickyFileLayoutObserver.callback([{ target: dom.window.document.body }]);
-    assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "1px");
+    assert.equal(extent(), "1px");
+    app.setStickyHunkStateVisibility(state, false);
+    assert.equal(extent(), "");
     app.stop();
     assert.equal(root.style.getPropertyValue("--hunkmark-sticky-scroll-extent"), "");
+    assert.equal(app.hunkStickyScrollExtent, null);
   } finally { app.stop(); dom.window.close(); }
 });
 

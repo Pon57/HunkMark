@@ -26,6 +26,7 @@
         const preparationLost = state?.preparedControllers.has(controller) &&
           (!controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared") ||
             !controller.hunkRow.classList.contains("hunkmark-sticky-hunk-row") ||
+            !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-scroll-extent") ||
             !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-auxiliary-start") ||
             !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-push-end"));
         let previousStyle;

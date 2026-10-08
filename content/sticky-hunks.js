@@ -428,15 +428,15 @@
       }
     },
 
-    observeStickyHunkWindow() {
-      if (typeof this.window.IntersectionObserver !== "function" ||
+    observeStickyHunkWindow(viewport) {
+      if (!viewport || typeof this.window.IntersectionObserver !== "function" ||
           this.hunkStickyVisibleStates.size === 0) return;
       // Refill after half a viewport, while the overscan still covers both
       // directions. Exclude any temporary scroll-range reservation.
-      const scrollY = Number(this.window.scrollY) || 0;
+      const { scrollY, scrollX, height, width, documentHeight } = viewport;
       const top = Math.min(
-        scrollY + this.window.innerHeight / 2,
-        Math.max(0, this.document.documentElement.offsetHeight - 1),
+        scrollY + height / 2,
+        Math.max(0, documentHeight - 1),
       );
       if (top < scrollY) {
         this.clearStickyHunkWindow();
@@ -455,10 +455,13 @@
           }
         });
         this.document.documentElement.append(marker);
-        this.hunkStickyWindowObserver.observe(marker);
       }
+      // Fast scrolling can pass the new position before it is sampled onscreen.
+      // Re-arm observation so another outside sample still refills the window.
+      this.hunkStickyWindowObserver.unobserve(this.hunkStickyWindowMarker);
       setPixelStyle(this.hunkStickyWindowMarker, "top", top);
-      setPixelStyle(this.hunkStickyWindowMarker, "left", (Number(this.window.scrollX) || 0) + this.window.innerWidth / 2);
+      setPixelStyle(this.hunkStickyWindowMarker, "left", scrollX + width / 2);
+      this.hunkStickyWindowObserver.observe(this.hunkStickyWindowMarker);
     },
 
     clearStickyHunkWindow() {
@@ -673,6 +676,7 @@
       });
       this.hunkStickyStateByFile.clear();
       this.document.documentElement.style.removeProperty("--hunkmark-sticky-scroll-extent");
+      this.hunkStickyScrollExtent = null;
       this.hunkStickyVisibleStates.clear();
       this.hunkStickyFileVisibilityObserver?.disconnect();
       this.hunkStickyFileVisibilityObserver = null;

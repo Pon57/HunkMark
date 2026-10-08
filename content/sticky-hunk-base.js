@@ -65,6 +65,7 @@
     ].join(", "),
     ROW_CLASSES,
     ROW_STYLES: Object.freeze([
+      "--hunkmark-sticky-scroll-extent",
       ...CONTENT_STYLES,
       ...TIMELINE_STYLES,
     ]),

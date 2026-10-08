@@ -28,6 +28,7 @@
         controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
       }
       clearStyles(controller.hunkRow, TIMELINE_STYLES);
+      controller.hunkRow.style.removeProperty("--hunkmark-sticky-scroll-extent");
     },
 
     stickyHunkFileDocumentTop(state) {
@@ -57,8 +58,19 @@
 
     syncStickyHunkScrollExtent() {
       const scroller = this.document.scrollingElement ?? this.document.documentElement;
-      setPixelStyle(this.document.documentElement, "--hunkmark-sticky-scroll-extent",
-        Math.max(1, scroller.scrollHeight - scroller.clientHeight));
+      const extent = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+      if (this.hunkStickyScrollExtent === extent) return;
+      this.hunkStickyScrollExtent = extent;
+      // Inherited properties on <html> invalidate the entire GitHub diff. Only
+      // prepared headers consume this metric; keep invalidation inside them.
+      for (const state of this.hunkStickyVisibleStates) {
+        for (const controller of state.preparedControllers) {
+          setPixelStyle(controller.hunkRow, "--hunkmark-sticky-scroll-extent", extent);
+        }
+      }
+      if (this.document.documentElement.style.getPropertyValue("--hunkmark-sticky-scroll-extent")) {
+        this.document.documentElement.style.removeProperty("--hunkmark-sticky-scroll-extent");
+      }
     },
 
     prepareStickyHunkState(state, controllers) {
@@ -156,6 +168,7 @@
       // geometry. Per-property guards restore missing ranges without rewrites.
       this.syncStickyHunkContentStyles(controller);
       this.syncStickyHunkTailRoom(controller, naturalTop, nextTop !== undefined);
+      setPixelStyle(controller.hunkRow, "--hunkmark-sticky-scroll-extent", this.hunkStickyScrollExtent);
       setPixelStyles(controller.hunkRow, [
         ["--hunkmark-sticky-hunk-auxiliary-start", start],
         ["--hunkmark-sticky-hunk-auxiliary-end", start + (inset > 0 ? inset : AUXILIARY_FADE_DISTANCE_PX)],
@@ -222,6 +235,7 @@
         if (!preparedControllers.has(controller)) {
           this.unobserveStickyHunkContent(controller);
           controller.hunkRow.classList.remove("hunkmark-sticky-hunk-prepared");
+          controller.hunkRow.style.removeProperty("--hunkmark-sticky-scroll-extent");
         }
       });
       state.preparedControllers = preparedControllers;
@@ -335,12 +349,22 @@
       allowDuringRefresh = false,
       includeFileElements = null,
     } = {}) {
+      // Scroll offsets and viewport sizes can flush pending animation styles,
+      // just like element geometry. Capture all marker measurements before
+      // preparing rows; their sticky transforms do not change document flow.
+      const viewport = this.hunkStickyFileVisibilityObserver ? {
+        scrollY: Number(this.window.scrollY) || 0,
+        scrollX: Number(this.window.scrollX) || 0,
+        height: this.window.innerHeight,
+        width: this.window.innerWidth,
+        documentHeight: this.document.documentElement.offsetHeight,
+      } : null;
       if (
         !allowDuringRefresh &&
         (this.refreshRunning || this.refreshQueued)
       ) {
         this.updateStickyHunkInteractions();
-        this.observeStickyHunkWindow();
+        this.observeStickyHunkWindow(viewport);
         return;
       }
       const states = this.hunkStickyFileVisibilityObserver
@@ -362,7 +386,7 @@
       for (const state of states) {
         this.updateStickyHunkState(state);
       }
-      this.observeStickyHunkWindow();
+      this.observeStickyHunkWindow(viewport);
     },
   });
 })(globalThis);

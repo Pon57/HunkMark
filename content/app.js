@@ -151,6 +151,7 @@
       this.hunkStickyLayoutFrameId = null;
       this.hunkStickyWindowObserver = null;
       this.hunkStickyWindowMarker = null;
+      this.hunkStickyScrollExtent = null;
       this.hunkStickyScrollFrameId = null;
       this.hunkStickyScrollBoundary = null;
       this.hunkStickyScrollBoundaryKey = null;

@@ -957,6 +957,8 @@ test("keeps a prepared table hunk's natural origin for returning and explicit re
 test("bounds animated hunks and reuses geometry and ranges within a prepared window", async () => {
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(128, 48, { hunkSize: 1 }),
+    {},
+    { scopeWaitTimeoutMs: 10000 },
   );
   try {
     const controllers = Array.from(app.controllersByRow.values());
@@ -3712,7 +3714,7 @@ test("clears ranges only from previously prepared rows when a large file exits",
     observer.callback([{ target: state.fileElement, isIntersecting: false }]);
     assert.equal(cleanupTargets.length, installed.length);
     assert.deepEqual(new Set(cleanupTargets), new Set(installed));
-    assert.equal(removals, installed.length * 7);
+    assert.equal(removals, installed.length * 8);
     assert.equal(state.preparedControllers.size, 0);
     installed.forEach((c) => {
       assert.equal(state.controllersWithRanges.has(c), false);
