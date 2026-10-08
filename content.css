@@ -340,6 +340,10 @@
   animation-range-end: calc(100% + 1px);
 }
 
+.hunkmark-sticky-return-button.hunkmark-sticky-return-focusing {
+  visibility: visible;
+}
+
 .hunkmark-sticky-return-button:focus-visible {
   clip-path: none;
   height: 22px;

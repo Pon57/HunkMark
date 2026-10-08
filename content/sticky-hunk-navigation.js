@@ -150,10 +150,15 @@
     focusStickyHunkWithoutReveal(controller, target) {
       // Callers own scrolling; do not let focusin start another one.
       const previousSuppression = controller.suppressStickyHunkFocusReveal;
+      const returnFocus = target === controller.returnButton;
       controller.suppressStickyHunkFocusReveal = true;
       try {
+        // A newly prepared Return can still be hidden until its scroll animation
+        // samples. Make it focusable synchronously for this handoff only.
+        if (returnFocus) target.classList.add("hunkmark-sticky-return-focusing");
         target.focus({ preventScroll: true });
       } finally {
+        if (returnFocus) target.classList.remove("hunkmark-sticky-return-focusing");
         controller.suppressStickyHunkFocusReveal = previousSuppression;
       }
       return this.document.activeElement === target;

@@ -1,5 +1,5 @@
 const {
-  test, assert, startExtension, waitFor, largeChangedBlockFixture,
+  test, assert, startExtension, waitFor, largeChangedBlockFixture, installContentStyles,
 } = require("./content-test-support.cjs");
 
 class IntersectionObserver {
@@ -109,6 +109,32 @@ test("keeps keyboard return focus synchronized within an otherwise idle sticky w
     await waitFor(() => assert.equal(app.hunkStickyLayoutFrameId, null));
     assert.equal(state.activeController, controllers[previous.stickyHunkOrderIndex + 1]);
     assert.equal(dom.window.document.activeElement, state.activeController.returnButton);
+  } finally { app.stop(); dom.window.close(); }
+});
+
+test("hands return focus to a new window before its CSS animation has sampled", async () => {
+  const { app, dom, viewport, controllers, state } = await startWindow();
+  try {
+    installContentStyles(dom);
+    const previous = state.activeController;
+    previous.returnButton.getBoundingClientRect = () => ({ top: state.stickyTop });
+    previous.returnButton.focus();
+    const incoming = controllers[88];
+    assert.equal(state.preparedControllers.has(incoming), false);
+    const previousSuppression = incoming.suppressStickyHunkFocusReveal;
+    const focus = incoming.returnButton.focus.bind(incoming.returnButton);
+    // Native focus ignores a hidden button. jsdom does not sample scroll
+    // animations, so its computed visibility models the first render here.
+    incoming.returnButton.focus = (options) => {
+      if (dom.window.getComputedStyle(incoming.returnButton).visibility !== "hidden") focus(options);
+    };
+    viewport.top = 9000;
+    app.updateStickyHunkLayouts();
+    assert.equal(state.activeController, incoming);
+    assert.equal(dom.window.document.activeElement, incoming.returnButton);
+    assert.equal(incoming.suppressStickyHunkFocusReveal, previousSuppression);
+    incoming.returnButton.blur();
+    assert.equal(dom.window.getComputedStyle(incoming.returnButton).visibility, "hidden");
   } finally { app.stop(); dom.window.close(); }
 });
 
