@@ -46,23 +46,38 @@ test("keeps sticky positioning and scroll effects independent of active controls
       return rule;
     };
     const prepared = ruleFor(".hunkmark-sticky-hunk-prepared").style;
-    const active = ruleFor(".hunkmark-sticky-hunk-active").style;
     assert.equal(prepared.position, "sticky");
     assert.match(prepared.top, /--hunkmark-sticky-hunk-top/);
     assert.ok(Number(ruleFor(".hunkmark-sticky-file-header").style.zIndex) >
       Number(prepared.zIndex));
     assert.match(prepared.animationTimeline, /scroll\(root block\)/);
-    for (const effect of ["push", "tail-compensate"]) {
+    for (const effect of ["push", "trim-bottom"]) {
       assert.match(prepared.animationName, new RegExp("hunkmark-sticky-hunk-" + effect));
-      assert.match(prepared.animationRange, new RegExp("--hunkmark-sticky-hunk-" + effect));
     }
-    assert.match(
-      prepared.animationRange,
-      /--hunkmark-sticky-hunk-file-start/,
-    );
-    for (const property of ["position", "transform", "clip-path", "animation"]) {
-      assert.equal(active.getPropertyValue(property), "");
-    }
+    const timelineLength = "--hunkmark-sticky-hunk-timeline-length";
+    const absoluteRange = `-1px calc(var(${timelineLength}) - 1px)`;
+    assert.ok(prepared.animationRange.startsWith(absoluteRange));
+    assert.match(prepared.getPropertyValue(timelineLength), /100vh/);
+    // A typed length resolves viewport units before linear() parses its stops.
+    assert.match(style.textContent, /@property --hunkmark-sticky-hunk-timeline-length\s*\{\s*syntax: "<length>";/);
+    assert.match(prepared.animationTimingFunction, /--hunkmark-sticky-hunk-push-easing/);
+    assert.equal(prepared.clipPath, "inset(0)");
+    const content = ruleFor(".hunkmark-sticky-hunk-prepared > *").style;
+    assert.match(content.animation, /hunkmark-sticky-hunk-restore-content/);
+    assert.equal(content.animationRange, absoluteRange);
+    assert.ok(content.animationTimingFunction.includes(`var(${timelineLength})`));
+    const compactFocus = ruleFor(
+      ".hunkmark-sticky-hunk-prepared.hunkmark-sticky-hunk-compact-return:where(:focus-visible, :has(:focus-visible))",
+    ).style;
+    assert.equal(compactFocus.animationRange, absoluteRange);
+    assert.equal(rules.some((rule) => rule.selectorText === ".hunkmark-sticky-hunk-active"), false);
+    assert.match(prepared.animationName, /hunkmark-sticky-hunk-cursor/);
+    const returnControl = ruleFor(".hunkmark-sticky-hunk-prepared .hunkmark-sticky-return-button").style;
+    assert.match(returnControl.animationTimeline, /scroll\(root block\)/);
+    assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-active-start/);
+    assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-return-end/);
+    assert.match(returnControl.animationRange, /calc\(100% \+ 1px - var\(--hunkmark-sticky-hunk-file-start, 0px\)\)/);
+    assert.equal(ruleFor(".hunkmark-sticky-return-button").style.visibility, "hidden");
     const measuring = ruleFor(
       ".hunkmark-sticky-file-measuring .hunkmark-sticky-hunk-prepared",
     ).style;
@@ -74,7 +89,12 @@ test("keeps sticky positioning and scroll effects independent of active controls
     const auxiliary = rules.find((rule) => rule.selectorText?.includes(
       ".hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary",
     )).style;
-    assert.doesNotMatch(style.textContent, /@property|--hunkmark-sticky-hunk-(top-clip|bottom-clip|push-offset)/);
+    assert.doesNotMatch(style.textContent, /--hunkmark-sticky-hunk-(top-clip|bottom-clip|push-offset)/);
+    for (const rule of rules.filter((rule) => rule.type === dom.window.CSSRule.KEYFRAMES_RULE)) {
+      // The shared length is static; animating it would require style work on
+      // every frame instead of the compositor's native transform animation.
+      assert.doesNotMatch(rule.cssText, /--hunkmark-sticky-hunk-timeline-length\s*:/);
+    }
     assert.match(auxiliary.animationTimeline, /scroll\(root block\)/);
     assert.match(auxiliary.animation, /disable-auxiliary 1ms steps\(1, start\) both/);
     assert.match(auxiliary.animationRange, /--hunkmark-sticky-hunk-auxiliary-end/);
@@ -653,7 +673,7 @@ test("keeps hunk controls accessible and cleans up their DOM on teardown", async
   }
 });
 
-test("keeps prepared rows in place and reserves active state for return controls", async () => {
+test("keeps prepared rows in place and synchronizes interaction state on activation", async () => {
   const html = duplicateHunkFixture().replace(
     '<div class="file-header">',
     '<div class="file-header" style="position: sticky; top: 0; height: 40px">',
@@ -667,7 +687,7 @@ test("keeps prepared rows in place and reserves active state for return controls
     installContentStyles(dom);
     app.invalidateStickyHunkOrigins(controller.fileElement);
     app.updateStickyHunkState(state);
-    assert.equal(controller.returnButton.hidden, true);
+    assert.equal(state.activeController, null);
     assert.equal(dom.window.getComputedStyle(controller.hunkRow).position, "sticky");
 
     viewport.scrollY = 100;
@@ -702,11 +722,11 @@ test("keeps prepared rows in place and reserves active state for return controls
 
     // CSS has reached the next hunk, but no scroll callback has updated JS yet.
     viewport.scrollY = 200;
-    assert.equal(controllers[1].returnButton.hidden, true);
+    assert.notEqual(state.activeController, controllers[1]);
     controllers[1].hunkCell.dispatchEvent(
       new dom.window.MouseEvent("click", { bubbles: true, button: 0 }),
     );
-    assert.equal(controllers[1].returnButton.hidden, false);
+    assert.equal(state.activeController, controllers[1]);
     assert.equal(scrollCalls.length, 2);
   } finally {
     app.stop();
@@ -953,6 +973,8 @@ test("keeps a prepared table hunk's natural origin for returning and explicit re
 test("bounds animated hunks and reuses geometry and ranges within a prepared window", async () => {
   const { app, dom } = await startExtension(
     largeChangedBlockFixture(128, 48, { hunkSize: 1 }),
+    {},
+    { scopeWaitTimeoutMs: 10000 },
   );
   try {
     const controllers = Array.from(app.controllersByRow.values());
@@ -1472,6 +1494,7 @@ test("defers sticky hunk observers and style reads until a file intersects", asy
 test("cleans prepared timelines and return controls when a file leaves or is destroyed", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
+    installContentStyles(dom);
     const controllers = Array.from(app.controllersByRow.values());
     const state = app.hunkStickyStateByFile.get(controllers[0].fileElement);
     const viewport = mockStickyRows(dom, controllers, [0, 80]);
@@ -1489,8 +1512,7 @@ test("cleans prepared timelines and return controls when a file leaves or is des
       assert.equal(Array.from(row.style).some((name) =>
         /--hunkmark-sticky-hunk-(compress|tail|auxiliary|push)-/.test(name),
       ), false);
-      assert.equal(controller.returnButton.hidden, true);
-      assert.equal(controller.returnButton.tabIndex, -1);
+      assert.equal(dom.window.getComputedStyle(controller.returnButton).visibility, "hidden");
     });
 
     app.setStickyHunkStateVisibility(state, true);
@@ -1528,8 +1550,7 @@ test("transfers keyboard focus to the current sticky hunk's return control", asy
       new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
     );
     assert.equal(dom.window.document.activeElement, controllers[1].returnButton);
-    assert.equal(controllers[0].returnButton.hidden, true);
-    assert.equal(controllers[0].returnButton.tabIndex, -1);
+    assert.equal(state.activeController, controllers[1]);
     assert.equal(controllers[1].returnButton.hidden, false);
     assert.equal(controllers[1].returnButton.tabIndex, 0);
   } finally {
@@ -1651,7 +1672,7 @@ test("keeps a keyboard-focused Viewed hunk compact and restores its origin only 
     app.invalidateStickyHunkOrigins(current.fileElement);
     app.updateStickyHunkState(state);
     viewport.scrollY = 600;
-    assert.equal(current.returnButton.hidden, true);
+    assert.equal(state.activeController, previous);
 
     const scrollCalls = [];
     const refreshLayoutCalls = [];
@@ -2137,7 +2158,7 @@ test("keeps final-line Viewed returns compact with keyboard or pointer focus", a
     dragged.lines[0].control.focus();
     app.startLineDrag(dragged.lines[0], true, 7);
     viewport.scrollY = 600;
-    assert.equal(dragged.returnButton.hidden, true);
+    assert.notEqual(state.activeController, dragged);
     const pointerUp = new dom.window.Event("pointerup", { bubbles: true });
     Object.defineProperty(pointerUp, "pointerId", { value: 7 });
     dragged.lines[0].control.dispatchEvent(pointerUp);
@@ -2392,7 +2413,8 @@ test("offers keyboard return navigation and honors reduced motion", async () => 
 
     assert.equal(controllers[0].returnButton.hidden, false);
     assert.equal(controllers[0].returnButton.tabIndex, 0);
-    assert.equal(controllers[1].returnButton.hidden, true);
+    assert.equal(state.activeController, controllers[0]);
+    assert.equal(controllers[1].returnButton.tabIndex, 0);
 
     dom.window.matchMedia = () => ({ matches: true });
     const scrollCalls = [];
@@ -2430,7 +2452,7 @@ test("returns a manually collapsed sticky hunk to its compact boundary without l
     app.invalidateStickyHunkOrigins(current.fileElement);
     app.updateStickyHunkLayouts();
     viewport.scrollY = 400;
-    assert.equal(current.returnButton.hidden, true);
+    assert.equal(current.hunkRow.classList.contains("hunkmark-sticky-hunk-active"), false);
 
     const scrollCalls = [];
     dom.window.scrollTo = (options) => scrollCalls.push(options);
@@ -3514,7 +3536,7 @@ test("restores rewritten animation styles even when row geometry stays cached", 
       !['--hunkmark-sticky-hunk-content-inset', '--hunkmark-sticky-hunk-bottom-inset', '--hunkmark-sticky-hunk-compact-height', '--hunkmark-sticky-hunk-actions-top', '--hunkmark-sticky-hunk-focus-height'].includes(name),
     );
     const ranges = properties.map((name) => [name, style.getPropertyValue(name)]);
-    assert.equal(ranges.length, 8);
+    assert.equal(ranges.length, 7);
     style.cssText = 'color: red';
     await app.refresh();
     assert.deepEqual(properties.map((name) => [name, style.getPropertyValue(name)]), ranges);
@@ -3715,6 +3737,7 @@ test("keeps an outgoing focused hunk prepared and unclipped while scrolling", as
     assert.ok(state.preparedControllers.has(focused));
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).clipPath, 'none');
     assert.equal(dom.window.getComputedStyle(focused.hunkRow).transform, 'none');
+    assert.equal(dom.window.getComputedStyle(focused.returnButton).animationRangeEnd, 'calc(100% + 1px)');
     focused.hunkRow.classList.remove('hunkmark-sticky-hunk-prepared');
     app.updateStickyHunkState(state);
     assert.ok(focused.hunkRow.classList.contains('hunkmark-sticky-hunk-prepared'));
@@ -3722,6 +3745,7 @@ test("keeps an outgoing focused hunk prepared and unclipped while scrolling", as
     focused.input.blur();
     app.updateStickyHunkState(state);
     assert.equal(state.preparedControllers.has(focused), false);
+    assert.notEqual(dom.window.getComputedStyle(focused.returnButton).animationRangeEnd, 'calc(100% + 1px)');
   } finally {
     app.stop(); dom.window.close();
   }

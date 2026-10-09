@@ -4200,12 +4200,13 @@ test("coalesces concurrent file loads until every diff settles", async () => {
         text: `+loaded ${index + 1}`,
       }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    const loadedControllersBeforeSettle = controllersFor(app).filter(
-      (controller) =>
+    const loadedControllersBeforeSettle = await waitFor(() => {
+      const controllers = controllersFor(app).filter((controller) =>
         controller.lines.some((line) => line.text.startsWith("+loaded ")),
-    );
-    assert.equal(loadedControllersBeforeSettle.length, 2);
+      );
+      assert.equal(controllers.length, 2);
+      return controllers;
+    });
     assert.equal(
       loadedControllersBeforeSettle.every(
         (controller) =>

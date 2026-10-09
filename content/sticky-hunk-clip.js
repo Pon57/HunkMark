@@ -11,24 +11,24 @@
     .filter((property) => !property.startsWith("--hunkmark-"))
     .map((property) => `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`)
     .join(";");
-  const pixels = (value) => `${Math.round(value * 100) / 100}px`;
-  const cancelClipAnimations = (controller) => {
-    controller.stickyHunkClipState?.animations.forEach((animation) => animation.cancel());
-    controller.stickyHunkClipState = null;
-  };
-
   Object.assign(App.prototype, {
-    clearStickyHunkClipAnimation(controller) {
-      cancelClipAnimations(controller);
-      controller.stickyHunkClipContentObserver?.disconnect();
-      controller.stickyHunkClipContentObserver = null;
+    unobserveStickyHunkContent(controller) {
+      controller.stickyHunkContentObserver?.disconnect();
+      controller.stickyHunkContentObserver = null;
     },
 
-    observeStickyHunkClipContent(controller) {
-      if (controller.stickyHunkClipContentObserver) return;
+    observeStickyHunkContent(controller) {
+      if (controller.stickyHunkContentObserver) return;
       const observer = new this.window.MutationObserver((mutations) => {
-        if (this.stopped || controller.stickyHunkClipContentObserver !== observer ||
+        if (this.stopped || controller.stickyHunkContentObserver !== observer ||
             !controller.hunkRow.isConnected) return;
+        const state = this.hunkStickyStateByFile.get(controller.fileElement);
+        const preparationLost = state?.preparedControllers.has(controller) &&
+          (!controller.hunkRow.classList.contains("hunkmark-sticky-hunk-prepared") ||
+            !controller.hunkRow.classList.contains("hunkmark-sticky-hunk-row") ||
+            !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-scroll-extent") ||
+            !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-auxiliary-start") ||
+            !controller.hunkRow.style.getPropertyValue("--hunkmark-sticky-hunk-push-end"));
         let previousStyle;
         const contentChanged = mutations.some((mutation) => {
           if (this.mutationIsExtensionOnly(mutation)) return false;
@@ -46,12 +46,13 @@
           return true;
         });
         if (contentChanged) {
-          this.hunkStickyStateByFile.get(controller.fileElement)
-            ?.contentLayoutDirtyControllers.add(controller);
+          state?.contentLayoutDirtyControllers.add(controller);
+        }
+        if (contentChanged || preparationLost) {
           this.scheduleStickyHunkLayout();
         }
       });
-      controller.stickyHunkClipContentObserver = observer;
+      controller.stickyHunkContentObserver = observer;
       observer.observe(controller.hunkRow, {
         childList: true,
         characterData: true,
@@ -59,67 +60,6 @@
         attributeOldValue: true,
         subtree: true,
       });
-    },
-
-    syncStickyHunkClipAnimation(controller, naturalTop, stickyTop) {
-      const row = controller.hunkRow;
-      if (!row.isConnected) {
-        this.clearStickyHunkClipAnimation(controller);
-        return;
-      }
-      this.observeStickyHunkClipContent(controller);
-      const inset = Math.max(0, controller.stickyHunkContentInset ?? 0);
-      const bottomInset = Math.max(0, controller.stickyHunkBottomInset ?? 0);
-      const distance = inset + bottomInset;
-      const targets = [row, ...Array.from(row.children).filter((element) =>
-        element.tagName === "TD" || element.tagName === "TH",
-      )];
-      if (distance === 0 || !Number.isFinite(naturalTop) || !Number.isFinite(stickyTop) ||
-          typeof this.window.ScrollTimeline !== "function" ||
-          targets.some((target) => typeof target.animate !== "function")) {
-        cancelClipAnimations(controller);
-        return;
-      }
-      this.hunkStickyClipTimeline ??= new this.window.ScrollTimeline({
-        source: this.document.scrollingElement ?? this.document.documentElement,
-        axis: "block",
-      });
-      const rangeStart = pixels(naturalTop - stickyTop);
-      const rangeEnd = pixels(naturalTop - stickyTop + distance);
-      const state = controller.stickyHunkClipState ?? { animations: new Map() };
-      const framesChanged = state.inset !== inset || state.bottomInset !== bottomInset;
-      const keyframes = framesChanged || targets.some((target) => !state.animations.has(target))
-        ? [
-            { clipPath: "inset(0px 0px 0px 0px)", offset: 0 },
-            { clipPath: `inset(${pixels(inset)} 0px 0px 0px)`, offset: inset / distance },
-            { clipPath: `inset(${pixels(inset)} 0px ${pixels(bottomInset)} 0px)`, offset: 1 },
-          ]
-        : null;
-      state.animations.forEach((animation, target) => {
-        if (!targets.includes(target)) {
-          animation.cancel();
-          state.animations.delete(target);
-        }
-      });
-      targets.forEach((target) => {
-        const animation = state.animations.get(target);
-        if (!animation) {
-          state.animations.set(target, target.animate(keyframes, {
-            timeline: this.hunkStickyClipTimeline,
-            duration: "auto",
-            fill: "both",
-            easing: "linear",
-            rangeStart,
-            rangeEnd,
-          }));
-          return;
-        }
-        if (framesChanged) animation.effect.setKeyframes(keyframes);
-        if (state.rangeStart !== rangeStart) animation.rangeStart = rangeStart;
-        if (state.rangeEnd !== rangeEnd) animation.rangeEnd = rangeEnd;
-      });
-      Object.assign(state, { inset, bottomInset, rangeStart, rangeEnd });
-      controller.stickyHunkClipState = state;
     },
   });
 })(globalThis);
