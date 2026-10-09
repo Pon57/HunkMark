@@ -259,19 +259,29 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const targetChanged =
         spacerMoved ||
         this.panelClearanceTarget !== panel ||
+        this.panelClearanceParentTarget !== spacerParent ||
         this.panelClearanceFileTarget !== fileTarget;
       if (targetChanged) {
+        this.cancelPanelClearanceUpdate();
         this.panelClearanceObserver?.disconnect();
         this.panelClearanceTarget = panel;
         this.panelClearanceFileTarget = fileTarget;
+        this.panelClearanceParentTarget = spacerParent;
         if (typeof this.window.ResizeObserver === "function") {
           this.panelClearanceObserver = new this.window.ResizeObserver(() => {
-            this.updatePanelClearance(panel, spacer, fileTarget);
+            if (this.panelClearanceFrameId !== null) return;
+            // The spacer changes its parent's size. Write outside ResizeObserver
+            // delivery to avoid feedback warnings, coalescing resize bursts.
+            this.panelClearanceFrameId = this.window.requestAnimationFrame(() => {
+              this.panelClearanceFrameId = null;
+              this.updatePanelClearance(panel, spacer, fileTarget);
+            });
           });
           this.panelClearanceObserver.observe(panel);
           if (fileTarget && fileTarget !== panel) {
             this.panelClearanceObserver.observe(fileTarget);
           }
+          this.panelClearanceObserver.observe(spacerParent, { box: "border-box" });
         }
       }
       if (targetChanged || !this.panelClearanceObserver) {
@@ -279,12 +289,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
     },
 
+    cancelPanelClearanceUpdate() {
+      if (this.panelClearanceFrameId !== null) {
+        this.window.cancelAnimationFrame(this.panelClearanceFrameId);
+        this.panelClearanceFrameId = null;
+      }
+    },
+
     removePanel() {
+      this.cancelPanelClearanceUpdate();
       this.panelEventController?.abort();
       this.panelEventController = null;
       this.panelClearanceObserver?.disconnect();
       this.panelClearanceObserver = null;
       this.panelClearanceFileTarget = null;
+      this.panelClearanceParentTarget = null;
       this.panelClearanceTarget = null;
       this.document.getElementById(this.constants.PANEL_ID)?.remove();
       this.document.getElementById(this.constants.PANEL_SPACER_ID)?.remove();
