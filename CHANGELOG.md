@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.2](https://github.com/Pon57/HunkMark/compare/v4.0.1...v4.0.2) - 2026-10-09
+
+### Bug Fixes
+- fix: prevent file tooltip scroll overflow by @Pon57 in https://github.com/Pon57/HunkMark/pull/76
+- fix: keep panel clearance inside the diff layout by @Pon57 in https://github.com/Pon57/HunkMark/pull/77
+- perf: keep sticky hunk headers responsive while scrolling by @Pon57 in https://github.com/Pon57/HunkMark/pull/75
+
 ## [v4.0.1](https://github.com/Pon57/HunkMark/compare/v4.0.0...v4.0.1) - 2026-10-07
 
 ### Bug Fixes
