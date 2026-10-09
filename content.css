@@ -46,6 +46,45 @@
   z-index: 5 !important;
 }
 
+/* Keep file-toggle tooltips attached when reviewed hunks change file positions.
+   Native popover coordinates otherwise retain the old document height. */
+[class*="DiffFileHeader-module__diff-file-header"]
+  > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child) {
+  anchor-scope: --hunkmark-file-toggle;
+}
+
+[class*="DiffFileHeader-module__diff-file-header"]
+  > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
+  > button {
+  anchor-name: --hunkmark-file-toggle;
+}
+
+[class*="DiffFileHeader-module__diff-file-header"]
+  > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
+  > [data-component="Tooltip"][popover] {
+  position: fixed;
+  position-anchor: --hunkmark-file-toggle;
+  inset: auto !important;
+  position-area: bottom;
+  position-try-fallbacks: flip-block, bottom span-right, top span-right;
+  margin: 8px;
+}
+
+[class*="DiffFileHeader-module__diff-file-header"]
+  > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
+  > [data-component="Tooltip"][popover][data-direction^="n"] {
+  position-area: top;
+}
+
+/* Keep the pointer bridge on both sides when CSS flips the placement. */
+[class*="DiffFileHeader-module__diff-file-header"]
+  > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
+  > [data-component="Tooltip"][popover]::after {
+  inset: -8px 0;
+  width: auto;
+  height: auto;
+}
+
 .hunkmark-sticky-scroll-boundary {
   position: absolute !important;
   left: 0;
