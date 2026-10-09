@@ -231,8 +231,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
         panel.getBoundingClientRect().height + bottom + 16;
       const spacerTop =
         spacer.getBoundingClientRect().top + this.window.scrollY;
+      const trailingPadding = Number.parseFloat(
+        this.window.getComputedStyle(spacer.parentElement).paddingBottom,
+      ) || 0;
       const existingClearance =
-        spacerTop - this.panelClearanceContentBottom(fileElement);
+        spacerTop + trailingPadding - this.panelClearanceContentBottom(fileElement);
       const height = Math.ceil(
         Math.max(0, requiredClearance - existingClearance),
       );
@@ -240,6 +243,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     ensurePanelClearance(panel) {
+      const fileTarget = this.lastPanelClearanceFile();
+      const spacerParent = fileTarget?.closest('[data-component="SplitPageLayout.Content"]')
+        ?? this.document.body;
       let spacer = this.document.getElementById(
         this.constants.PANEL_SPACER_ID,
       );
@@ -247,25 +253,35 @@ if (globalThis.HunkMarkContent?.extendApp) {
         spacer = this.document.createElement("div");
         spacer.id = this.constants.PANEL_SPACER_ID;
         spacer.setAttribute("aria-hidden", "true");
-        this.document.body.append(spacer);
       }
-
-      const fileTarget = this.lastPanelClearanceFile();
+      const spacerMoved = spacer.parentElement !== spacerParent;
+      if (spacerMoved) spacerParent.append(spacer);
       const targetChanged =
+        spacerMoved ||
         this.panelClearanceTarget !== panel ||
+        this.panelClearanceParentTarget !== spacerParent ||
         this.panelClearanceFileTarget !== fileTarget;
       if (targetChanged) {
+        this.cancelPanelClearanceUpdate();
         this.panelClearanceObserver?.disconnect();
         this.panelClearanceTarget = panel;
         this.panelClearanceFileTarget = fileTarget;
+        this.panelClearanceParentTarget = spacerParent;
         if (typeof this.window.ResizeObserver === "function") {
           this.panelClearanceObserver = new this.window.ResizeObserver(() => {
-            this.updatePanelClearance(panel, spacer, fileTarget);
+            if (this.panelClearanceFrameId !== null) return;
+            // The spacer changes its parent's size. Write outside ResizeObserver
+            // delivery to avoid feedback warnings, coalescing resize bursts.
+            this.panelClearanceFrameId = this.window.requestAnimationFrame(() => {
+              this.panelClearanceFrameId = null;
+              this.updatePanelClearance(panel, spacer, fileTarget);
+            });
           });
           this.panelClearanceObserver.observe(panel);
           if (fileTarget && fileTarget !== panel) {
             this.panelClearanceObserver.observe(fileTarget);
           }
+          this.panelClearanceObserver.observe(spacerParent, { box: "border-box" });
         }
       }
       if (targetChanged || !this.panelClearanceObserver) {
@@ -273,12 +289,21 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
     },
 
+    cancelPanelClearanceUpdate() {
+      if (this.panelClearanceFrameId !== null) {
+        this.window.cancelAnimationFrame(this.panelClearanceFrameId);
+        this.panelClearanceFrameId = null;
+      }
+    },
+
     removePanel() {
+      this.cancelPanelClearanceUpdate();
       this.panelEventController?.abort();
       this.panelEventController = null;
       this.panelClearanceObserver?.disconnect();
       this.panelClearanceObserver = null;
       this.panelClearanceFileTarget = null;
+      this.panelClearanceParentTarget = null;
       this.panelClearanceTarget = null;
       this.document.getElementById(this.constants.PANEL_ID)?.remove();
       this.document.getElementById(this.constants.PANEL_SPACER_ID)?.remove();

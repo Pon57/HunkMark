@@ -206,6 +206,8 @@
       this.preferencesLoaded = false;
       this.panelClearanceObserver = null;
       this.panelClearanceFileTarget = null;
+      this.panelClearanceParentTarget = null;
+      this.panelClearanceFrameId = null;
       this.panelClearanceTarget = null;
       this.panelEventController = null;
       this.pendingProgressControllers = new Set();

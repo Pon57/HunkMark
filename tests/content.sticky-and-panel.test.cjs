@@ -3205,6 +3205,108 @@ test("uses the current React file container for panel clearance", async () => {
   }
 });
 
+test("keeps panel clearance inside the diff layout and recovers its observer after replacement", async () => {
+  class TestResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = new Set();
+      this.boxes = new Map();
+    }
+    observe(element, options = {}) {
+      this.observed.add(element);
+      this.boxes.set(element, options.box ?? "content-box");
+    }
+    unobserve(element) { this.observed.delete(element); this.boxes.delete(element); }
+    disconnect() { this.observed.clear(); this.boxes.clear(); }
+    resize(element, box) {
+      if (this.boxes.get(element) === box) this.callback([{ target: element }]);
+    }
+  }
+  const fixture = new JSDOM(duplicateHunkFixture());
+  const content = fixture.window.document.createElement("div");
+  content.dataset.component = "SplitPageLayout.Content";
+  content.style.paddingBottom = "40px";
+  content.append(...fixture.window.document.body.childNodes);
+  fixture.window.document.body.append(content);
+  const html = fixture.serialize();
+  fixture.window.close();
+  const { app, dom } = await startExtension(html, {}, {
+    resizeObserverClass: TestResizeObserver,
+  });
+  try {
+    app.observer.disconnect();
+    const document = dom.window.document;
+    const panel = document.getElementById("hunkmark-panel");
+    const wrapper = document.querySelector('[data-component="SplitPageLayout.Content"]');
+    const file = document.querySelector(".js-file");
+    const spacer = document.getElementById("hunkmark-panel-spacer");
+    assert.equal(spacer.parentElement, wrapper);
+    assert.equal(wrapper.lastElementChild, spacer);
+    panel.style.bottom = "18px";
+    panel.getBoundingClientRect = () => ({ height: 40 });
+    file.getBoundingClientRect = () => ({ bottom: 300 });
+    spacer.getBoundingClientRect = () => ({ top: 300 });
+    app.updatePanelClearance(panel, spacer, file);
+    assert.equal(spacer.style.height, "34px", "native trailing padding counts toward clearance");
+
+    let updates = 0;
+    const update = app.updatePanelClearance.bind(app);
+    app.updatePanelClearance = (...args) => { updates += 1; return update(...args); };
+    wrapper.style.paddingBottom = "0px";
+    for (let index = 0; index < 3; index += 1) {
+      app.panelClearanceObserver.resize(wrapper, "border-box");
+    }
+    await waitFor(() => assert.equal(spacer.style.height, "74px"));
+    assert.equal(updates, 1, "parent resize notifications are batched into one frame");
+    wrapper.style.paddingBottom = "80px";
+    app.panelClearanceObserver.resize(wrapper, "border-box");
+    await waitFor(() => assert.equal(spacer.style.height, "0px"));
+
+    const oldObserver = app.panelClearanceObserver;
+    spacer.remove();
+    app.ensurePanelClearance(panel);
+    const replacement = document.getElementById("hunkmark-panel-spacer");
+    assert.notEqual(replacement, spacer);
+    assert.equal(replacement.parentElement, wrapper);
+    assert.notEqual(app.panelClearanceObserver, oldObserver);
+    assert.equal(oldObserver.observed.size, 0);
+    replacement.getBoundingClientRect = () => ({ top: 500 });
+    app.panelClearanceObserver.callback([]);
+    await waitFor(() => assert.equal(replacement.style.height, "0px", "the callback updates the replacement spacer"));
+
+    const nextWrapper = document.createElement("div");
+    nextWrapper.dataset.component = "SplitPageLayout.Content";
+    document.body.append(nextWrapper);
+    nextWrapper.append(file);
+    app.ensurePanelClearance(panel);
+    assert.equal(replacement.parentElement, nextWrapper);
+
+    const previousObserver = app.panelClearanceObserver;
+    previousObserver.resize(nextWrapper, "border-box");
+    assert.notEqual(app.panelClearanceFrameId, null);
+    wrapper.append(file, replacement);
+    app.ensurePanelClearance(panel);
+    assert.notEqual(app.panelClearanceObserver, previousObserver, "moving file and spacer together rebinds the parent");
+    assert.equal(previousObserver.observed.size, 0);
+    assert.equal(app.panelClearanceParentTarget, wrapper);
+    assert.equal(app.panelClearanceFrameId, null, "rebinding cancels the old pending update");
+
+    document.body.append(file);
+    app.ensurePanelClearance(panel);
+    assert.equal(replacement.parentElement, document.body, "legacy layouts retain the fallback");
+    assert.equal(document.querySelectorAll("#hunkmark-panel-spacer").length, 1);
+    app.panelClearanceObserver.resize(document.body, "border-box");
+    assert.notEqual(app.panelClearanceFrameId, null);
+    app.stop();
+    assert.equal(document.getElementById("hunkmark-panel-spacer"), null);
+    assert.equal(app.panelClearanceFrameId, null);
+    assert.equal(app.panelClearanceParentTarget, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("adds only the missing panel clearance after the last file", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
