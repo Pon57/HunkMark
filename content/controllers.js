@@ -210,10 +210,12 @@ if (globalThis.HunkMarkContent?.extendApp) {
       )
         ? Number.parseFloat(hostStyle.paddingRight)
         : 0;
+      // GitHub emits these CSS module classes with or without a component
+      // prefix. Keep the local class name and direct-cell ownership checks.
       const hostActions = line.element.querySelector(
-        ':scope > [class*="ActionBar-module__action-bar-position__"]',
+        ':scope > [class*="action-bar-position__"]',
       ) ?? line.element.querySelector(
-        ':scope > [class*="SimpleDiff-module__comment-indicator__"]',
+        ':scope > [class*="comment-indicator__"]',
       );
       if (hostActions) {
         const actionsRect = hostActions.getBoundingClientRect();

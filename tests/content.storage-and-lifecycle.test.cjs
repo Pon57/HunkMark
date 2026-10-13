@@ -6203,28 +6203,33 @@ test("refreshes when an untracked context identity changes", async () => {
   }
 });
 
-for (const [layout, fixture] of [
+for (const [layout, fixture, actionClass, indicatorClass] of [
   ["split", currentReactSplitContextExpansionFixture],
   ["unified", currentReactContextExpansionFixture],
-]) {
+].flatMap(([layout, fixture]) => [
+  [`${layout} with prefixed classes`, fixture,
+    "ActionBar-module__action-bar-position__QToB4", "SimpleDiff-module__comment-indicator__iwZDp"],
+  [`${layout} with current classes`, fixture,
+    "action-bar-position__viAbCD", "comment-indicator__RxQI74"],
+])) {
   for (const initiallyCommented of [true, false]) {
     test(`reserves native comment space in ${layout} lines ${initiallyCommented ? "on startup" : "after comment changes"}`, async () => {
       const fixtureDom = new JSDOM(fixture());
       const cells = fixtureDom.window.document.querySelectorAll('.diff-text-cell');
       cells.forEach((cell) => { cell.style.cssText = 'line-height: 24px; padding-right: 24px'; });
       const target = fixtureDom.window.document.querySelector('.right-side-diff-cell');
-      const badgeHtml = '<div aria-hidden="true" data-width="24" class="SimpleDiff-module__comment-indicator__iwZDp"><span class="commentIndicatorText">1</span></div>' +
-        '<div><div data-width="190" class="ActionBar-module__action-bar-position__QToB4">Nested comment actions</div></div>' +
-        '<div data-width="69" class="ActionBar-module__action-bar-position__QToB4"><button aria-label="View comments">1</button><button aria-label="More actions">▼</button></div>';
+      const badgeHtml = `<div aria-hidden="true" data-width="24" class="${indicatorClass}"><span class="commentIndicatorText">1</span></div>` +
+        `<div><div data-width="190" class="${actionClass}">Nested comment actions</div></div>` +
+        `<div data-width="69" class="${actionClass}"><button aria-label="View comments">1</button><button aria-label="More actions">▼</button></div>`;
       if (initiallyCommented) {
         target.style.paddingRight = '80px';
         target.insertAdjacentHTML('beforeend', badgeHtml);
       } else {
-        target.insertAdjacentHTML('beforeend', '<div data-width="24" class="ActionBar-module__action-bar-position__QToB4"><button aria-label="More actions">▼</button></div>');
+        target.insertAdjacentHTML('beforeend', `<div data-width="24" class="${actionClass}"><button aria-label="More actions">▼</button></div>`);
       }
       const nativeStyles = fixtureDom.window.document.createElement('style');
-      nativeStyles.textContent = '[class*="ActionBar-module__action-bar-position__"] { position: absolute; right: 0; }' +
-        '[class*="SimpleDiff-module__comment-indicator__"] { position: absolute; right: 27px; }';
+      nativeStyles.textContent = '[class*="action-bar-position__"] { position: absolute; right: 0; }' +
+        '[class*="comment-indicator__"] { position: absolute; right: 27px; }';
       fixtureDom.window.document.head.append(nativeStyles);
       const html = fixtureDom.serialize();
       fixtureDom.window.close();
@@ -6243,7 +6248,7 @@ for (const [layout, fixture] of [
           const computedStyle = window.getComputedStyle.bind(window);
           window.getComputedStyle = (element, pseudoElement) => {
             const style = computedStyle(element, pseudoElement);
-            return responsiveRight !== null && element.matches('[class*="ActionBar-module__action-bar-position__"]')
+            return responsiveRight !== null && element.matches('[class*="action-bar-position__"]')
               ? { right: `${responsiveRight}px`, marginRight: style.marginRight } : style;
           };
           const NativeMutationObserver = window.MutationObserver;
@@ -6255,11 +6260,11 @@ for (const [layout, fixture] of [
           };
           const rect = window.Element.prototype.getBoundingClientRect;
           window.Element.prototype.getBoundingClientRect = function () {
-            if (this.matches('[class*="ActionBar-module__action-bar-position__"]')) {
+            if (this.matches('[class*="action-bar-position__"]')) {
               const width = Number(this.dataset.width);
               return { left: 400 - width, right: 400, width, height: 24, top: 0 };
             }
-            if (this.matches('[class*="SimpleDiff-module__comment-indicator__"]')) {
+            if (this.matches('[class*="comment-indicator__"]')) {
               const width = Number(this.dataset.width);
               return { left: 400 - 27 - width, right: 373, width, height: 24, top: 0 };
             }
@@ -6283,7 +6288,7 @@ for (const [layout, fixture] of [
         const measure = app.measureLineHostLayout.bind(app);
         app.measureLineHostLayout = (entry) => { measured.push(entry); return measure(entry); };
         if (!initiallyCommented) {
-          const menu = line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]');
+          const menu = line.element.querySelector(':scope > [class*="action-bar-position__"]');
           const menuObserver = app.lineControlHostLayoutObserver;
           assert.ok(menuObserver.observed.has(menu));
           menu.dataset.width = '30';
@@ -6298,7 +6303,7 @@ for (const [layout, fixture] of [
           assert.equal(line.control, control);
           assert.equal(line.key, key);
         }
-        const badge = line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]');
+        const badge = line.element.querySelector(':scope > [class*="action-bar-position__"]');
         observer = app.lineControlHostLayoutObserver;
         assert.equal(dom.window.getComputedStyle(control).right,
           'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
@@ -6307,6 +6312,24 @@ for (const [layout, fixture] of [
         badge.dataset.width = '83';
         observer.callback([{ target: badge }]);
         assert.equal(inset(), '83px');
+        // GitHub mounts the button group on hover; otherwise only the
+        // comment indicator remains. Track the currently mounted element.
+        const indicator = line.element.querySelector(':scope > [class*="comment-indicator__"]');
+        badge.remove();
+        await waitFor(() => assert.equal(inset(), '51px'));
+        assert.equal(observer.observed.has(badge), false);
+        assert.ok(observer.observed.has(indicator));
+        // Participant avatars change width independently of the thread count.
+        for (const width of [31.21875, 45.21875, 59.21875, 31.21875]) {
+          indicator.dataset.width = String(width);
+          observer.callback([{ target: indicator }]);
+          assert.equal(inset(), `${width + 27}px`);
+          assert.equal(indicator.textContent, '1');
+        }
+        line.element.append(badge);
+        await waitFor(() => assert.equal(inset(), '83px'));
+        assert.equal(observer.observed.has(indicator), false);
+        assert.ok(observer.observed.has(badge));
         const readsBeforeResize = measured.length;
         responsiveRight = 16;
         dom.window.dispatchEvent(new dom.window.Event('resize'));
@@ -6344,7 +6367,7 @@ for (const [layout, fixture] of [
         });
         line.element.insertAdjacentHTML('beforeend', badgeHtml);
         await waitFor(() => assert.equal(inset(), '69px'));
-        hostStyle.textContent += '.native-action-offset [class*="ActionBar-module__action-bar-position__"] { right: 12px; }';
+        hostStyle.textContent += '.native-action-offset [class*="action-bar-position__"] { right: 12px; }';
         const fileState = app.hunkStickyStateByFile.get(line.controller.fileElement);
         line.controller.fileElement.classList.add('native-action-offset');
         await waitFor(() => assert.equal(inset(), '81px'));
@@ -6366,7 +6389,7 @@ for (const [layout, fixture] of [
         assert.equal(attributeCallbacks, 0);
         app.setStickyHunkStateVisibility(fileState, false);
         assert.equal(fileState.lineAttributeObserver, null);
-        line.element.querySelector(':scope > [class*="ActionBar-module__action-bar-position__"]').style.right = '20px';
+        line.element.querySelector(':scope > [class*="action-bar-position__"]').style.right = '20px';
         app.setStickyHunkStateVisibility(fileState, true);
         assert.equal(inset(), '89px');
         assert.ok(fileState.lineAttributeObserver);
