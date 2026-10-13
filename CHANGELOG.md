@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.3](https://github.com/Pon57/HunkMark/compare/v4.0.2...v4.0.3) - 2026-10-13
+
+### Bug Fixes
+- fix: keep Viewed spacing aligned with comment controls by @Pon57 in https://github.com/Pon57/HunkMark/pull/81
+- fix: keep Viewed labels out of copied diff text by @Pon57 in https://github.com/Pon57/HunkMark/pull/82
+### Dependency Updates
+- chore(deps): update dependency jsdom to v30.1.2 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/79
+
 ## [v4.0.2](https://github.com/Pon57/HunkMark/compare/v4.0.1...v4.0.2) - 2026-10-09
 
 ### Bug Fixes
