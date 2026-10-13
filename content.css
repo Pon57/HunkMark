@@ -543,6 +543,12 @@
   z-index: 2;
 }
 
+/* Host copy handlers can serialize diff cells despite user-select: none.
+   Render the label without adding text to the code; aria-label names the button. */
+.hunkmark-line-control::after {
+  content: "Viewed";
+}
+
 .hunkmark-line-control[aria-pressed="true"]::before {
   content: "✓";
 }

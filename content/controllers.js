@@ -391,7 +391,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
       control.type = "button";
       control.className = "hunkmark-line-control";
       control.disabled = disabled;
-      control.textContent = "Viewed";
       control.title = "Mark this code line as viewed";
       control.setAttribute("aria-label", "Mark this code line as viewed");
       control.setAttribute("aria-pressed", "false");
