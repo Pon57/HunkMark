@@ -16,6 +16,7 @@
   root.document.dispatchEvent(new root.Event("hunkmark:replace-runtime"));
   previous?.stop();
   root.document.getElementById(root.HunkMarkContent.constants.RECONNECT_NOTICE_ID)?.remove();
+  root.document.documentElement.setAttribute("data-hunkmark-managed-styles", "1");
 
   const app = new App({
     chromeApi: root.chrome,

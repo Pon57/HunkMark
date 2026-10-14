@@ -1,16 +1,43 @@
 "use strict";
 
-// This worker runs on installation/update or an explicit toolbar click. It does
-// not poll tabs or observe navigation; the content script owns route detection.
+// The worker serves packaged styles and reconnects on install/update or a
+// toolbar click. It does not poll tabs or observe navigation.
 const reconnectingTabs = new Map();
+let stylesheet;
+
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message?.type !== "hunkmark:stylesheet" || sender.id !== chrome.runtime.id) {
+    return false;
+  }
+  stylesheet ??= fetch(chrome.runtime.getURL("content.css")).then((response) => {
+    if (!response.ok) throw new Error("Could not load the packaged stylesheet");
+    return response.text();
+  }).catch((error) => {
+    stylesheet = null;
+    throw error;
+  });
+  stylesheet.then(
+    (css) => respond({ css, version: chrome.runtime.getManifest().version }),
+    () => respond({ error: "Stylesheet unavailable" }),
+  );
+  return true;
+});
 
 async function prepareReconnect(version) {
   if (location.protocol !== "https:" || location.hostname !== "github.com") {
     return false;
   }
+  // CSS declared by legacy manifests cannot be removed from an open document.
+  // Those tabs need one page reload before safe, replaceable styles are used.
+  if (document.documentElement.getAttribute("data-hunkmark-managed-styles") !== "1") {
+    return false;
+  }
   const current = globalThis.HunkMarkContent?.activeApp;
   if (current?.runtimeVersion === version && current.navigationStarted &&
       !current.isExtensionContextInvalidated()) {
+    if (!current.stopped && !current.reviewStylesElement?.isConnected) {
+      current.scheduleRefresh({ immediate: true });
+    }
     return false;
   }
   document.dispatchEvent(new Event("hunkmark:replace-runtime"));
@@ -40,8 +67,6 @@ async function injectRuntime(tabId) {
   // A full navigation during preparation must not redirect injection into a
   // different document. The API rejects if this document has already gone.
   const target = { tabId, documentIds: [prepared.documentId] };
-  await chrome.scripting.removeCSS({ target, files: script.css });
-  await chrome.scripting.insertCSS({ target, files: script.css });
   await chrome.scripting.executeScript({ target, world: "ISOLATED", files: script.js });
 }
 

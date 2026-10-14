@@ -603,6 +603,11 @@
         };
 
         globalThis.chrome ??= {};
+        globalThis.chrome.runtime = {
+          id: "capture",
+          getManifest: () => ({ version: "capture" }),
+          sendMessage: async () => ({ css: "/* styles supplied by the document link */", version: "capture" }),
+        };
         globalThis.chrome.storage = {
           local,
           onChanged: {

@@ -66,7 +66,7 @@ const invalidChanges = [
   ["missing content scripts", (m) => delete m.content_scripts],
   ["a null content script", (m) => m.content_scripts[0] = null],
   ["all-site matches", (m) => m.content_scripts[0].matches = ["<all_urls>"]],
-  ["extra CSS", (m) => m.content_scripts[0].css.push("other.css")],
+  ["declarative CSS", (m) => m.content_scripts[0].css = ["content.css"]],
   ["an extra root script", (m) => m.content_scripts[0].js.splice(-1, 0, "extra.js")],
   ["a traversal path", (m) => m.content_scripts[0].js.splice(-1, 0, "content/../extra.js")],
   ["an encoded path", (m) => m.content_scripts[0].js.splice(-1, 0, "content/%2e%2e%2fextra.js")],

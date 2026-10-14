@@ -5,6 +5,13 @@ const {
 const fs = require("node:fs");
 const manifest = require("../manifest.json");
 
+function stylesheetChrome(css, version = manifest.version) {
+  const chrome = createChromeApi();
+  chrome.api.runtime.getManifest = () => ({ ...manifest, version });
+  chrome.api.runtime.sendMessage = async () => ({ css, version });
+  return chrome;
+}
+
 function inject(dom) {
   for (const file of manifest.content_scripts[0].js) {
     dom.window.eval(fs.readFileSync(path.join(__dirname, "..", file), "utf8"));
@@ -96,6 +103,58 @@ test("replacement on a non-PR page keeps review observers and storage idle", asy
   } finally {
     dom.window.HunkMarkContent?.activeApp?.stop();
     oldApp.stop();
+    dom.window.close();
+  }
+});
+
+test("replacement removes deleted stylesheet rules and keeps exactly one owned stylesheet", async () => {
+  const chrome = stylesheetChrome("body { --hunkmark-old-rule: obsolete; }");
+  const { app: oldApp, dom } = await startExtension(duplicateHunkFixture(), {}, { chromeInstance: chrome });
+  try {
+    const oldStyle = dom.window.document.getElementById("hunkmark-styles");
+    assert.ok(oldStyle);
+    assert.equal(dom.window.getComputedStyle(dom.window.document.body).getPropertyValue("--hunkmark-old-rule"), "obsolete");
+    const nextChrome = stylesheetChrome("body { --hunkmark-new-rule: current; }", "4.0.4");
+    dom.window.chrome = nextChrome.api;
+    delete dom.window.HunkMarkContent;
+    delete dom.window.HunkMarkCore;
+    const app = inject(dom);
+    await waitFor(() => {
+      assert.equal(app.refreshRunning, false);
+      assert.equal(app.refreshQueued, false);
+      assert.equal(controllersFor(app).length, 2);
+    });
+    assert.equal(oldStyle.isConnected, false);
+    const style = dom.window.getComputedStyle(dom.window.document.body);
+    assert.equal(style.getPropertyValue("--hunkmark-old-rule"), "");
+    assert.equal(style.getPropertyValue("--hunkmark-new-rule"), "current");
+    assert.equal(dom.window.document.querySelectorAll("#hunkmark-styles").length, 1);
+  } finally {
+    dom.window.HunkMarkContent?.activeApp?.stop();
+    oldApp.stop();
+    dom.window.close();
+  }
+});
+
+test("stylesheet requests resolving after exit do not modify non-PR pages", async () => {
+  let release;
+  let requested = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const chrome = createChromeApi();
+  chrome.api.runtime.sendMessage = () => { requested = true; return gate; };
+  const { app, dom } = await startExtension(duplicateHunkFixture(), {}, { chromeInstance: chrome, waitForScope: false });
+  try {
+    await waitFor(() => assert.equal(requested, true));
+    dom.window.history.pushState({}, "", "/octo/repo");
+    dom.window.document.dispatchEvent(new dom.window.Event("turbo:load"));
+    release({ css: "body { --hunkmark-rule: test; }", version: manifest.version });
+    await waitFor(() => assert.equal(app.refreshRunning, false));
+    assert.equal(app.stopped, true);
+    assert.equal(dom.window.document.getElementById("hunkmark-styles"), null);
+    assert.equal(app.controllersByRow.size, 0);
+  } finally {
+    release({ css: "", version: manifest.version });
+    app.stop();
     dom.window.close();
   }
 });

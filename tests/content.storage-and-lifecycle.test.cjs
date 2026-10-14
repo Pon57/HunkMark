@@ -1791,7 +1791,7 @@ test("stops quietly when the extension context is invalidated", async () => {
     assert.equal(warnings.length, 0);
     assert.equal(
       dom.window.document.querySelectorAll(
-        "[data-hunkmark-ui], .hunkmark-file-progress, #hunkmark-panel",
+        "[data-hunkmark-ui]:not(style), .hunkmark-file-progress, #hunkmark-panel",
       ).length,
       0,
     );
@@ -1834,7 +1834,7 @@ test("stops quietly when collapse storage loses the extension context", async ()
     assert.equal(Object.keys(chrome.snapshot()).length, 0);
     assert.equal(
       dom.window.document.querySelectorAll(
-        "[data-hunkmark-ui], .hunkmark-file-progress, #hunkmark-panel",
+        "[data-hunkmark-ui]:not(style), .hunkmark-file-progress, #hunkmark-panel",
       ).length,
       0,
     );

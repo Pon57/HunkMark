@@ -85,7 +85,7 @@ function assertReviewStopped(app, dom, probe) {
   assert.equal(probe.storageListeners.size, 0);
   assert.deepEqual(probe.inputListeners.map(({ type }) => type), []);
   assert.equal(dom.window.document.querySelector(
-    "[data-hunkmark-ui], .hunkmark-file-progress, #hunkmark-panel, .hunkmark-collapsed",
+    "[data-hunkmark-ui]:not(style), .hunkmark-file-progress, #hunkmark-panel, .hunkmark-collapsed",
   ), null);
 }
 

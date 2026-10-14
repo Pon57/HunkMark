@@ -740,6 +740,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!this.currentReviewScope) {
         return;
       }
+      if (!(await this.loadReviewStyles()) || this.stopped ||
+          reviewSessionGeneration !== this.reviewSessionGeneration) {
+        return;
+      }
 
       const now = Date.now();
       const reviewStoragePruneDue =

@@ -125,6 +125,11 @@ function createChromeApi(initial = {}) {
           requireValidContext();
           return structuredClone(manifest);
         },
+        async sendMessage(message) {
+          requireValidContext();
+          assert.equal(message.type, "hunkmark:stylesheet");
+          return { css: "/* test stylesheet */", version: manifest.version };
+        },
       },
       storage: {
         local,

@@ -132,6 +132,8 @@
       this.constants = namespace.constants;
       this.runtimeVersion = chromeApi.runtime?.getManifest?.().version ?? null;
       this.runtimeReplaced = false;
+      this.reviewStylesText = null;
+      this.reviewStylesElement = null;
 
       this.autoCollapsePreferenceKey =
         `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;
@@ -233,6 +235,38 @@
       this.lastObservedUrl = windowObject.location.href;
       this.navigationPollTimer = null;
       this.observer = null;
+    }
+
+    installReviewStyles() {
+      if (!this.reviewStylesText || this.reviewStylesElement?.isConnected) {
+        return;
+      }
+      this.document.getElementById("hunkmark-styles")?.remove();
+      const style = this.document.createElement("style");
+      style.id = "hunkmark-styles";
+      style.setAttribute("data-hunkmark-ui", "");
+      style.textContent = this.reviewStylesText;
+      (this.document.head ?? this.document.documentElement).append(style);
+      this.reviewStylesElement = style;
+    }
+
+    removeReviewStyles() {
+      this.reviewStylesElement?.remove();
+      this.reviewStylesElement = null;
+    }
+
+    async loadReviewStyles() {
+      const generation = this.reviewSessionGeneration;
+      if (!this.reviewStylesText) {
+        const response = await this.chrome.runtime.sendMessage({ type: "hunkmark:stylesheet" });
+        if (this.stopped || generation !== this.reviewSessionGeneration) return false;
+        if (typeof response?.css !== "string" || response.version !== this.runtimeVersion) {
+          throw new Error("HunkMark could not load its stylesheet");
+        }
+        this.reviewStylesText = response.css;
+      }
+      this.installReviewStyles();
+      return true;
     }
 
     localStorageArea() {

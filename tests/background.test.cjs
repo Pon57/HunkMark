@@ -14,7 +14,10 @@ function startWorker({ tabs = [{ id: 1 }], prepare = async () => [{ documentId: 
   const calls = [];
   const chrome = {
     runtime: {
+      id: "test-worker",
+      getURL: (file) => `chrome-extension://test-worker/${file}`,
       getManifest: () => structuredClone(manifest),
+      onMessage: { addListener: (fn) => { hooks.message = fn; } },
       onInstalled: { addListener: (fn) => { hooks.installed = fn; } },
     },
     action: { onClicked: { addListener: (fn) => { hooks.clicked = fn; } } },
@@ -24,11 +27,12 @@ function startWorker({ tabs = [{ id: 1 }], prepare = async () => [{ documentId: 
         calls.push(["execute", options]);
         return options.func ? prepare(options) : [];
       },
-      async removeCSS(options) { calls.push(["removeCSS", options]); },
-      async insertCSS(options) { calls.push(["insertCSS", options]); },
     },
   };
-  const context = vm.createContext({ chrome, URL });
+  const context = vm.createContext({ chrome, URL, fetch: async (url) => {
+    calls.push(["fetch", url]);
+    return { ok: true, text: async () => "/* packaged CSS */" };
+  } });
   vm.runInContext(source, context);
   return { calls, hooks, prepareReconnect: vm.runInContext("prepareReconnect", context) };
 }
@@ -44,10 +48,9 @@ test("reconnects matching tabs on update using only packaged scripts and one pre
   for (const [, options] of calls.slice(2)) {
     assert.deepEqual(JSON.parse(JSON.stringify(options.target)), { tabId: 1, documentIds: ["document-1"] });
   }
-  assert.deepEqual(calls.map(([type]) => type), ["query", "execute", "removeCSS", "insertCSS", "execute"]);
-  assert.deepEqual(calls[3][1].files, manifest.content_scripts[0].css);
-  assert.deepEqual(calls[4][1].files, manifest.content_scripts[0].js);
-  assert.equal(calls[4][1].world, "ISOLATED");
+  assert.deepEqual(calls.map(([type]) => type), ["query", "execute", "execute"]);
+  assert.deepEqual(calls[2][1].files, manifest.content_scripts[0].js);
+  assert.equal(calls[2][1].world, "ISOLATED");
 });
 
 test("does no work for unrelated lifecycle events or toolbar clicks outside GitHub", async () => {
@@ -88,7 +91,7 @@ test("coalesces concurrent toolbar requests but allows retry after failure", asy
   hooks.clicked(tab);
   await new Promise(setImmediate);
   assert.equal(attempts, 2);
-  assert.equal(calls.filter(([type]) => type === "insertCSS").length, 1);
+  assert.equal(calls.filter(([type, options]) => type === "execute" && options.files).length, 1);
 });
 
 test("one inaccessible tab does not prevent reconnecting other GitHub tabs", async () => {
@@ -117,12 +120,18 @@ test("preparation checks the live origin, reuses healthy runtimes, and yields fo
         runtimeVersion: manifest.version,
         navigationStarted: true,
         isExtensionContextInvalidated: () => false,
+        reviewStylesElement: { isConnected: true },
+        scheduleRefresh() {},
         stop() { stopped += 1; },
       };
       dom.window.HunkMarkContent = { activeApp: app };
+      dom.window.document.documentElement.setAttribute("data-hunkmark-managed-styles", "1");
       assert.equal(await prepare(manifest.version), false);
       assert.equal(stopped, 0);
+      dom.window.document.documentElement.removeAttribute("data-hunkmark-managed-styles");
       app.isExtensionContextInvalidated = () => true;
+      assert.equal(await prepare(manifest.version), false, "legacy declarative styles require a reload");
+      dom.window.document.documentElement.setAttribute("data-hunkmark-managed-styles", "1");
       const github = url.startsWith("https://github.com/");
       assert.equal(await prepare(manifest.version), github);
       assert.equal(stopped, Number(github));
@@ -134,4 +143,19 @@ test("preparation checks the live origin, reuses healthy runtimes, and yields fo
       dom.window.close();
     }
   }
+});
+
+
+test("serves only the packaged stylesheet to this extension and caches its text", async () => {
+  const { calls, hooks } = startWorker();
+  assert.equal(hooks.message({ type: "hunkmark:stylesheet" }, { id: "another-extension" }, () => {}), false);
+  assert.equal(hooks.message({ type: "arbitrary-file" }, { id: "test-worker" }, () => {}), false);
+  for (let i = 0; i < 2; i += 1) {
+    const response = await new Promise((resolve) => {
+      assert.equal(hooks.message({ type: "hunkmark:stylesheet" }, { id: "test-worker" }, resolve), true);
+    });
+    assert.equal(response.css, "/* packaged CSS */");
+    assert.equal(response.version, manifest.version);
+  }
+  assert.deepEqual(calls, [["fetch", "chrome-extension://test-worker/content.css"]]);
 });

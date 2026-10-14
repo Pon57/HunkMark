@@ -178,8 +178,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const existing = this.document.getElementById(this.constants.RECONNECT_NOTICE_ID);
       if (!this.Core.parseReviewScope(this.window.location)) {
         existing?.remove();
+        this.removeReviewStyles();
         return;
       }
+      this.installReviewStyles();
       if (existing) {
         return;
       }
@@ -1107,6 +1109,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!this.Core.parseReviewScope(this.window.location)) {
         this.lastObservedUrl = nextUrl;
         this.stopReview();
+        this.removeReviewStyles();
         this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
         return nextUrl !== observedUrl;
       }
@@ -1155,6 +1158,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       // A disconnected release predating the replacement event may still add
       // its old notice. A healthy replacement must not leave that warning up.
       this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
+
+      if (this.reviewStylesElement && !this.reviewStylesElement.isConnected) {
+        this.installReviewStyles();
+      }
 
       if (!this.currentScope) {
         if (this.Core.parseReviewScope(this.window.location)) {
@@ -1691,6 +1698,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.navigationPollTimer = null;
       }
       this.stopReview();
+      this.removeReviewStyles();
     },
 
     stopReview() {

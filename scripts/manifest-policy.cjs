@@ -41,7 +41,7 @@ function validateManifestBoundary(manifest) {
     assert.ok(allowedContentScriptKeys.has(key), `Manifest boundary: unsupported content-script key ${key}`);
   }
   assert.deepEqual(script.matches, ["https://github.com/*"], "Manifest boundary: content scripts must target GitHub only");
-  assert.deepEqual(script.css, ["content.css"], "Manifest boundary: only the packaged content stylesheet is allowed");
+  assert.equal(script.css, undefined, "Manifest boundary: styles must be replaceable, not manifest-declared");
   assert.ok(
     Array.isArray(script.js) && script.js.length >= 3,
     "Manifest boundary: content-script modules are required",

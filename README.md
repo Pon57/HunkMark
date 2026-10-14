@@ -38,6 +38,8 @@ After updating the repository, reload the development copy from `chrome://extens
 
 Extension updates reconnect HunkMark in open GitHub tabs without reloading the page. If it remains disconnected, click HunkMark in Chrome's Extensions menu to retry. You can also reload the page as a fallback.
 
+Tabs opened with a version predating this reconnect feature need one page reload to migrate their stylesheet. Subsequent updates can replace both scripts and styles without a page reload.
+
 ## Review state
 
 - Review state is stored only in `chrome.storage.local` and is never sent elsewhere.
