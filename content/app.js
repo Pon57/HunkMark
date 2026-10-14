@@ -130,6 +130,8 @@
       this.window = windowObject;
       this.document = windowObject.document;
       this.constants = namespace.constants;
+      this.runtimeVersion = chromeApi.runtime?.getManifest?.().version ?? null;
+      this.runtimeReplaced = false;
 
       this.autoCollapsePreferenceKey =
         `${core.PREFERENCE_STORAGE_NAMESPACE}:preference:auto-collapse-viewed`;

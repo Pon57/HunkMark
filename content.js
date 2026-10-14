@@ -7,6 +7,16 @@
     return;
   }
 
+  const previous = root.HunkMarkContent.activeApp;
+  const version = root.chrome.runtime.getManifest().version;
+  if (previous?.runtimeVersion === version && previous.navigationStarted &&
+      !previous.isExtensionContextInvalidated()) {
+    return;
+  }
+  root.document.dispatchEvent(new root.Event("hunkmark:replace-runtime"));
+  previous?.stop();
+  root.document.getElementById(root.HunkMarkContent.constants.RECONNECT_NOTICE_ID)?.remove();
+
   const app = new App({
     chromeApi: root.chrome,
     core: Core,

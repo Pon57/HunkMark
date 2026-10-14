@@ -138,6 +138,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     stopForInvalidatedContext(error) {
+      if (this.runtimeReplaced) {
+        return true;
+      }
       if (!this.isExtensionContextInvalidated(error)) {
         return false;
       }
@@ -147,10 +150,17 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     showReconnectNotice() {
+      if (this.runtimeReplaced) {
+        return;
+      }
       if (!this.reconnectNoticeController) {
         this.reconnectNoticeController = new this.window.AbortController();
         const options = { signal: this.reconnectNoticeController.signal };
         const update = () => this.updateReconnectNotice();
+        this.document.addEventListener("hunkmark:replace-runtime", () => {
+          this.runtimeReplaced = true;
+          this.stop();
+        }, options);
         // The invalidated runtime stays stopped. Only route notifications are
         // needed to keep its reconnect notice inside supported diff pages.
         for (const type of ["turbo:load", "turbo:render", "turbo:frame-load", "pjax:end"]) {
@@ -180,7 +190,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
       const message = this.document.createElement("span");
       message.textContent =
-        "HunkMark needs to reconnect. Reload this page to continue.";
+        "HunkMark needs to reconnect. Click its extension toolbar icon, or reload this page.";
 
       const reloadButton = this.document.createElement("button");
       reloadButton.type = "button";
@@ -1097,11 +1107,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (!this.Core.parseReviewScope(this.window.location)) {
         this.lastObservedUrl = nextUrl;
         this.stopReview();
+        this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
         return nextUrl !== observedUrl;
       }
       if (this.stopForInvalidatedContext()) {
         return false;
       }
+      this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
       if (this.stopped) {
         this.lastObservedUrl = nextUrl;
         this.startReview();
@@ -1140,6 +1152,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       ) {
         return;
       }
+      // A disconnected release predating the replacement event may still add
+      // its old notice. A healthy replacement must not leave that warning up.
+      this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
 
       if (!this.currentScope) {
         if (this.Core.parseReviewScope(this.window.location)) {
@@ -1423,6 +1438,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return;
       }
       this.navigationStarted = true;
+      this.boundRuntimeReplaced = () => {
+        this.runtimeReplaced = true;
+        this.stop();
+      };
+      this.document.addEventListener("hunkmark:replace-runtime", this.boundRuntimeReplaced);
       // GitHub can enter Files changed without loading a new document. Keep
       // only navigation detection attached while the review runtime is stopped.
       this.boundScheduleRefresh = () =>
@@ -1642,6 +1662,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     stop() {
+      this.document.removeEventListener("hunkmark:replace-runtime", this.boundRuntimeReplaced);
       this.reconnectNoticeController?.abort();
       this.reconnectNoticeController = null;
       this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();

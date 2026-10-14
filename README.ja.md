@@ -36,6 +36,8 @@ git clone https://github.com/Pon57/HunkMark.git
 
 更新後は `chrome://extensions` で開発用の HunkMark を再読み込みしてください。
 
+拡張の更新時は、開いている GitHub タブでページ全体を再読み込みせずに HunkMark が復帰します。復帰しない場合は、Chrome の「拡張機能」メニューから HunkMark をクリックして再試行できます。ページの再読み込みでも復帰できます。
+
 ## レビュー状態
 
 - 確認状態は `chrome.storage.local` にだけ保存し、外部へ送信しません

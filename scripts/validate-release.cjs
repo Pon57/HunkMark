@@ -68,6 +68,7 @@ assert.ok(manifest.short_name.length <= 12, "Manifest short name exceeds 12 char
 assert.ok(manifest.description.length <= 132, "Manifest description exceeds 132 characters");
 
 const executableFiles = [
+  manifest.background.service_worker,
   ...new Set(
     manifest.content_scripts.flatMap((contentScript) => contentScript.js ?? []),
   ),
@@ -158,7 +159,7 @@ const storeScreenshotScripts = Array.from(
 );
 assert.deepEqual(
   storeScreenshotScripts,
-  executableFiles.filter((file) => file !== "content.js"),
+  executableFiles.filter((file) => file !== "content.js" && file !== manifest.background.service_worker),
   "Store screenshot capture must load declared modules in manifest order",
 );
 assert.doesNotMatch(

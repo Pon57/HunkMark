@@ -11,6 +11,7 @@ const manifest = JSON.parse(
 const scripts = manifest.content_scripts.flatMap(
   (contentScript) => contentScript.js ?? [],
 );
+scripts.push(manifest.background.service_worker);
 
 for (const relative of new Set(scripts)) {
   const source = fs.readFileSync(path.join(root, relative), "utf8");

@@ -37,11 +37,8 @@ test("accepts omitted or explicitly unchanged execution defaults", () => {
 });
 
 for (const [key, value] of Object.entries({
-  host_permissions: ["<all_urls>"],
   optional_host_permissions: ["<all_urls>"],
   optional_permissions: ["tabs"],
-  background: { service_worker: "content.js" },
-  action: { default_popup: "popup.html" },
   web_accessible_resources: [{ resources: ["content.js"], matches: ["<all_urls>"] }],
   externally_connectable: { matches: ["https://example.com/*"] },
   sandbox: { pages: ["sandbox.html"] },
@@ -56,8 +53,15 @@ for (const [key, value] of Object.entries({
 }
 
 const invalidChanges = [
+  ["broader host access", (m) => m.host_permissions = ["<all_urls>"]],
+  ["a different background worker", (m) => m.background.service_worker = "content.js"],
+  ["extra background options", (m) => m.background.type = "module"],
+  ["an action popup", (m) => m.action.default_popup = "popup.html"],
   ["additional permissions", (m) => m.permissions.push("tabs")],
   ["missing permissions", (m) => delete m.permissions],
+  ["missing host permissions", (m) => delete m.host_permissions],
+  ["missing background worker", (m) => delete m.background],
+  ["missing toolbar action", (m) => delete m.action],
   ["a second content script", (m) => m.content_scripts.push({ matches: ["<all_urls>"], js: ["content.js"] })],
   ["missing content scripts", (m) => delete m.content_scripts],
   ["a null content script", (m) => m.content_scripts[0] = null],

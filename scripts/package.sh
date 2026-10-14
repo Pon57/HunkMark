@@ -14,7 +14,7 @@ checksum_file="$archive.sha256"
 staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/hunkmark.XXXXXX")
 trap 'rm -rf "$staging_dir"' EXIT HUP INT TERM
 
-cp manifest.json core.js content.js content.css LICENSE PRIVACY.md "$staging_dir/"
+cp manifest.json background.js core.js content.js content.css LICENSE PRIVACY.md "$staging_dir/"
 cp -R content "$staging_dir/content"
 cp -R icons "$staging_dir/icons"
 

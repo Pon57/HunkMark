@@ -121,6 +121,10 @@ function createChromeApi(initial = {}) {
     api: {
       runtime: {
         id: "test-hunkmark-extension",
+        getManifest() {
+          requireValidContext();
+          return structuredClone(manifest);
+        },
       },
       storage: {
         local,

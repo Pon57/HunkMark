@@ -30,7 +30,7 @@ function createReleaseFixture(t, version, { metadataVersion = version } = {}) {
   // Validation reads the real release assets; only metadata and scripts live
   // in the fixture, so synchronization cannot modify the checkout.
   for (const relative of [
-    "core.js", "content.js", "content.css", "content", "icons", "store-assets",
+    "background.js", "core.js", "content.js", "content.css", "content", "icons", "store-assets",
     "design", "LICENSE", "PRIVACY.md", "README.md", "README.ja.md", "CONTRIBUTING.md",
   ]) {
     fs.symlinkSync(path.join(root, relative), path.join(fixture, relative));

@@ -1799,7 +1799,7 @@ test("stops quietly when the extension context is invalidated", async () => {
       app.constants.RECONNECT_NOTICE_ID,
     );
     assert.ok(notice);
-    assert.match(notice.textContent, /Reload this page/);
+    assert.match(notice.textContent, /reload this page/i);
     assert.equal(notice.querySelector("button").textContent, "Reload");
 
     app.scheduleRefresh();
@@ -1878,7 +1878,7 @@ test("stops quietly when official Viewed override loses the storage API", async 
       app.constants.RECONNECT_NOTICE_ID,
     );
     assert.ok(notice);
-    assert.match(notice.textContent, /Reload this page/);
+    assert.match(notice.textContent, /reload this page/i);
   } finally {
     app.stop();
     dom.window.close();

@@ -36,6 +36,8 @@ git clone https://github.com/Pon57/HunkMark.git
 
 After updating the repository, reload the development copy from `chrome://extensions`.
 
+Extension updates reconnect HunkMark in open GitHub tabs without reloading the page. If it remains disconnected, click HunkMark in Chrome's Extensions menu to retry. You can also reload the page as a fallback.
+
 ## Review state
 
 - Review state is stored only in `chrome.storage.local` and is never sent elsewhere.

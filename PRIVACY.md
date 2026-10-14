@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: October 1, 2026
+Last updated: October 14, 2026
 
 HunkMark has one purpose: to add hunk-level and line-level review controls to GitHub pull request diff pages.
 
@@ -39,7 +39,8 @@ Legacy review state from earlier versions is removed during the next storage cle
 ## Permissions
 
 - `storage`: saves review state and display preferences locally on the user's device.
-- Access to `https://github.com/*`: reads the visible pull request diff, adds the review interface, and detects GitHub's client-side navigation into diff pages.
+- `scripting`: reinstalls the packaged HunkMark scripts and stylesheet in open GitHub tabs after an extension update or when the user clicks its toolbar icon, without reloading the page.
+- Access to `https://github.com/*`: reads the visible pull request diff, adds the review interface, and detects GitHub's client-side navigation into diff pages. The reconnect worker uses the same GitHub-only host access to locate open GitHub tabs. It does not read browsing history, request access to additional sites, or persist or transmit tab URLs.
 
 ## Limited Use disclosure
 

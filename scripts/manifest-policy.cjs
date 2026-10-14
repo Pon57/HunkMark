@@ -7,7 +7,8 @@ const assert = require("node:assert/strict");
 const allowedManifestKeys = new Set([
   "manifest_version", "name", "short_name", "version", "version_name",
   "description", "minimum_chrome_version", "icons", "author", "homepage_url",
-  "default_locale", "permissions", "content_scripts",
+  "default_locale", "permissions", "content_scripts", "host_permissions",
+  "background", "action",
 ]);
 const allowedContentScriptKeys = new Set([
   "matches", "js", "css", "run_at", "world", "all_frames",
@@ -22,7 +23,10 @@ function validateManifestBoundary(manifest) {
   for (const key of Object.keys(manifest)) {
     assert.ok(allowedManifestKeys.has(key), `Manifest boundary: unsupported key ${key}`);
   }
-  assert.deepEqual(manifest.permissions, ["storage"], "Manifest boundary: only storage permission is allowed");
+  assert.deepEqual(manifest.permissions, ["storage", "scripting"], "Manifest boundary: only storage and scripting permissions are allowed");
+  assert.deepEqual(manifest.host_permissions, ["https://github.com/*"], "Manifest boundary: host access must target GitHub only");
+  assert.deepEqual(manifest.background, { service_worker: "background.js" }, "Manifest boundary: only the packaged reconnect worker is allowed");
+  assert.deepEqual(manifest.action, { default_title: "Reconnect HunkMark" }, "Manifest boundary: only the reconnect toolbar action is allowed");
   assert.ok(
     Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 1,
     "Manifest boundary: exactly one content-script definition is required",

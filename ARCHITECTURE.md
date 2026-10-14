@@ -7,6 +7,7 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 | File | Responsibility |
 | --- | --- |
 | `core.js` | URL parsing, Web Crypto identifier generation and caching, review-state key generation, and aggregate review state |
+| `background.js` | Reinstalls packaged scripts in open GitHub documents after updates or an explicit toolbar click |
 | `content/app.js` | Application state, constants, and dependency injection |
 | `content/discovery.js` | GitHub DOM adaptation and hunk/changed-line discovery |
 | `content/review-context.js` | Strict fingerprints, bounded aliases, and line-review context matching |
@@ -25,7 +26,7 @@ HunkMark runs as a set of ordered Manifest V3 content scripts. Chrome loads the 
 | `content/review-reconciliation.js` | Locked restoration and fail-closed migration for newly discovered controllers |
 | `content/refresh.js` | Review-scope changes, discovery, controller replacement, and reconciliation orchestration |
 | `content/lifecycle.js` | Refresh scheduling, DOM/storage observation, navigation, and teardown |
-| `content.js` | Dependency checks and application startup only |
+| `content.js` | Dependency checks, idempotent startup, and runtime replacement |
 
 ### Context-expansion domains
 
@@ -65,6 +66,7 @@ Native controls and rendered diff rows are host evidence. `FileReviewSnapshot` i
 
 - DOM/storage observation, review input handlers, and layout work run only on supported pull-request `files`/`changes` routes. Leaving them cancels queued work and removes the review UI; returning reloads preferences and starts a new review session. Other GitHub pages retain only navigation listeners so client-side entry still works. URL polling is a fallback only when the Navigation API is unavailable.
 - After extension invalidation, review processing stays stopped. Only navigation events update the reconnect notice, hiding it outside supported diff routes and showing it again on return; no DOM observation or URL polling is restarted.
+- The reconnect worker is event-driven and uses the existing GitHub host scope. It pins reinjection to the prepared document ID, reuses healthy instances, and deduplicates concurrent requests per tab. Runtime replacement stops older instances before mounting new controls; saved state is restored from local storage while GitHub's document and unsaved input remain in place. Legacy invalidated observers are given a task turn to stop before reinjection, and healthy instances remove stale legacy reconnect notices.
 
 - Sticky hunks keep GitHub's original rows in flow. Layout changes invalidate cached row positions by generation. Binary searches refresh only the positions and content insets needed to locate the viewport window, including after distant jumps; animation ranges are updated only for nearby rows and their push-off boundary in a read-then-write batch. CSS owns pinning, clipping, push-off, and reverse scrolling. Scroll callbacks reuse valid geometry and prepare newly encountered rows. File translations update only the file origin; cached hunk positions resolve that offset on demand. Synchronous interaction updates are scoped to the activated hunk files, and trusted clicks cancel pending automatic returns. Visibility inheritance distinguishes surviving roots and replacements even when file paths repeat. Keyboard focus on a pushed-away control reveals its natural origin.
 - Keyboard focus keeps outgoing hunk controls visible through scroll handoffs within a visible file. Return-control focus can follow scroll handoffs without moving the viewport.
