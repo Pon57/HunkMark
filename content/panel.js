@@ -9,11 +9,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return;
       }
 
+      const reviewSessionGeneration = this.reviewSessionGeneration;
       const stored = await this.getLocalStorage([
         this.autoCollapsePreferenceKey,
         this.linkSplitPreferenceKey,
         this.officialViewedSyncPreferenceKey,
       ]);
+      if (this.stopped || reviewSessionGeneration !== this.reviewSessionGeneration) {
+        return;
+      }
       this.autoCollapseViewed =
         stored[this.autoCollapsePreferenceKey] !== false;
       this.linkSplitSides = stored[this.linkSplitPreferenceKey] !== false;

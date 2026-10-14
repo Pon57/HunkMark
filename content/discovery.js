@@ -1503,6 +1503,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         isCurrent,
         yieldedToQueuedTasks: false,
         reviewScope: this.currentReviewScope,
+        reviewSessionGeneration: this.reviewSessionGeneration,
         searchRoot,
         searchRootWasConnected:
           searchRoot === this.document || Boolean(searchRoot?.isConnected),
@@ -1513,6 +1514,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
     hunkDiscoverySnapshotIsCurrent(snapshot) {
       if (
         this.stopped ||
+        this.reviewSessionGeneration !== snapshot.reviewSessionGeneration ||
         !snapshot.isCurrent() ||
         (snapshot.fileScoped
           ? (this.diffMutationGenerationByFileElement.get(
@@ -1653,9 +1655,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
       { isCurrent = () => true, snapshot = null } = {},
     ) {
       snapshot ??= this.hunkDiscoverySnapshot(searchRoot, { isCurrent });
+      const reviewScope = snapshot.reviewScope;
+      const suppressionScope = this.officialViewedSuppressionScope();
       const discoveredFiles =
         await this.collectDiscoveredHunkInputsChunked(searchRoot, snapshot);
-      if (!discoveredFiles) {
+      if (!discoveredFiles || !this.hunkDiscoverySnapshotIsCurrent(snapshot)) {
         return null;
       }
       const blockFingerprintPromises = new Map();
@@ -1679,7 +1683,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             blockLineIndex: input.contextOptions.blockLineIndex,
           }),
           this.Core.layoutLineStorageKey(
-            this.currentReviewScope,
+            reviewScope,
             filePath,
             layout,
             input.line.kind,
@@ -1688,7 +1692,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
             input.identicalCount,
           ),
           this.Core.lineStorageKey(
-            this.currentReviewScope,
+            reviewScope,
             filePath,
             input.line.kind,
             input.line.text,
@@ -1710,14 +1714,14 @@ if (globalThis.HunkMarkContent?.extendApp) {
       );
       const hydrateHunk = async (hunk, filePath, officialSuppressionKey) => {
         const keyPromise = this.Core.hunkStorageKey(
-          this.currentReviewScope,
+          reviewScope,
           filePath,
           hunk.signature,
           hunk.occurrence,
         );
         const sharedCompletionKeyPromise = hunk.layoutSignature
           ? this.Core.layoutHunkStorageKey(
-            this.currentReviewScope,
+            reviewScope,
             filePath,
             hunk.layoutSignature,
             hunk.layoutOccurrence,
@@ -1762,7 +1766,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       };
       const hydrateFile = async ({ filePath, hunkInputs }) => {
         const officialSuppressionKey =
-          await this.officialViewedSuppressionKey(filePath);
+          await this.officialViewedSuppressionKey(filePath, suppressionScope);
         const hunks = [];
         for (
           let chunkStart = 0;

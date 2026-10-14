@@ -705,6 +705,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     async refresh() {
+      if (this.stopped) {
+        return;
+      }
+      const reviewSessionGeneration = this.reviewSessionGeneration;
       const forceFullRefreshAfterDiffLoadTimeout =
         this.deferredDiffLoadRefreshTimedOut;
       this.deferredDiffLoadRefreshTimedOut = false;
@@ -745,6 +749,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (reviewStoragePruneDue) {
         try {
           await this.ensureStoredReviewStatePruned();
+          if (this.stopped || reviewSessionGeneration !== this.reviewSessionGeneration) {
+            return;
+          }
           this.reviewStoragePruned = true;
           this.reviewStoragePrunedAt = now;
         } catch (error) {
@@ -764,7 +771,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
         }
       }
 
+      if (this.stopped || reviewSessionGeneration !== this.reviewSessionGeneration) {
+        return;
+      }
       await this.loadPreferences();
+      if (this.stopped || reviewSessionGeneration !== this.reviewSessionGeneration) {
+        return;
+      }
 
       // Progressive diff mutations can arrive while the initial refresh is
       // still awaiting storage or preferences. Once a deferred batch exists,
