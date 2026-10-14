@@ -221,7 +221,9 @@
       this.refreshAgain = false;
       this.refreshAgainImmediate = false;
       this.refreshTimer = null;
-      this.stopped = false;
+      this.stopped = true;
+      this.navigationStarted = false;
+      this.reviewSessionGeneration = 0;
       this.reviewStoragePruned = false;
       this.reviewStoragePrunePromise = null;
       this.reviewStoragePrunedAt = 0;

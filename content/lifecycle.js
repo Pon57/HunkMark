@@ -148,6 +148,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
 
     showReconnectNotice() {
       if (
+        !this.Core.parseReviewScope(this.window.location) ||
         this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)
       ) {
         return;
@@ -781,6 +782,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       if (this.stopped) {
         return;
       }
+      if (!this.Core.parseReviewScope(this.window.location)) {
+        this.stopReview();
+        return;
+      }
 
       if (this.diffLoadHydrationRunningStates.size > 0) {
         this.refreshAfterDiffLoadHydrations = true;
@@ -803,7 +808,11 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
 
       this.refreshQueued = true;
+      const reviewSessionGeneration = this.reviewSessionGeneration;
       const runRefresh = async () => {
+        if (reviewSessionGeneration !== this.reviewSessionGeneration) {
+          return;
+        }
         this.refreshTimer = null;
         this.refreshQueued = false;
         if (this.stopped) {
@@ -1060,11 +1069,24 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     checkForNavigation({ previousUrl = this.lastObservedUrl, forceRefresh = false } = {}) {
-      if (this.stopped || this.stopForInvalidatedContext()) {
+      if (!this.navigationStarted) {
         return false;
       }
       const nextUrl = this.window.location.href;
       const observedUrl = this.lastObservedUrl;
+      if (!this.Core.parseReviewScope(this.window.location)) {
+        this.lastObservedUrl = nextUrl;
+        this.stopReview();
+        return nextUrl !== observedUrl;
+      }
+      if (this.stopForInvalidatedContext()) {
+        return false;
+      }
+      if (this.stopped) {
+        this.lastObservedUrl = nextUrl;
+        this.startReview();
+        return true;
+      }
       if (nextUrl === observedUrl && !forceRefresh) {
         return false;
       }
@@ -1093,8 +1115,8 @@ if (globalThis.HunkMarkContent?.extendApp) {
     handleMutations(mutations) {
       if (
         this.stopped ||
-        this.stopForInvalidatedContext() ||
-        this.checkForNavigation()
+        this.checkForNavigation() ||
+        this.stopForInvalidatedContext()
       ) {
         return;
       }
@@ -1377,6 +1399,66 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     start() {
+      if (this.navigationStarted) {
+        return;
+      }
+      this.navigationStarted = true;
+      // GitHub can enter Files changed without loading a new document. Keep
+      // only navigation detection attached while the review runtime is stopped.
+      this.boundScheduleRefresh = () =>
+        this.checkForNavigation({ forceRefresh: true });
+      const observesHistoryEntries =
+        typeof this.window.navigation?.addEventListener === "function";
+      this.boundNavigationChange = (event) => this.checkForNavigation({
+        previousUrl: typeof event?.from?.url === "string" ? event.from.url : undefined,
+        forceRefresh: event?.navigationType === "traverse",
+      });
+      // Navigation API handles native traversals, including same-URL entries.
+      // Preserve explicit popstate notifications and the legacy fallback.
+      this.boundPopState = (event) => this.checkForNavigation({
+        forceRefresh: !observesHistoryEntries || !event.isTrusted,
+      });
+      this.boundPageShow = (event) => {
+        if (event.persisted) {
+          this.checkForNavigation({ forceRefresh: true });
+        }
+      };
+      this.document.addEventListener(
+        "turbo:load",
+        this.boundScheduleRefresh,
+      );
+      this.document.addEventListener(
+        "turbo:render",
+        this.boundScheduleRefresh,
+      );
+      this.document.addEventListener(
+        "turbo:frame-load",
+        this.boundScheduleRefresh,
+      );
+      this.document.addEventListener("pjax:end", this.boundScheduleRefresh);
+      this.window.addEventListener("popstate", this.boundPopState);
+      this.window.addEventListener("pageshow", this.boundPageShow);
+      this.window.navigation?.addEventListener?.(
+        "currententrychange",
+        this.boundNavigationChange,
+      );
+      if (!observesHistoryEntries) {
+        this.navigationPollTimer = this.window.setInterval(
+          this.boundNavigationChange,
+          this.constants.NAVIGATION_POLL_INTERVAL_MS,
+        );
+      }
+      this.checkForNavigation({ forceRefresh: true });
+    },
+
+    startReview() {
+      if (!this.stopped || !this.Core.parseReviewScope(this.window.location)) {
+        return;
+      }
+      this.preferencesLoaded = false;
+      // Storage changes are deliberately not observed while this page is idle.
+      this.reviewStoragePruned = false;
+      this.reviewContextAccessedAtById.clear();
       this.stopped = false;
       this.document
         .getElementById(this.constants.RECONNECT_NOTICE_ID)
@@ -1403,24 +1485,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
       };
       this.boundFileVisibilityClick = (event) =>
         this.handleFileVisibilityClick(event);
-      this.boundScheduleRefresh = () => this.scheduleRefresh();
-      const observesHistoryEntries =
-        typeof this.window.navigation?.addEventListener === "function";
-      this.boundNavigationChange = (event) => this.checkForNavigation({
-        previousUrl: typeof event?.from?.url === "string" ? event.from.url : undefined,
-        forceRefresh: event?.navigationType === "traverse",
-      });
-      // Navigation API handles native traversals, including same-URL entries.
-      // Preserve explicit popstate notifications and the legacy fallback.
-      this.boundPopState = (event) => this.checkForNavigation({
-        forceRefresh: !observesHistoryEntries || !event.isTrusted,
-      });
-      this.boundPageShow = (event) => {
-        if (event.persisted) {
-          this.cancelStickyHunkReturn();
-          this.scheduleRefresh();
-        }
-      };
       this.boundStickyHunkLayout = () => {
         // Prepared headers follow the browser's scroll timeline. Only keyboard
         // return focus needs a per-scroll handoff; older hosts retain a fallback.
@@ -1543,21 +1607,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundFileVisibilityClick,
         true,
       );
-      this.document.addEventListener(
-        "turbo:load",
-        this.boundScheduleRefresh,
-      );
-      this.document.addEventListener(
-        "turbo:render",
-        this.boundScheduleRefresh,
-      );
-      this.document.addEventListener(
-        "turbo:frame-load",
-        this.boundScheduleRefresh,
-      );
-      this.document.addEventListener("pjax:end", this.boundScheduleRefresh);
-      this.window.addEventListener("popstate", this.boundPopState);
-      this.window.addEventListener("pageshow", this.boundPageShow);
       this.window.addEventListener("scroll", this.boundStickyHunkLayout, {
         passive: true,
       });
@@ -1567,24 +1616,46 @@ if (globalThis.HunkMarkContent?.extendApp) {
         { passive: true },
       );
       this.window.addEventListener("resize", this.boundStickyHunkResize);
-      this.window.navigation?.addEventListener?.(
-        "currententrychange",
-        this.boundNavigationChange,
-      );
       this.window.addEventListener("blur", this.boundWindowBlur);
-      this.navigationPollTimer = this.window.setInterval(
-        this.boundNavigationChange,
-        this.constants.NAVIGATION_POLL_INTERVAL_MS,
-      );
 
       this.scheduleRefresh();
     },
 
     stop() {
+      this.navigationStarted = false;
+      this.document.removeEventListener(
+        "turbo:load",
+        this.boundScheduleRefresh,
+      );
+      this.document.removeEventListener(
+        "turbo:render",
+        this.boundScheduleRefresh,
+      );
+      this.document.removeEventListener(
+        "turbo:frame-load",
+        this.boundScheduleRefresh,
+      );
+      this.document.removeEventListener("pjax:end", this.boundScheduleRefresh);
+      this.window.removeEventListener("popstate", this.boundPopState);
+      this.window.removeEventListener("pageshow", this.boundPageShow);
+      this.window.navigation?.removeEventListener?.(
+        "currententrychange",
+        this.boundNavigationChange,
+      );
+      if (this.navigationPollTimer !== null) {
+        this.window.clearInterval(this.navigationPollTimer);
+        this.navigationPollTimer = null;
+      }
+      this.stopReview();
+    },
+
+    stopReview() {
       if (this.stopped) {
         return;
       }
       this.stopped = true;
+      this.reviewSessionGeneration += 1;
+      this.cancelStickyHunkReturn();
       if (this.refreshTimer !== null) {
         this.window.clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
@@ -1653,21 +1724,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundFileVisibilityClick,
         true,
       );
-      this.document.removeEventListener(
-        "turbo:load",
-        this.boundScheduleRefresh,
-      );
-      this.document.removeEventListener(
-        "turbo:render",
-        this.boundScheduleRefresh,
-      );
-      this.document.removeEventListener(
-        "turbo:frame-load",
-        this.boundScheduleRefresh,
-      );
-      this.document.removeEventListener("pjax:end", this.boundScheduleRefresh);
-      this.window.removeEventListener("popstate", this.boundPopState);
-      this.window.removeEventListener("pageshow", this.boundPageShow);
       this.window.removeEventListener("scroll", this.boundStickyHunkLayout);
       this.document.removeEventListener(
         "click",
@@ -1679,17 +1735,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.boundStickyHunkNavigationIntent,
       );
       this.window.removeEventListener("resize", this.boundStickyHunkResize);
-      this.window.navigation?.removeEventListener?.(
-        "currententrychange",
-        this.boundNavigationChange,
-      );
       this.window.removeEventListener("blur", this.boundWindowBlur);
-      if (this.navigationPollTimer !== null) {
-        this.window.clearInterval(this.navigationPollTimer);
-        this.navigationPollTimer = null;
-      }
       this.cleanupExtensionElements();
       this.Core.clearIdentifierCache();
+      this.resetOfficialViewedState();
+      this.currentScope = null;
+      this.currentReviewScope = null;
+      this.currentReviewVariant = null;
     },
   });
 }
