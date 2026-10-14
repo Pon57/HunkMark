@@ -104,6 +104,50 @@ test("one inaccessible tab does not prevent reconnecting other GitHub tabs", asy
   assert.equal(injection[1].target.tabId, 2);
 });
 
+test("a blocked tab does not delay another tab's reconnect", async () => {
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const { calls, hooks } = startWorker({ tabs: [{ id: 1 }, { id: 2 }], prepare: async ({ target }) => {
+    if (target.tabId === 1) await blocked;
+    return [{ result: true, documentId: `document-${target.tabId}` }];
+  } });
+  const installed = hooks.installed({ reason: "update" });
+  try {
+    await new Promise(setImmediate);
+    assert.ok(calls.some(([type, options]) =>
+      type === "execute" && options.files && options.target.tabId === 2,
+    ), "the responsive tab must be injected before the blocked tab resumes");
+    assert.equal(calls.some(([type, options]) =>
+      type === "execute" && options.files && options.target.tabId === 1,
+    ), false);
+  } finally {
+    release();
+    await installed;
+  }
+});
+
+test("preparation allows newly installed tabs but still rejects legacy styles", async () => {
+  const { prepareReconnect } = startWorker();
+  for (const legacy of [false, true]) {
+    const dom = new JSDOM("<html><body></body></html>", {
+      url: "https://github.com/octo/repo/pull/123/files", runScripts: "outside-only",
+    });
+    try {
+      if (legacy) {
+        const style = dom.window.document.createElement("style");
+        style.textContent = ".hunkmark-collapsed { display: none !important; }";
+        dom.window.document.head.append(style);
+      }
+      const prepare = dom.window.eval(`(${prepareReconnect.toString()})`);
+      assert.equal(await prepare(manifest.version), !legacy);
+      assert.equal(dom.window.document.querySelector('[data-hunkmark-ui]'), null);
+      assert.equal(dom.window.document.documentElement.getAttribute("data-hunkmark-managed-styles"), null);
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test("preparation checks the live origin, reuses healthy runtimes, and yields for old observers", async () => {
   const { prepareReconnect } = startWorker();
   for (const url of ["https://example.com/", "https://github.com/octo/repo"]) {
@@ -130,7 +174,13 @@ test("preparation checks the live origin, reuses healthy runtimes, and yields fo
       assert.equal(stopped, 0);
       dom.window.document.documentElement.removeAttribute("data-hunkmark-managed-styles");
       app.isExtensionContextInvalidated = () => true;
+      const legacyStyle = dom.window.document.createElement("style");
+      legacyStyle.textContent = ".hunkmark-collapsed { display: none !important; }";
+      dom.window.document.head.append(legacyStyle);
       assert.equal(await prepare(manifest.version), false, "legacy declarative styles require a reload");
+      legacyStyle.remove();
+      await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+      mutations = 0;
       dom.window.document.documentElement.setAttribute("data-hunkmark-managed-styles", "1");
       const github = url.startsWith("https://github.com/");
       assert.equal(await prepare(manifest.version), github);

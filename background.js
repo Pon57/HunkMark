@@ -27,10 +27,22 @@ async function prepareReconnect(version) {
   if (location.protocol !== "https:" || location.hostname !== "github.com") {
     return false;
   }
-  // CSS declared by legacy manifests cannot be removed from an open document.
-  // Those tabs need one page reload before safe, replaceable styles are used.
+  // A missing ownership marker also occurs in tabs opened before installation.
+  // Only block migration when a legacy HunkMark rule is actually still applied.
   if (document.documentElement.getAttribute("data-hunkmark-managed-styles") !== "1") {
-    return false;
+    const probe = document.createElement("div");
+    probe.className = "hunkmark-collapsed";
+    probe.setAttribute("data-hunkmark-ui", "");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none";
+    let legacyStyles;
+    try {
+      document.documentElement.append(probe);
+      legacyStyles = getComputedStyle(probe).display === "none";
+    } finally {
+      probe.remove();
+    }
+    if (legacyStyles) return false;
   }
   const current = globalThis.HunkMarkContent?.activeApp;
   if (current?.runtimeVersion === version && current.navigationStarted &&
@@ -89,9 +101,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
     return;
   }
   const tabs = await chrome.tabs.query({ url: chrome.runtime.getManifest().host_permissions });
-  for (const tab of tabs) {
-    await reconnectTab(tab.id);
-  }
+  await Promise.allSettled(tabs.map((tab) => reconnectTab(tab.id)));
 });
 
 chrome.action.onClicked.addListener((tab) => {

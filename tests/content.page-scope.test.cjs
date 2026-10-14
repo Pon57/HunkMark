@@ -268,6 +268,41 @@ test("does not show a reconnect notice outside supported PR diffs", async () => 
   }
 });
 
+test("fixes the reconnect notice to the viewport when review CSS was never loaded", async () => {
+  const probe = runtimeProbe();
+  let stylesheetRequests = 0;
+  const sendMessage = probe.chrome.api.runtime.sendMessage;
+  probe.chrome.api.runtime.sendMessage = (...args) => {
+    stylesheetRequests += 1;
+    return sendMessage(...args);
+  };
+  const { app, dom } = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: probe.chrome,
+    setupWindow: probe.setupWindow,
+    url: "https://github.com/octo/repo",
+    waitForScope: false,
+  });
+  try {
+    assert.equal(app.reviewStylesText, null);
+    probe.chrome.invalidateContext();
+    delete probe.chrome.api.runtime.id;
+    probe.navigate(dom, "/octo/repo/pull/123/files");
+    const notice = dom.window.document.getElementById(app.constants.RECONNECT_NOTICE_ID);
+    assert.ok(notice);
+    const style = dom.window.getComputedStyle(notice);
+    assert.equal(style.position, "fixed");
+    assert.equal(style.bottom, "18px");
+    assert.ok(notice.querySelector("button"));
+    assert.equal(stylesheetRequests, 0);
+    assert.equal(app.observer, null);
+    probe.navigate(dom, "/octo/repo");
+    assert.equal(notice.isConnected, false);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("shows a disconnected runtime notice only while visiting PR diffs", async () => {
   const probe = runtimeProbe();
   const { app, dom } = await startExtension(duplicateHunkFixture(), {}, {

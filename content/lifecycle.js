@@ -202,6 +202,27 @@ if (globalThis.HunkMarkContent?.extendApp) {
       });
 
       notice.append(message, reloadButton);
+      if (!this.reviewStylesText) {
+        // A runtime invalidated before its first diff cannot fetch CSS. Keep
+        // the recovery action visible without relying on extension APIs.
+        Object.assign(notice.style, {
+          position: "fixed", right: "18px", bottom: "18px", zIndex: "91",
+          display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px",
+          maxWidth: "min(420px, calc(100vw - 36px))", padding: "9px 10px",
+          border: "1px solid var(--borderColor-attention-emphasis, #bf8700)",
+          borderRadius: "9px", boxShadow: "0 3px 12px #1f232826",
+          background: "var(--bgColor-default, var(--color-canvas-default, #fff))",
+          color: "var(--fgColor-default, var(--color-fg-default, #1f2328))",
+          font: '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        });
+        Object.assign(reloadButton.style, {
+          background: "var(--button-primary-bgColor-rest, #1f883d)",
+          color: "var(--button-primary-fgColor-rest, #fff)",
+          border: "1px solid #1f232826", borderRadius: "6px", padding: "0 9px",
+          font: "inherit", fontWeight: "600", lineHeight: "24px", cursor: "pointer",
+          flex: "0 0 auto",
+        });
+      }
       this.document.body.append(notice);
     },
 
