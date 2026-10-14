@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.4](https://github.com/Pon57/HunkMark/compare/v4.0.3...v4.0.4) - 2026-10-14
+
+### Bug Fixes
+- fix: keep review runtime inactive outside PR diffs by @Pon57 in https://github.com/Pon57/HunkMark/pull/85
+- fix: scope reconnect notices to PR diff routes by @Pon57 in https://github.com/Pon57/HunkMark/pull/86
+### Dependency Updates
+- chore(deps): update songmu/tagpr action to v1.21.2 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/83
+
 ## [v4.0.3](https://github.com/Pon57/HunkMark/compare/v4.0.2...v4.0.3) - 2026-10-13
 
 ### Bug Fixes
