@@ -267,3 +267,64 @@ test("does not show a reconnect notice outside supported PR diffs", async () => 
     dom.window.close();
   }
 });
+
+test("shows a disconnected runtime notice only while visiting PR diffs", async () => {
+  const probe = runtimeProbe();
+  const { app, dom } = await startExtension(duplicateHunkFixture(), {}, {
+    chromeInstance: probe.chrome,
+    setupWindow: probe.setupWindow,
+  });
+  try {
+    delete probe.chrome.api.runtime.id;
+    app.stopForInvalidatedContext();
+    const notice = () => dom.window.document.getElementById(app.constants.RECONNECT_NOTICE_ID);
+    assert.ok(notice());
+    const calls = probe.storageCalls.length;
+
+    probe.navigate(dom, "/octo/repo/pull/123/commits");
+    assert.equal(notice(), null);
+    assertReviewStopped(app, dom, probe);
+    probe.navigate(dom, "/octo/repo");
+    assert.equal(notice(), null);
+    probe.navigate(dom, "/octo/repo/pull/123/changes");
+    assert.ok(notice());
+    assertReviewStopped(app, dom, probe);
+    assert.equal(probe.storageCalls.length, calls);
+    assert.equal(app.navigationStarted, false);
+
+    app.stop();
+    assert.equal(notice(), null);
+    probe.navigate(dom, "/octo/repo/pull/123/files");
+    assert.equal(notice(), null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
+test("updates a reconnect notice on host navigation events without URL polling", async () => {
+  const { app, chrome, dom } = await startExtension(duplicateHunkFixture());
+  try {
+    delete chrome.api.runtime.id;
+    app.stopForInvalidatedContext();
+    const notice = () => dom.window.document.getElementById(app.constants.RECONNECT_NOTICE_ID);
+    assert.ok(notice());
+    assert.equal(app.navigationPollTimer, null);
+    for (const type of ["turbo:load", "turbo:render", "turbo:frame-load", "pjax:end", "popstate", "pageshow"]) {
+      const target = ["popstate", "pageshow"].includes(type) ? dom.window : dom.window.document;
+      dom.window.history.pushState({}, "", "/octo/repo/pull/123");
+      target.dispatchEvent(new dom.window.Event(type));
+      assert.equal(notice(), null, type);
+      dom.window.history.pushState({}, "", "/octo/repo/pull/123/files");
+      target.dispatchEvent(new dom.window.Event(type));
+      assert.ok(notice(), type);
+      assert.equal(dom.window.document.querySelectorAll(`#${app.constants.RECONNECT_NOTICE_ID}`).length, 1);
+    }
+    assert.equal(app.stopped, true);
+    assert.equal(app.observer, null);
+    assert.equal(app.navigationPollTimer, null);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});

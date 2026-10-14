@@ -223,6 +223,7 @@
       this.refreshTimer = null;
       this.stopped = true;
       this.navigationStarted = false;
+      this.reconnectNoticeController = null;
       this.reviewSessionGeneration = 0;
       this.reviewStoragePruned = false;
       this.reviewStoragePrunePromise = null;

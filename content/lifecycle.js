@@ -147,10 +147,30 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     showReconnectNotice() {
-      if (
-        !this.Core.parseReviewScope(this.window.location) ||
-        this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)
-      ) {
+      if (!this.reconnectNoticeController) {
+        this.reconnectNoticeController = new this.window.AbortController();
+        const options = { signal: this.reconnectNoticeController.signal };
+        const update = () => this.updateReconnectNotice();
+        // The invalidated runtime stays stopped. Only route notifications are
+        // needed to keep its reconnect notice inside supported diff pages.
+        for (const type of ["turbo:load", "turbo:render", "turbo:frame-load", "pjax:end"]) {
+          this.document.addEventListener(type, update, options);
+        }
+        for (const type of ["popstate", "pageshow"]) {
+          this.window.addEventListener(type, update, options);
+        }
+        this.window.navigation?.addEventListener?.("currententrychange", update, options);
+      }
+      this.updateReconnectNotice();
+    },
+
+    updateReconnectNotice() {
+      const existing = this.document.getElementById(this.constants.RECONNECT_NOTICE_ID);
+      if (!this.Core.parseReviewScope(this.window.location)) {
+        existing?.remove();
+        return;
+      }
+      if (existing) {
         return;
       }
 
@@ -1622,6 +1642,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     stop() {
+      this.reconnectNoticeController?.abort();
+      this.reconnectNoticeController = null;
+      this.document.getElementById(this.constants.RECONNECT_NOTICE_ID)?.remove();
       this.navigationStarted = false;
       this.document.removeEventListener(
         "turbo:load",
