@@ -25,6 +25,6 @@
     "package": "sh scripts/package.sh"
   },
   "devDependencies": {
-    "jsdom": "30.1.2"
+    "jsdom": "30.1.3"
   }
 }
