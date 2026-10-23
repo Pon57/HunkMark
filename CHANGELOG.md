@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [v4.0.5](https://github.com/Pon57/HunkMark/compare/v4.0.4...v4.0.5) - 2026-10-23
+
+### Dependency Updates
+- chore(deps): update dependency jsdom to v30.1.3 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/91
+- chore(deps): update songmu/tagpr action to v1.21.3 by @renovate[bot] in https://github.com/Pon57/HunkMark/pull/93
+
 ## [v4.0.4](https://github.com/Pon57/HunkMark/compare/v4.0.3...v4.0.4) - 2026-10-14
 
 ### Bug Fixes
