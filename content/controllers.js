@@ -251,6 +251,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     applyLineHostLayout(lineController, { hostActions = null, firstLineCenter, safeHostRightInset }) {
+      lineController.hostRightInset = safeHostRightInset;
+      if (this.dragState?.touched.has(lineController)) {
+        this.reserveLineDragInset(lineController);
+      }
       const style = lineController.element.style;
       for (const [property, value] of [
         ["--hunkmark-host-line-action-inset", safeHostRightInset],
@@ -360,6 +364,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       const lineController = {
         ...line,
         hostActions: null,
+        hostRightInset: 0,
         control: null,
         controller,
         lineControlObserved: false,

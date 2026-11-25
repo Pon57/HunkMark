@@ -1093,6 +1093,53 @@ test("coalesces background hydration progress scans", async () => {
   }
 });
 
+test("aligns drag previews across different native action widths and restores each line on release", async () => {
+  const { app, dom } = await startExtension(dragFixture());
+  try {
+    installContentStyles(dom);
+    const { fileElement, lines } = controllerAt(app);
+    const inset = () => fileElement.style.getPropertyValue("--hunkmark-drag-action-inset");
+    const controlStyle = (line) => dom.window.getComputedStyle(line.control);
+    const setLineInset = (line, width) => {
+      line.element.setAttribute("data-line-anchor", "diff-example");
+      line.element.style.paddingRight = `${width}px`;
+      app.updateLineControlHostLayouts([line]);
+    };
+    setLineInset(lines[0], 22);
+    setLineInset(lines[1], 24);
+    const restingRight = controlStyle(lines[0]).right;
+    const restingTransform = controlStyle(lines[0]).transform;
+
+    app.startLineDrag(lines[0], true, 1);
+    assert.equal(inset(), "22px");
+    app.touchLineRange(lines[1]);
+    assert.equal(inset(), "24px");
+    for (const line of lines.slice(0, 2)) {
+      assert.match(controlStyle(line).right, /--hunkmark-drag-action-inset/);
+      assert.equal(controlStyle(line).transform, restingTransform);
+    }
+    assert.equal(controlStyle(lines[2]).right, restingRight);
+    setLineInset(lines[1], 69);
+    assert.equal(inset(), "69px");
+    app.touchLineRange(lines[0]);
+    assert.equal(inset(), "69px");
+    assert.equal(controlStyle(lines[1]).right, restingRight);
+
+    await app.finishLineDrag(true);
+    assert.equal(inset(), "");
+    assert.equal(controlStyle(lines[0]).right, restingRight);
+    assert.equal(lines[0].marked, true);
+    app.startLineDrag(lines[0], false, 2);
+    assert.equal(inset(), "22px");
+    await app.finishLineDrag(false);
+    assert.equal(inset(), "");
+    assert.equal(lines[0].marked, true);
+  } finally {
+    app.stop();
+    dom.window.close();
+  }
+});
+
 test("finds drag endpoints logarithmically with stable row boundaries", async () => {
   const { app, dom } = await startExtension(dragFixture());
   try {
