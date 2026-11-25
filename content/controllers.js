@@ -203,32 +203,27 @@ if (globalThis.HunkMarkContent?.extendApp) {
     measureLineHostLayout(line) {
       const hostStyle = this.window.getComputedStyle(line.element);
 
-      // Match the gap beside the outer native button group, including the
-      // comment button's padding, rather than measuring only its avatars.
-      let hostRightInset = line.element.matches(
-        `${this.constants.DIFF_TEXT_CELL_SELECTOR}, [data-line-anchor]`,
-      )
-        ? Number.parseFloat(hostStyle.paddingRight)
-        : 0;
-      // GitHub emits these CSS module classes with or without a component
-      // prefix. Keep the local class name and direct-cell ownership checks.
-      const hostActions = line.element.querySelector(
-        ':scope > [class*="action-bar-position__"]',
-      ) ?? line.element.querySelector(
-        ':scope > [class*="comment-indicator__"]',
-      );
-      if (hostActions) {
-        const actionsRect = hostActions.getBoundingClientRect();
-        const actionsStyle = this.window.getComputedStyle(hostActions);
-        const inset = actionsRect.width + Number.parseFloat(actionsStyle.right) +
-          (Number.parseFloat(actionsStyle.marginRight) || 0);
-        if (actionsRect.width > 0 && Number.isFinite(inset) && inset >= 0) {
-          hostRightInset = inset;
+      // GitHub pads code cells even when nothing is shown at their right edge.
+      // Only this row's native menu and comment indicator need clearance.
+      const hostActions = Array.from(line.element.querySelectorAll(
+        ':scope > [class*="action-bar-position__"], :scope > [class*="comment-indicator__"]',
+      ));
+      let safeHostRightInset = 0;
+      for (const action of hostActions) {
+        const rect = action.getBoundingClientRect();
+        if (rect.width === 0) {
+          continue;
         }
+        const style = this.window.getComputedStyle(action);
+        if (style.visibility === "hidden" || style.visibility === "collapse") {
+          continue;
+        }
+        const right = Number.parseFloat(style.right);
+        const inset = Number.isFinite(right)
+          ? rect.width + right + (Number.parseFloat(style.marginRight) || 0)
+          : line.element.getBoundingClientRect().right - rect.left;
+        safeHostRightInset = Math.max(safeHostRightInset, inset);
       }
-      const safeHostRightInset = Number.isFinite(hostRightInset)
-        ? Math.max(hostRightInset, 0)
-        : 0;
       const hostLineHeight = Number.parseFloat(hostStyle.lineHeight);
       const hostPaddingTop = Number.parseFloat(hostStyle.paddingTop);
       const firstLineCenter =
@@ -250,11 +245,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return this.lineControlHostLayoutObserver;
     },
 
-    applyLineHostLayout(lineController, { hostActions = null, firstLineCenter, safeHostRightInset }) {
-      lineController.hostRightInset = safeHostRightInset;
-      if (this.dragState?.touched.has(lineController)) {
-        this.reserveLineDragInset(lineController);
-      }
+    applyLineHostLayout(lineController, { hostActions = [], firstLineCenter, safeHostRightInset }) {
       const style = lineController.element.style;
       for (const [property, value] of [
         ["--hunkmark-host-line-action-inset", safeHostRightInset],
@@ -265,12 +256,17 @@ if (globalThis.HunkMarkContent?.extendApp) {
           style.setProperty(property, next);
         }
       }
-      if (lineController.hostActions !== hostActions) {
-        const observer = this.lineControlHostLayoutObserverInstance();
-        if (lineController.hostActions) observer?.unobserve?.(lineController.hostActions);
-        lineController.hostActions = hostActions;
-        if (hostActions) observer?.observe(hostActions);
+      for (const previous of lineController.hostActions) {
+        if (!hostActions.includes(previous)) {
+          this.lineControlHostLayoutObserver?.unobserve?.(previous);
+        }
       }
+      for (const action of hostActions) {
+        if (!lineController.hostActions.includes(action)) {
+          this.lineControlHostLayoutObserverInstance()?.observe(action);
+        }
+      }
+      lineController.hostActions = hostActions;
     },
 
     updateLineControlHostLayouts(candidates) {
@@ -354,17 +350,16 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     unobserveLineControlHostLayout(line) {
-      if (line.hostActions) {
-        this.lineControlHostLayoutObserver?.unobserve?.(line.hostActions);
-        line.hostActions = null;
+      for (const action of line.hostActions) {
+        this.lineControlHostLayoutObserver?.unobserve?.(action);
       }
+      line.hostActions = [];
     },
 
     createLineController(controller, line) {
       const lineController = {
         ...line,
-        hostActions: null,
-        hostRightInset: 0,
+        hostActions: [],
         control: null,
         controller,
         lineControlObserved: false,

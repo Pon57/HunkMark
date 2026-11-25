@@ -538,7 +538,7 @@
   right: calc(4px + var(--hunkmark-host-line-action-inset, 0px));
   top: var(--hunkmark-first-line-center, 12px);
   transform: translateY(-50%);
-  transition: opacity 80ms ease-out;
+  transition: none;
   user-select: none;
   z-index: 2;
 }
@@ -549,13 +549,8 @@
   content: "Viewed";
 }
 
-.hunkmark-line-control::before {
-  content: "✓";
-  visibility: hidden;
-}
-
 .hunkmark-line-control[aria-pressed="true"]::before {
-  visibility: visible;
+  content: "✓";
 }
 
 .hunkmark-line-cell:hover > .hunkmark-line-control,
@@ -563,10 +558,8 @@
 .hunkmark-line-drag-touched > .hunkmark-line-control {
   opacity: 1;
   pointer-events: auto;
-}
-
-.hunkmark-line-drag-touched > .hunkmark-line-control {
-  right: calc(4px + var(--hunkmark-drag-action-inset, 0px));
+  /* Fade in only so a preview disappears as soon as the drag leaves its row. */
+  transition: opacity 80ms ease-out;
 }
 
 .hunkmark-line-control:hover {

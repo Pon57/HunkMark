@@ -1093,47 +1093,57 @@ test("coalesces background hydration progress scans", async () => {
   }
 });
 
-test("aligns drag previews across different native action widths and restores each line on release", async () => {
+test("each drag preview clears only its own native line actions", async () => {
   const { app, dom } = await startExtension(dragFixture());
   try {
     installContentStyles(dom);
-    const { fileElement, lines } = controllerAt(app);
-    const inset = () => fileElement.style.getPropertyValue("--hunkmark-drag-action-inset");
-    const controlStyle = (line) => dom.window.getComputedStyle(line.control);
-    const setLineInset = (line, width) => {
-      line.element.setAttribute("data-line-anchor", "diff-example");
-      line.element.style.paddingRight = `${width}px`;
-      app.updateLineControlHostLayouts([line]);
-    };
-    setLineInset(lines[0], 22);
-    setLineInset(lines[1], 24);
-    const restingRight = controlStyle(lines[0]).right;
-    const restingTransform = controlStyle(lines[0]).transform;
-
-    app.startLineDrag(lines[0], true, 1);
-    assert.equal(inset(), "22px");
-    app.touchLineRange(lines[1]);
-    assert.equal(inset(), "24px");
-    for (const line of lines.slice(0, 2)) {
-      assert.match(controlStyle(line).right, /--hunkmark-drag-action-inset/);
-      assert.equal(controlStyle(line).transform, restingTransform);
+    const { lines } = controllerAt(app);
+    const [commented, plain, menuOnly] = lines;
+    for (const line of lines) {
+      line.element.dataset.diffCell = "text";
+      line.element.style.paddingRight = "80px";
     }
-    assert.equal(controlStyle(lines[2]).right, restingRight);
-    setLineInset(lines[1], 69);
-    assert.equal(inset(), "69px");
-    app.touchLineRange(lines[0]);
-    assert.equal(inset(), "69px");
-    assert.equal(controlStyle(lines[1]).right, restingRight);
+    const mountAction = (line, className, width, right) => {
+      const action = dom.window.document.createElement("div");
+      action.className = className;
+      action.style.cssText = `position:absolute; right:${right}px`;
+      action.getBoundingClientRect = () => ({ width });
+      line.element.append(action);
+      return action;
+    };
+    const indicator = mountAction(commented, "comment-indicator__test", 37, 27);
+    const menu = mountAction(menuOnly, "action-bar-position__test", 22, 0);
+    app.updateLineControlHostLayouts(lines);
+    const insets = () => Array.from(lines, line =>
+      line.element.style.getPropertyValue("--hunkmark-host-line-action-inset"));
+    const style = line => dom.window.getComputedStyle(line.control);
+    const normalRight = style(plain).right;
+    assert.deepEqual(insets(), ["64px", "0px", "22px"]);
 
+    app.startLineDrag(commented, true, 1);
+    app.touchLineRange(menuOnly);
+    for (const line of lines) {
+      assert.equal(style(line).right, normalRight);
+      assert.equal(style(line).opacity, "1");
+    }
+    assert.deepEqual(insets(), ["64px", "0px", "22px"]);
+
+    menu.remove();
+    const newIndicator = mountAction(plain, "comment-indicator__test", 51, 27);
+    await waitFor(() => assert.deepEqual(insets(), ["64px", "78px", "0px"]));
+    indicator.remove();
+    newIndicator.remove();
+    await waitFor(() => assert.deepEqual(insets(), ["0px", "0px", "0px"]));
+
+    app.touchLineRange(commented);
+    assert.equal(style(plain).opacity, "0");
+    assert.equal(style(plain).transition, "none");
     await app.finishLineDrag(true);
-    assert.equal(inset(), "");
-    assert.equal(controlStyle(lines[0]).right, restingRight);
-    assert.equal(lines[0].marked, true);
-    app.startLineDrag(lines[0], false, 2);
-    assert.equal(inset(), "22px");
+    assert.equal(style(commented).transition, "none");
+    assert.equal(commented.marked, true);
+    app.startLineDrag(commented, false, 2);
     await app.finishLineDrag(false);
-    assert.equal(inset(), "");
-    assert.equal(lines[0].marked, true);
+    assert.equal(commented.marked, true);
   } finally {
     app.stop();
     dom.window.close();
@@ -6375,8 +6385,12 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         }
         line.element.append(badge);
         await waitFor(() => assert.equal(inset(), '83px'));
-        assert.equal(observer.observed.has(indicator), false);
+        assert.ok(observer.observed.has(indicator));
         assert.ok(observer.observed.has(badge));
+        badge.style.visibility = 'hidden';
+        await waitFor(() => assert.equal(inset(), '58.21875px'));
+        badge.style.visibility = 'visible';
+        await waitFor(() => assert.equal(inset(), '83px'));
         const readsBeforeResize = measured.length;
         responsiveRight = 16;
         dom.window.dispatchEvent(new dom.window.Event('resize'));
@@ -6389,17 +6403,20 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         line.element.style.paddingRight = '24px';
         badge.remove();
         line.element.querySelector('[class*="comment-indicator"]').remove();
-        await waitFor(() => assert.equal(inset(), '24px'));
+        await waitFor(() => assert.equal(inset(), '0px'));
         assert.equal(dom.window.getComputedStyle(control).right,
           'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
         assert.equal(observer.observed.has(badge), false);
-        line.element.style.paddingRight = '40px';
-        await waitFor(() => assert.equal(inset(), '40px'));
+        line.element.style.padding = '4px 40px 0 0';
+        const center = () => line.element.style.getPropertyValue('--hunkmark-first-line-center');
+        await waitFor(() => assert.equal(center(), '16px'));
+        assert.equal(inset(), '0px');
         const hostStyle = dom.window.document.createElement('style');
-        hostStyle.textContent = '.native-comment-gutter { padding-right: 64px !important; }';
+        hostStyle.textContent = '.native-comment-gutter { padding: 8px 64px 0 0 !important; }';
         dom.window.document.head.append(hostStyle);
         line.element.classList.add('native-comment-gutter');
-        await waitFor(() => assert.equal(inset(), '64px'));
+        await waitFor(() => assert.equal(center(), '20px'));
+        assert.equal(inset(), '0px');
         line.element.classList.remove('hunkmark-line-cell');
         await waitFor(() => assert.ok(line.element.classList.contains('hunkmark-line-cell')));
         const readsBeforeOwnChange = measured.length;
@@ -6410,7 +6427,7 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         assert.ok(measured.every((entry) => lines.includes(entry)));
         assert.equal(refreshes, 0);
         lines.filter((entry) => entry !== line).forEach((entry) => {
-          assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '24px');
+          assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '0px');
         });
         line.element.insertAdjacentHTML('beforeend', badgeHtml);
         await waitFor(() => assert.equal(inset(), '69px'));
@@ -6519,7 +6536,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
       controller.lines[0].element.style.getPropertyValue(
         "--hunkmark-host-line-action-inset",
       ),
-      "24px",
+      "0px",
     );
     assert.equal(
       dom.window.getComputedStyle(controller.lines[0].control).right,

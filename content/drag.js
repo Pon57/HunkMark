@@ -101,7 +101,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         orderedLines: [lineController],
         pointerId,
         rangePrepared: false,
-        rightInsetByFile: new Map(),
         targetViewed: viewed,
         touched: new Set(),
       };
@@ -135,18 +134,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const end = Math.max(this.dragState.anchorIndex, endIndex);
         rangeLines = this.dragState.orderedLines.slice(start, end + 1);
         this.updateLineDragRange(rangeLines);
-      }
-    },
-
-    reserveLineDragInset(lineController) {
-      const { fileElement } = lineController.controller;
-      const inset = lineController.hostRightInset;
-      const { rightInsetByFile } = this.dragState;
-      // Keep room for the widest native action group encountered in this
-      // file until release, even if the drag reverses or a hover menu closes.
-      if (inset > (rightInsetByFile.get(fileElement) ?? -1)) {
-        rightInsetByFile.set(fileElement, inset);
-        fileElement.style.setProperty("--hunkmark-drag-action-inset", `${inset}px`);
       }
     },
 
@@ -184,10 +171,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           this.dragState.originalMarks.set(candidate, candidate.marked);
         }
         candidate.marked = this.dragState.targetViewed;
-        if (!this.dragState.touched.has(candidate)) {
-          this.reserveLineDragInset(candidate);
-          candidate.element.classList.add("hunkmark-line-drag-touched");
-        }
+        candidate.element.classList.add("hunkmark-line-drag-touched");
         changedControllers.add(candidate.controller);
       });
 
@@ -308,9 +292,6 @@ if (globalThis.HunkMarkContent?.extendApp) {
       state.touched.forEach((lineController) => {
         lineController.element.classList.remove("hunkmark-line-drag-touched");
       });
-      for (const fileElement of state.rightInsetByFile.keys()) {
-        fileElement.style.removeProperty("--hunkmark-drag-action-inset");
-      }
       if (persist) {
         this.beginReviewAppearancePersistence(state.controllers);
       }
