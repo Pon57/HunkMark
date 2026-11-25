@@ -742,14 +742,14 @@ test("anchors the compact clip to the rendered hunk text", async () => {
       '<button aria-label="Expand file up from line 50">↑</button>',
       "</div>",
       '<code class="diff-text-cell hunk">',
-      '<span class="diff-text-inner">@@ -1 +1 @@</span>',
+      '<span data-diff-text-inner="true">@@ -1 +1 @@</span>',
       "</code>",
     ].join(""),
   );
   const { app, dom } = await startExtension(html);
   try {
     const controller = Array.from(app.controllersByRow.values())[0];
-    const text = controller.hunkRow.querySelector(".diff-text-inner");
+    const text = controller.hunkRow.querySelector("[data-diff-text-inner]");
     const rect = (top, height, left = 12, width = 900) => ({
       bottom: top + height,
       height,
@@ -802,7 +802,7 @@ test("prepares tall hunk affordances for CSS-driven visibility", async () => {
       '<button class="Button Button--iconOnly Button--invisible ExpandableHunkHeaderDiffLine-module__expandButton">↕</button>',
       '<div data-react-expansion-shell class="d-flex flex-row">',
       '<div data-react-expansion-group class="d-flex flex-column">',
-      '<button class="Button Button--iconOnly Button--invisible ExpandableHunkHeaderDiffLine-module__expand-button-line__hash ExpandableHunkHeaderDiffLine-module__expand-up-and-down__hash">↓</button>',
+      '<button class="Button Button--iconOnly Button--invisible expand-button-line__hash expand-up-and-down__hash">↓</button>',
       '<button class="Button Button--iconOnly Button--invisible ExpandableHunkHeaderDiffLine-module__expand-button-line__hash ExpandableHunkHeaderDiffLine-module__expand-up-and-down__hash">↑</button>',
       '</div>',
       '<code class="diff-text-cell hunk">',
@@ -867,7 +867,7 @@ test("prepares tall hunk affordances for CSS-driven visibility", async () => {
     app.invalidateStickyHunkOrigins(controller.fileElement);
     app.updateStickyHunkLayouts();
     const auxiliaryElements = controller.hunkRow.querySelectorAll(
-      '.hunk-kebab-icon, .js-expand, .js-expand-full, button[class*="ExpandableHunkHeaderDiffLine-module__"], [aria-label^="Expand file up"]',
+      '.hunk-kebab-icon, .js-expand, .js-expand-full, button[class*="ExpandableHunkHeaderDiffLine-module__"], button[class*="expand-button-line__"], [aria-label^="Expand file up"]',
     );
     assert.equal(auxiliaryElements.length, 7);
     auxiliaryElements.forEach((element) => {

@@ -206,7 +206,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       // Match the gap beside the outer native button group, including the
       // comment button's padding, rather than measuring only its avatars.
       let hostRightInset = line.element.matches(
-        ".diff-text-cell, [data-line-anchor]",
+        `${this.constants.DIFF_TEXT_CELL_SELECTOR}, [data-line-anchor]`,
       )
         ? Number.parseFloat(hostStyle.paddingRight)
         : 0;

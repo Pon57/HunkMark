@@ -32,6 +32,7 @@
     DIFF_LOAD_HYDRATION_SCROLL_SETTLE_MS: 50,
     DIFF_LOAD_REFRESH_MAX_WAIT_MS: 30_000,
     DIFF_LOAD_REFRESH_SETTLE_MS: 750,
+    DIFF_TEXT_CELL_SELECTOR: '.diff-text-cell, [data-diff-cell="text"]',
     HUNK_DISCOVERY_FILE_CHUNK_SIZE: 8,
     HUNK_DISCOVERY_LARGE_ROOT_TEXT_THRESHOLD: 16_384,
     HUNK_DISCOVERY_ROW_CHUNK_SIZE: 128,
@@ -67,6 +68,7 @@
       '[role="progressbar"]',
     ].join(", "),
     HUNK_ELEMENT_SELECTOR: [
+      '[data-diff-cell="hunk"]',
       "td.blob-code-hunk",
       ".blob-code-hunk",
       '[data-testid="diff-hunk"]',
@@ -81,6 +83,7 @@
       ".js-expand-full",
       ".js-expand-all-difflines-button",
       'button[class*="ExpandableHunkHeaderDiffLine-module__"]',
+      'button[class*="expand-button-line__"]',
       '[aria-label^="Expand up" i]',
       '[aria-label^="Expand down" i]',
       '[aria-label^="Expand all" i]',

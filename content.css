@@ -12,8 +12,8 @@
 }
 
 .hunkmark-sticky-hunk-row
-  button[class*="ExpandableHunkHeaderDiffLine-module__"]:not(
-    [class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+  button:is([class*="ExpandableHunkHeaderDiffLine-module__"], [class*="expand-button-line__"]):not(
+    [class*="expand-up-and-down__"]
   ) {
   align-self: stretch !important;
   height: auto !important;
@@ -24,7 +24,7 @@
    text, then divide only the column's vertical axis. */
 .hunkmark-sticky-hunk-row
   .d-flex.flex-column:has(
-    > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+    > button[class*="expand-up-and-down__"]
   ) {
   align-self: stretch !important;
   height: auto !important;
@@ -32,9 +32,9 @@
 
 .hunkmark-sticky-hunk-row
   :has(
-    > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"]
+    > button[class*="expand-up-and-down__"]
   )
-  > button[class*="ExpandableHunkHeaderDiffLine-module__expand-up-and-down__"] {
+  > button[class*="expand-up-and-down__"] {
   align-self: auto !important;
   flex-basis: 0 !important;
   flex-grow: 1 !important;
@@ -48,18 +48,18 @@
 
 /* Keep file-toggle tooltips attached when reviewed hunks change file positions.
    Native popover coordinates otherwise retain the old document height. */
-[class*="DiffFileHeader-module__diff-file-header"]
+:is([class*="DiffFileHeader-module__diff-file-header"], [data-diff-header-wrapper] > [class*="diff-file-header__"])
   > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child) {
   anchor-scope: --hunkmark-file-toggle;
 }
 
-[class*="DiffFileHeader-module__diff-file-header"]
+:is([class*="DiffFileHeader-module__diff-file-header"], [data-diff-header-wrapper] > [class*="diff-file-header__"])
   > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
   > button {
   anchor-name: --hunkmark-file-toggle;
 }
 
-[class*="DiffFileHeader-module__diff-file-header"]
+:is([class*="DiffFileHeader-module__diff-file-header"], [data-diff-header-wrapper] > [class*="diff-file-header__"])
   > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
   > [data-component="Tooltip"][popover] {
   position: fixed;
@@ -70,14 +70,14 @@
   margin: 8px;
 }
 
-[class*="DiffFileHeader-module__diff-file-header"]
+:is([class*="DiffFileHeader-module__diff-file-header"], [data-diff-header-wrapper] > [class*="diff-file-header__"])
   > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
   > [data-component="Tooltip"][popover][data-direction^="n"] {
   position-area: top;
 }
 
 /* Keep the pointer bridge on both sides when CSS flips the placement. */
-[class*="DiffFileHeader-module__diff-file-header"]
+:is([class*="DiffFileHeader-module__diff-file-header"], [data-diff-header-wrapper] > [class*="diff-file-header__"])
   > :has(> button:first-child + [data-component="Tooltip"][popover]:last-child)
   > [data-component="Tooltip"][popover]::after {
   inset: -8px 0;
@@ -326,20 +326,20 @@
   to { transform: translateY(calc(0px - var(--hunkmark-focus-bottom))); }
 }
 
-.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell.focusable-grid-cell:focus {
+.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell:is(.focusable-grid-cell, [data-diff-cell="hunk"]):focus {
   --hunkmark-focus-top: max(0px, calc(var(--hunkmark-sticky-hunk-actions-top) - var(--hunkmark-sticky-hunk-compact-height) / 2));
   --hunkmark-focus-bottom: max(0px, calc(var(--hunkmark-sticky-hunk-focus-height) - var(--hunkmark-sticky-hunk-actions-top) - var(--hunkmark-sticky-hunk-compact-height) / 2));
   --hunkmark-focus-top-end: calc(var(--hunkmark-sticky-hunk-file-start) + var(--hunkmark-sticky-hunk-auxiliary-start) + var(--hunkmark-sticky-hunk-content-inset, 0px));
   --hunkmark-focus-bottom-end: calc(var(--hunkmark-focus-top-end) + var(--hunkmark-sticky-hunk-bottom-inset, 0px));
 }
 
-.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell.focusable-grid-cell:focus::before {
+.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell:is(.focusable-grid-cell, [data-diff-cell="hunk"]):focus::before {
   animation: hunkmark-sticky-focus-top 1ms linear both;
   animation-timeline: scroll(root block);
   animation-range: calc(var(--hunkmark-focus-top-end) - var(--hunkmark-focus-top)) var(--hunkmark-focus-top-end);
 }
 
-.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell.focusable-grid-cell:focus::after {
+.hunkmark-sticky-hunk-prepared .hunkmark-hunk-cell:is(.focusable-grid-cell, [data-diff-cell="hunk"]):focus::after {
   content: "";
   position: absolute;
   inset: auto 0 0;
@@ -611,6 +611,7 @@
 .hunkmark-line-viewed code,
 .hunkmark-line-viewed pre,
 .hunkmark-line-viewed .blob-code-inner,
+.hunkmark-line-viewed [data-diff-text-inner],
 .hunkmark-line-viewed .diff-text-inner,
 .hunkmark-line-viewed .diff-text-marker,
 .hunkmark-line-viewed code span,

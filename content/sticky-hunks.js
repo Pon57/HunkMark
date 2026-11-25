@@ -22,6 +22,7 @@
         return null;
       }
       const candidates = [
+        fileElement.querySelector("[data-diff-header-wrapper]"),
         fileElement.querySelector('[class*="diffHeaderWrapper"]'),
         fileElement.querySelector(".file-header"),
         fileElement.querySelector('[data-testid*="file-header"]'),
