@@ -151,7 +151,7 @@
       );
       const textElement =
         controller.hunkRow.querySelector(
-          ".diff-text-inner, .blob-code-inner",
+          "[data-diff-text-inner], .diff-text-inner, .blob-code-inner",
         ) ?? controller.hunkCell;
       const textRect =
         this.stickyHunkRenderedHeaderRect(textElement) ??

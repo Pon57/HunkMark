@@ -1,6 +1,13 @@
 "use strict";
 
 if (globalThis.HunkMarkContent?.extendApp) {
+  const changedCodeSelector = [
+    'code[data-diff-type="addition"]',
+    'code[data-diff-type="deletion"]',
+    "code.addition",
+    "code.deletion",
+  ].join(", ");
+
   globalThis.HunkMarkContent.extendApp({
     cleanElementText(element) {
       if (!element) {
@@ -129,9 +136,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         return false;
       }
 
-      const cell = target.matches(".diff-text-cell")
-        ? target
-        : target.closest(".diff-text-cell");
+      const cell = target.closest(this.constants.DIFF_TEXT_CELL_SELECTOR);
       if (
         !cell?.isConnected ||
         !cell.closest(this.constants.CURRENT_FILE_DIFF_REGION_SELECTOR) ||
@@ -211,7 +216,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       }
 
       const identityTargetSelector = [
-        ".diff-text-cell",
+        this.constants.DIFF_TEXT_CELL_SELECTOR,
         this.constants.HUNK_ELEMENT_SELECTOR,
         this.constants.HUNK_EXPANSION_CONTROL_SELECTOR,
       ].join(", ");
@@ -773,11 +778,13 @@ if (globalThis.HunkMarkContent?.extendApp) {
     },
 
     lineKind(element) {
-      const subject = element.matches("[data-line-type]")
+      const subject = element.matches("[data-line-type], code[data-diff-type]")
         ? element
-        : element.querySelector(
-            '[data-line-type], code.addition, code.deletion',
-          );
+        : element.querySelector(`[data-line-type], ${changedCodeSelector}`);
+      const diffType = subject?.getAttribute("data-diff-type");
+      if (diffType === "addition" || diffType === "deletion") {
+        return diffType;
+      }
       const tokens = [
         subject?.getAttribute("data-line-type"),
         subject?.className,
@@ -879,9 +886,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           return;
         }
 
-        const modernCodeLines = row.querySelectorAll(
-          "code.addition, code.deletion",
-        );
+        const modernCodeLines = row.querySelectorAll(changedCodeSelector);
         if (modernCodeLines.length > 0) {
           modernCodeLines.forEach((code) => {
             const cell = code.closest('td, [role="gridcell"]') || code;
@@ -943,13 +948,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
               ? Array.from(dataCodeTextElements)
               : Array.from(
                   row.querySelectorAll(
-                    "code:not(.addition):not(.deletion), pre",
+                    `code:not(${changedCodeSelector}), pre`,
                   ),
                 );
 
       return candidates
         .map((element) => ({
-          side: this.lineSide(element),
+          side: this.lineSide(
+            element.closest('[data-diff-cell="text"]') ?? element,
+          ),
           text:
             element.getAttribute("data-code-text") ??
             this.cleanElementText(element),
@@ -1137,7 +1144,15 @@ if (globalThis.HunkMarkContent?.extendApp) {
         : "unified";
     },
 
-    *reviewLayoutForHunkWork(lineDescriptors, chunkSize) {
+    *reviewLayoutForHunkWork(lineDescriptors, chunkSize, headerText) {
+      // GitHub renders new and deleted files at full width in Split. Their
+      // rows look unified even when the URL explicitly selects Split.
+      if (
+        /^@@ (?:-0,0 \+\d+(?:,\d+)?|-\d+(?:,\d+)? \+0,0) @@/.test(headerText) &&
+        new URLSearchParams(this.window.location.search).get("diff") === "split"
+      ) {
+        return "split";
+      }
       for (
         let chunkStart = 0;
         chunkStart < lineDescriptors.length;
@@ -1285,7 +1300,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         const lineDescriptors =
           yield* this.changedLineDescriptorsWork(groupRows, chunkSize);
         const reviewLayout =
-          yield* this.reviewLayoutForHunkWork(lineDescriptors, chunkSize);
+          yield* this.reviewLayoutForHunkWork(lineDescriptors, chunkSize, headerText);
         const lineIdentityTokens = [];
         for (
           let chunkStart = 0;

@@ -19,17 +19,20 @@ test("anchors only unambiguous native file-toggle tooltips, including Viewed fil
       <div>${pair("viewed")}</div>
       <button aria-label="Viewed" aria-pressed="true"></button>
     </div>
+    <div data-diff-header-wrapper>
+      <div class="diff-file-header__example"><div>${pair("current")}</div></div>
+    </div>
     <div class="DiffFileHeader-module__diff-file-header__example">
       <div>${pair("multiple-first")}${pair("multiple-last")}</div>
       <div><div>${pair("nested")}</div></div>
       <div>${pair("menu", 'data-component="Menu" popover="auto"')}</div>
       <div>${pair("non-popover", 'data-component="Tooltip"')}</div>
     </div>
-    <div>${pair("outside-diff")}</div>
+    <div class="diff-file-header__example"><div>${pair("outside-diff")}</div></div>
   </body></html>`);
   try {
     installContentStyles(dom);
-    for (const id of ["expanded", "viewed"]) {
+    for (const id of ["expanded", "viewed", "current"]) {
       assert.equal(
         dom.window.getComputedStyle(dom.window.document.getElementById(id)).position,
         "fixed",
