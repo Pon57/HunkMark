@@ -231,7 +231,9 @@ if (globalThis.HunkMarkContent?.extendApp) {
         (Number.isFinite(hostLineHeight) && hostLineHeight > 0
           ? hostLineHeight / 2
           : 12);
-      return { hostActions, firstLineCenter, safeHostRightInset };
+      // Match the native dropdown's flush right edge on rows without actions.
+      const controlRight = safeHostRightInset > 0 ? safeHostRightInset + 4 : 0;
+      return { hostActions, firstLineCenter, controlRight };
     },
 
     lineControlHostLayoutObserverInstance() {
@@ -245,10 +247,10 @@ if (globalThis.HunkMarkContent?.extendApp) {
       return this.lineControlHostLayoutObserver;
     },
 
-    applyLineHostLayout(lineController, { hostActions = [], firstLineCenter, safeHostRightInset }) {
+    applyLineHostLayout(lineController, { hostActions = [], firstLineCenter, controlRight }) {
       const style = lineController.element.style;
       for (const [property, value] of [
-        ["--hunkmark-host-line-action-inset", safeHostRightInset],
+        ["--hunkmark-line-control-right", controlRight],
         ["--hunkmark-first-line-center", firstLineCenter],
       ]) {
         const next = `${value}px`;
@@ -333,7 +335,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
           previousStyle ??= this.document.createElement("span").style;
           previousStyle.cssText = mutation.oldValue ?? "";
           if (hostStyles(previousStyle) === hostStyles(mutation.target.style) &&
-            (!directLine || (mutation.target.style.getPropertyValue("--hunkmark-host-line-action-inset") &&
+            (!directLine || (mutation.target.style.getPropertyValue("--hunkmark-line-control-right") &&
               mutation.target.style.getPropertyValue("--hunkmark-first-line-center")))) continue;
         }
         const line = this.knownLineControllerForMutationTarget(mutation.target);
@@ -1558,7 +1560,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         "hunkmark-line-viewed",
       );
       lineController.element?.style.removeProperty(
-        "--hunkmark-host-line-action-inset",
+        "--hunkmark-line-control-right",
       );
       lineController.element?.style.removeProperty(
         "--hunkmark-first-line-center",

@@ -1093,7 +1093,7 @@ test("coalesces background hydration progress scans", async () => {
   }
 });
 
-test("each drag preview clears only its own native line actions", async () => {
+test("drag previews align with the native menu edge and clear actions on their own row", async () => {
   const { app, dom } = await startExtension(dragFixture());
   try {
     installContentStyles(dom);
@@ -1114,25 +1114,24 @@ test("each drag preview clears only its own native line actions", async () => {
     const indicator = mountAction(commented, "comment-indicator__test", 37, 27);
     const menu = mountAction(menuOnly, "action-bar-position__test", 22, 0);
     app.updateLineControlHostLayouts(lines);
-    const insets = () => Array.from(lines, line =>
-      line.element.style.getPropertyValue("--hunkmark-host-line-action-inset"));
     const style = line => dom.window.getComputedStyle(line.control);
-    assert.deepEqual(insets(), ["64px", "0px", "22px"]);
+    const offsets = () => Array.from(lines, line => style(line).right);
+    assert.deepEqual(offsets(), ["68px", "0px", "26px"]);
 
     app.startLineDrag(commented, true, 1);
     app.touchLineRange(menuOnly);
-    assert.deepEqual(Array.from(lines, line => style(line).right), ["68px", "4px", "26px"]);
     for (const line of lines) {
       assert.equal(style(line).opacity, "1");
     }
-    assert.deepEqual(insets(), ["64px", "0px", "22px"]);
+    assert.equal(style(plain).right, dom.window.getComputedStyle(menu).right);
+    assert.deepEqual(offsets(), ["68px", "0px", "26px"]);
 
     menu.remove();
     const newIndicator = mountAction(plain, "comment-indicator__test", 51, 27);
-    await waitFor(() => assert.deepEqual(insets(), ["64px", "78px", "0px"]));
+    await waitFor(() => assert.deepEqual(offsets(), ["68px", "82px", "0px"]));
     indicator.remove();
     newIndicator.remove();
-    await waitFor(() => assert.deepEqual(insets(), ["0px", "0px", "0px"]));
+    await waitFor(() => assert.deepEqual(offsets(), ["0px", "0px", "0px"]));
 
     app.touchLineRange(commented);
     assert.equal(style(plain).opacity, "0");
@@ -6335,8 +6334,8 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         const line = lines.find((entry) => entry.side === 'right');
         const control = line.control;
         const key = line.key;
-        const inset = () => line.element.style.getPropertyValue('--hunkmark-host-line-action-inset');
-        assert.equal(inset(), initiallyCommented ? '69px' : '24px');
+        const controlRight = () => line.element.style.getPropertyValue('--hunkmark-line-control-right');
+        assert.equal(controlRight(), initiallyCommented ? '73px' : '28px');
         installContentStyles(dom);
         let refreshes = 0;
         app.refresh = async () => { refreshes += 1; };
@@ -6349,12 +6348,12 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
           assert.ok(menuObserver.observed.has(menu));
           menu.dataset.width = '30';
           menuObserver.callback([{ target: menu }]);
-          assert.equal(inset(), '30px');
+          assert.equal(controlRight(), '34px');
           menu.remove();
           await app.setLineViewed(line, true);
           line.element.style.paddingRight = '80px';
           line.element.insertAdjacentHTML('beforeend', badgeHtml);
-          await waitFor(() => assert.equal(inset(), '69px'));
+          await waitFor(() => assert.equal(controlRight(), '73px'));
           assert.equal(line.marked, true);
           assert.equal(line.control, control);
           assert.equal(line.key, key);
@@ -6366,54 +6365,54 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         assert.equal(observer.observed.has(line.element), false);
         badge.dataset.width = '83';
         observer.callback([{ target: badge }]);
-        assert.equal(inset(), '83px');
+        assert.equal(controlRight(), '87px');
         // GitHub mounts the button group on hover; otherwise only the
         // comment indicator remains. Track the currently mounted element.
         const indicator = line.element.querySelector(':scope > [class*="comment-indicator__"]');
         badge.remove();
-        await waitFor(() => assert.equal(inset(), '51px'));
+        await waitFor(() => assert.equal(controlRight(), '55px'));
         assert.equal(observer.observed.has(badge), false);
         assert.ok(observer.observed.has(indicator));
         // Participant avatars change width independently of the thread count.
         for (const width of [31.21875, 45.21875, 59.21875, 31.21875]) {
           indicator.dataset.width = String(width);
           observer.callback([{ target: indicator }]);
-          assert.equal(inset(), `${width + 27}px`);
+          assert.equal(controlRight(), `${width + 27 + 4}px`);
           assert.equal(indicator.textContent, '1');
         }
         line.element.append(badge);
-        await waitFor(() => assert.equal(inset(), '83px'));
+        await waitFor(() => assert.equal(controlRight(), '87px'));
         assert.ok(observer.observed.has(indicator));
         assert.ok(observer.observed.has(badge));
         badge.style.visibility = 'hidden';
-        await waitFor(() => assert.equal(inset(), '58.21875px'));
+        await waitFor(() => assert.equal(controlRight(), '62.21875px'));
         badge.style.visibility = 'visible';
-        await waitFor(() => assert.equal(inset(), '83px'));
+        await waitFor(() => assert.equal(controlRight(), '87px'));
         const readsBeforeResize = measured.length;
         responsiveRight = 16;
         dom.window.dispatchEvent(new dom.window.Event('resize'));
-        assert.equal(inset(), '99px');
+        assert.equal(controlRight(), '103px');
         assert.ok(measured.length > readsBeforeResize);
         responsiveRight = null;
         dom.window.dispatchEvent(new dom.window.Event('resize'));
-        assert.equal(inset(), '83px');
+        assert.equal(controlRight(), '87px');
         measured.length = 0;
         line.element.style.paddingRight = '24px';
         badge.remove();
         line.element.querySelector('[class*="comment-indicator"]').remove();
-        await waitFor(() => assert.equal(inset(), '0px'));
-        assert.equal(dom.window.getComputedStyle(control).right, '4px');
+        await waitFor(() => assert.equal(controlRight(), '0px'));
+        assert.equal(dom.window.getComputedStyle(control).right, '0px');
         assert.equal(observer.observed.has(badge), false);
         line.element.style.padding = '4px 40px 0 0';
         const center = () => line.element.style.getPropertyValue('--hunkmark-first-line-center');
         await waitFor(() => assert.equal(center(), '16px'));
-        assert.equal(inset(), '0px');
+        assert.equal(controlRight(), '0px');
         const hostStyle = dom.window.document.createElement('style');
         hostStyle.textContent = '.native-comment-gutter { padding: 8px 64px 0 0 !important; }';
         dom.window.document.head.append(hostStyle);
         line.element.classList.add('native-comment-gutter');
         await waitFor(() => assert.equal(center(), '20px'));
-        assert.equal(inset(), '0px');
+        assert.equal(controlRight(), '0px');
         line.element.classList.remove('hunkmark-line-cell');
         await waitFor(() => assert.ok(line.element.classList.contains('hunkmark-line-cell')));
         const readsBeforeOwnChange = measured.length;
@@ -6424,14 +6423,14 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         assert.ok(measured.every((entry) => lines.includes(entry)));
         assert.equal(refreshes, 0);
         lines.filter((entry) => entry !== line).forEach((entry) => {
-          assert.equal(entry.element.style.getPropertyValue('--hunkmark-host-line-action-inset'), '0px');
+          assert.equal(entry.element.style.getPropertyValue('--hunkmark-line-control-right'), '0px');
         });
         line.element.insertAdjacentHTML('beforeend', badgeHtml);
-        await waitFor(() => assert.equal(inset(), '69px'));
+        await waitFor(() => assert.equal(controlRight(), '73px'));
         hostStyle.textContent += '.native-action-offset [class*="action-bar-position__"] { right: 12px; }';
         const fileState = app.hunkStickyStateByFile.get(line.controller.fileElement);
         line.controller.fileElement.classList.add('native-action-offset');
-        await waitFor(() => assert.equal(inset(), '81px'));
+        await waitFor(() => assert.equal(controlRight(), '85px'));
         assert.ok(measured.every((entry) => entry.controller.fileElement === line.controller.fileElement));
         assert.equal(subscriptions.some(({ target, options }) =>
           target === dom.window.document.documentElement && options.attributes && options.subtree), false);
@@ -6452,7 +6451,7 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         assert.equal(fileState.lineAttributeObserver, null);
         line.element.querySelector(':scope > [class*="action-bar-position__"]').style.right = '20px';
         app.setStickyHunkStateVisibility(fileState, true);
-        assert.equal(inset(), '89px');
+        assert.equal(controlRight(), '93px');
         assert.ok(fileState.lineAttributeObserver);
         line.controller.fileElement.remove();
         app.destroyController(line.controller);
@@ -6531,13 +6530,13 @@ test("supports GitHub's current React diff with persistent controls visible", as
     );
     assert.equal(
       controller.lines[0].element.style.getPropertyValue(
-        "--hunkmark-host-line-action-inset",
+        "--hunkmark-line-control-right",
       ),
       "0px",
     );
     assert.equal(
       dom.window.getComputedStyle(controller.lines[0].control).right,
-      "4px",
+      "0px",
     );
     assert.equal(
       controller.lines[1].element.style.getPropertyValue(
