@@ -535,7 +535,7 @@
   padding: 0 6px;
   pointer-events: none;
   position: absolute;
-  right: calc(4px + var(--hunkmark-host-line-action-inset, 0px));
+  right: var(--hunkmark-line-control-right, 0px);
   top: var(--hunkmark-first-line-center, 12px);
   transform: translateY(-50%);
   transition: none;
