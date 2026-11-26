@@ -39,9 +39,9 @@ test("keeps a static clip and compensates original cell content without cloning 
   const { app, dom, controllers } = context;
   try {
     for (const controller of controllers) {
-      assert.equal(dom.window.getComputedStyle(controller.hunkRow).clipPath, "inset(0)");
+      assert.equal(dom.window.getComputedStyle(controller.hunkRow).clipPath, "inset(0px)");
       for (const cell of controller.hunkRow.children) {
-        assert.match(dom.window.getComputedStyle(cell).animation, /restore-content/);
+        assert.equal(dom.window.getComputedStyle(cell).animationName, "hunkmark-sticky-hunk-restore-content");
       }
     }
     assert.equal(dom.window.document.querySelector(".hunkmark-sticky-hunk-natural-layer"), null);
@@ -81,7 +81,7 @@ test("inherits cell compensation after host replacement and releases content obs
     const oldCell = controller.hunkRow.firstElementChild;
     const replacement = oldCell.cloneNode(true);
     oldCell.replaceWith(replacement);
-    assert.match(dom.window.getComputedStyle(replacement).animation, /restore-content/);
+    assert.equal(dom.window.getComputedStyle(replacement).animationName, "hunkmark-sticky-hunk-restore-content");
     const observer = controller.stickyHunkContentObserver;
     assert.ok(observer);
     layout.scrollY = 5000;

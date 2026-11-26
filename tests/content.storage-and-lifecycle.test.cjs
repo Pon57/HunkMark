@@ -1117,13 +1117,12 @@ test("each drag preview clears only its own native line actions", async () => {
     const insets = () => Array.from(lines, line =>
       line.element.style.getPropertyValue("--hunkmark-host-line-action-inset"));
     const style = line => dom.window.getComputedStyle(line.control);
-    const normalRight = style(plain).right;
     assert.deepEqual(insets(), ["64px", "0px", "22px"]);
 
     app.startLineDrag(commented, true, 1);
     app.touchLineRange(menuOnly);
+    assert.deepEqual(Array.from(lines, line => style(line).right), ["68px", "4px", "26px"]);
     for (const line of lines) {
-      assert.equal(style(line).right, normalRight);
       assert.equal(style(line).opacity, "1");
     }
     assert.deepEqual(insets(), ["64px", "0px", "22px"]);
@@ -6362,8 +6361,7 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         }
         const badge = line.element.querySelector(':scope > [class*="action-bar-position__"]');
         observer = app.lineControlHostLayoutObserver;
-        assert.equal(dom.window.getComputedStyle(control).right,
-          'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
+        assert.equal(dom.window.getComputedStyle(control).right, '73px');
         assert.ok(observer.observed.has(badge));
         assert.equal(observer.observed.has(line.element), false);
         badge.dataset.width = '83';
@@ -6404,8 +6402,7 @@ for (const [layout, fixture, actionClass, indicatorClass] of [
         badge.remove();
         line.element.querySelector('[class*="comment-indicator"]').remove();
         await waitFor(() => assert.equal(inset(), '0px'));
-        assert.equal(dom.window.getComputedStyle(control).right,
-          'calc(4px + var(--hunkmark-host-line-action-inset, 0px))');
+        assert.equal(dom.window.getComputedStyle(control).right, '4px');
         assert.equal(observer.observed.has(badge), false);
         line.element.style.padding = '4px 40px 0 0';
         const center = () => line.element.style.getPropertyValue('--hunkmark-first-line-center');
@@ -6540,7 +6537,7 @@ test("supports GitHub's current React diff with persistent controls visible", as
     );
     assert.equal(
       dom.window.getComputedStyle(controller.lines[0].control).right,
-      "calc(4px + var(--hunkmark-host-line-action-inset, 0px))",
+      "4px",
     );
     assert.equal(
       controller.lines[1].element.style.getPropertyValue(
@@ -6548,10 +6545,10 @@ test("supports GitHub's current React diff with persistent controls visible", as
       ),
       "12px",
     );
-    assert.equal(
-      dom.window.getComputedStyle(controller.lines[1].control).top,
-      "var(--hunkmark-first-line-center, 12px)",
-    );
+    controller.lines[1].element.style.lineHeight = "32px";
+    await waitFor(() => {
+      assert.equal(dom.window.getComputedStyle(controller.lines[1].control).top, "16px");
+    });
     const reviewButton = dom.window.document.querySelector(
       'button[aria-label="Add a line comment"]',
     );

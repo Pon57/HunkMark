@@ -50,7 +50,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
     assert.match(prepared.top, /--hunkmark-sticky-hunk-top/);
     assert.ok(Number(ruleFor(".hunkmark-sticky-file-header").style.zIndex) >
       Number(prepared.zIndex));
-    assert.match(prepared.animationTimeline, /scroll\(root block\)/);
+    assert.equal(prepared.animationTimeline, "scroll(root), scroll(root), scroll(root)");
     for (const effect of ["push", "trim-bottom"]) {
       assert.match(prepared.animationName, new RegExp("hunkmark-sticky-hunk-" + effect));
     }
@@ -61,9 +61,9 @@ test("keeps sticky positioning and scroll effects independent of active controls
     // A typed length resolves viewport units before linear() parses its stops.
     assert.match(style.textContent, /@property --hunkmark-sticky-hunk-timeline-length\s*\{\s*syntax: "<length>";/);
     assert.match(prepared.animationTimingFunction, /--hunkmark-sticky-hunk-push-easing/);
-    assert.equal(prepared.clipPath, "inset(0)");
+    assert.equal(prepared.clipPath, "inset(0px)");
     const content = ruleFor(".hunkmark-sticky-hunk-prepared > *").style;
-    assert.match(content.animation, /hunkmark-sticky-hunk-restore-content/);
+    assert.equal(content.animationName, "hunkmark-sticky-hunk-restore-content");
     assert.equal(content.animationRange, absoluteRange);
     assert.ok(content.animationTimingFunction.includes(`var(${timelineLength})`));
     const compactFocus = ruleFor(
@@ -73,7 +73,7 @@ test("keeps sticky positioning and scroll effects independent of active controls
     assert.equal(rules.some((rule) => rule.selectorText === ".hunkmark-sticky-hunk-active"), false);
     assert.match(prepared.animationName, /hunkmark-sticky-hunk-cursor/);
     const returnControl = ruleFor(".hunkmark-sticky-hunk-prepared .hunkmark-sticky-return-button").style;
-    assert.match(returnControl.animationTimeline, /scroll\(root block\)/);
+    assert.equal(returnControl.animationTimeline, "scroll(root)");
     assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-active-start/);
     assert.match(returnControl.animationRange, /--hunkmark-sticky-hunk-return-end/);
     assert.match(returnControl.animationRange, /calc\(100% \+ 1px - var\(--hunkmark-sticky-hunk-file-start, 0px\)\)/);
@@ -95,8 +95,11 @@ test("keeps sticky positioning and scroll effects independent of active controls
       // every frame instead of the compositor's native transform animation.
       assert.doesNotMatch(rule.cssText, /--hunkmark-sticky-hunk-timeline-length\s*:/);
     }
-    assert.match(auxiliary.animationTimeline, /scroll\(root block\)/);
-    assert.match(auxiliary.animation, /disable-auxiliary 1ms steps\(1, start\) both/);
+    assert.equal(auxiliary.animationTimeline, "scroll(root)");
+    assert.equal(auxiliary.animationName, "hunkmark-sticky-hunk-fade-auxiliary, hunkmark-sticky-hunk-disable-auxiliary");
+    assert.equal(auxiliary.animationDuration, "1ms, 1ms");
+    assert.equal(auxiliary.animationTimingFunction, "linear, steps(1, start)");
+    assert.equal(auxiliary.animationFillMode, "both, both");
     assert.match(auxiliary.animationRange, /--hunkmark-sticky-hunk-auxiliary-end/);
     assert.match(
       auxiliary.animationRange,
@@ -106,8 +109,10 @@ test("keeps sticky positioning and scroll effects independent of active controls
       (rule) => rule.conditionText === "(prefers-reduced-motion: reduce)",
     );
     assert.ok(reducedMotion);
-    assert.match(reducedMotion.cssText, /steps\(1, end\)/);
-    assert.match(reducedMotion.cssText, /steps\(1, end\), steps\(1, start\)/);
+    const reducedAuxiliary = Array.from(reducedMotion.cssRules).find(
+      (rule) => rule.selectorText === ".hunkmark-sticky-hunk-prepared .hunkmark-sticky-hunk-auxiliary",
+    );
+    assert.equal(reducedAuxiliary.style.animationTimingFunction, "steps(1), steps(1, start)");
     assert.doesNotMatch(style.textContent, /aria-label\^="Expand "/);
     assert.doesNotMatch(style.textContent, /class\*="expand-button"/);
   } finally {
@@ -875,10 +880,7 @@ test("prepares tall hunk affordances for CSS-driven visibility", async () => {
         element.classList.contains("hunkmark-sticky-hunk-auxiliary"),
         true,
       );
-      assert.match(
-        dom.window.getComputedStyle(element).animationTimeline,
-        /scroll\(root block\)/,
-      );
+      assert.equal(dom.window.getComputedStyle(element).animationTimeline, "scroll(root)");
     });
 
     app.destroyController(controller);
@@ -1612,11 +1614,15 @@ test("does not move a compact sticky header on pointer focus before a Viewed cli
         target.getBoundingClientRect = () => ({ top: 28, height: 48 });
         const scrollCalls = [];
         dom.window.scrollTo = (options) => scrollCalls.push(options);
+        // jsdom 31 treats every focused element as :focus-visible. Model a
+        // pointer press so the focus handler gets the same result as Chrome.
+        const matches = target.matches.bind(target);
+        target.matches = (selector) => selector !== ":focus-visible" && matches(selector);
         controller.label.dispatchEvent(new dom.window.MouseEvent("mousedown", {
           bubbles: true, button: 0,
         }));
         target.focus();
-        assert.equal(target.matches(":focus-visible"), false);
+        assert.equal(dom.window.document.activeElement, target);
         assert.deepEqual(scrollCalls, []);
         assert.equal(controller.marked, false);
 
@@ -3899,7 +3905,11 @@ test("does not retain a pointer-focused outgoing hunk over the current header", 
 test("keeps pointer-focused collapse and line controls visible without hover", async () => {
   const { app, dom } = await startExtension(duplicateHunkFixture());
   try {
-    const sheet = installContentStyles(dom).sheet;
+    const styleElement = installContentStyles(dom);
+    // jsdom 31 matches :focus-visible on pointer focus too. Disable that
+    // pseudo-class in this fixture so only pointer-applicable styles can win.
+    styleElement.textContent = styleElement.textContent.replaceAll(':focus-visible', '[data-keyboard-focus]');
+    const sheet = styleElement.sheet;
     // This scenario uses a hover-capable pointer, so exclude the touch fallback.
     for (let index = sheet.cssRules.length - 1; index >= 0; index -= 1) {
       if (sheet.cssRules[index].conditionText === '(hover: none)') sheet.deleteRule(index);
@@ -3914,10 +3924,7 @@ test("keeps pointer-focused collapse and line controls visible without hover", a
       dom.window.document.body.dispatchEvent(new dom.window.MouseEvent('mouseover', {
         bubbles: true, relatedTarget: control,
       }));
-      // Invalidate jsdom's computed-style cache after changing pointer state.
-      control.setAttribute('data-style-check', 'pointer-left');
       assert.equal(dom.window.document.activeElement, control);
-      assert.equal(control.matches(':focus-visible'), false);
       assert.equal(control.matches(':hover'), false);
       assert.equal(control.parentElement.matches(':hover'), false);
       const style = dom.window.getComputedStyle(control);
