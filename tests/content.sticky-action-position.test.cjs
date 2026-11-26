@@ -69,7 +69,7 @@ for (const scenario of [
       assert.equal(actionsCenterInRow, textCenterInRow, "do not add the cell's row offset or border twice");
       assert.equal(actionsCenterInRow, controller.stickyHunkContentInset + controller.stickyHunkCompactHeight / 2);
       assert.equal(actionsTop, layout.padding + 12, "padding remains part of the absolute containing block");
-      assert.equal(dom.window.getComputedStyle(controller.actions).top, "var(--hunkmark-sticky-hunk-actions-top, 50%)");
+      assert.equal(dom.window.getComputedStyle(controller.actions).top, `${actionsTop}px`);
     } finally { stop(context); }
   });
 }
