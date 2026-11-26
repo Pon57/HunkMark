@@ -16,6 +16,7 @@ const {
   officialViewedContext,
   changeCheckbox,
   lineControls,
+  respondToOfficialClicks,
   setOfficialViewed,
   waitFor,
   assertFileRevealState,
@@ -70,6 +71,92 @@ function persistedDiscoveryIdentity(hunks) {
     sharedCompletionKey: storageSuffix(hunk.sharedCompletionKey),
   }));
 }
+
+for (const layout of ["unified", "split"]) {
+  test(`adds line Viewed controls to GitHub's data-diff-type ${layout} diff`, async () => {
+    const deletion = '<td data-diff-cell="text" data-diff-side="left"><code data-diff-type="deletion"><span>-</span>old</code></td>';
+    const addition = '<td data-diff-cell="text" data-diff-side="right"><code data-diff-type="addition"><span>+</span>new</code></td>';
+    const number = '<td data-diff-cell="line-number">39</td>';
+    const empty = '<td data-diff-cell="empty"></td>';
+    const rows = layout === "split"
+      ? `<tr>${number}${deletion}${number}${addition}</tr>`
+      : `<tr>${number}${empty}${deletion}</tr><tr>${empty}${number}${addition}</tr>`;
+    const html = `<div id="diff-example" role="region">
+      <div data-diff-header-wrapper>
+        <h3><a href="#diff-example">example.js</a></h3>
+        <button aria-label="Not Viewed" aria-pressed="false"></button>
+      </div>
+      <table role="grid" aria-label="Diff for: example.js"><tbody>
+        <tr><td data-diff-cell="hunk">@@ -39,2 +39,2 @@</td></tr>
+        ${rows}
+        <tr>${number}<td data-diff-cell="text"><code>+unchanged</code></td></tr>
+      </tbody></table></div>`;
+    const { app, chrome, dom } = await startExtension(html);
+    try {
+      const [controller] = app.controllersByRow.values();
+      assert.equal(controller.input.disabled, false);
+      assert.deepEqual(Array.from(controller.lines, (line) =>
+        [line.kind, line.side, line.text, line.layout]), [
+        ["deletion", "left", "-old", layout],
+        ["addition", "right", "+new", layout],
+      ]);
+      const controls = dom.window.document.querySelectorAll(".hunkmark-line-control");
+      assert.equal(controls.length, 2);
+      for (const control of controls) {
+        assert.ok(control.parentElement.matches('[data-diff-cell="text"]'));
+        assert.equal(control.disabled, false);
+      }
+      app.linkSplitSides = false;
+      const official = dom.window.document.querySelector('[aria-label="Not Viewed"]');
+      const officialClicks = respondToOfficialClicks(official, true);
+      controls[1].click();
+      await waitFor(() => assert.ok(chrome.snapshot()[controller.lines[1].key]));
+      assert.equal(controls[0].getAttribute("aria-pressed"), "false");
+      assert.equal(controls[1].getAttribute("aria-pressed"), "true");
+      assert.equal(officialClicks(), 0);
+      controls[0].click();
+      await waitFor(() => assert.equal(officialClicks(), 1));
+    } finally {
+      app.stop();
+      dom.window.close();
+    }
+  });
+}
+
+test("keeps partial marks separate for full-width new and deleted files in explicit Split", async () => {
+  const url = "https://github.com/octo/repo/pull/123/changes";
+  for (const [type, header, side] of [
+    ["addition", "@@ -0,0 +1,2 @@", "right"],
+    ["deletion", "@@ -1,2 +0,0 @@", "left"],
+  ]) {
+    const rows = ["one", "two"].map((text, index) =>
+      `<tr><td data-diff-cell="line-number">${index + 1}</td>
+        <td data-diff-cell="empty"></td>
+        <td data-diff-cell="text" data-diff-side="${side}"><code data-diff-type="${type}">${text}</code></td></tr>`,
+    ).join("");
+    const html = `<div id="diff-full-width" role="region">
+      <table role="grid" aria-label="Diff for: example.js"><tbody>
+        <tr><td data-diff-cell="hunk">${header}</td></tr>${rows}
+      </tbody></table></div>`;
+    const split = await startExtension(html, {}, { url: url + "?diff=split" });
+    try {
+      const [line] = controllerAt(split.app).lines;
+      assert.equal(line.layout, "split");
+      line.control.click();
+      await waitFor(() => assert.ok(split.chrome.snapshot()[line.key]));
+      const unified = await startExtension(html, split.chrome.snapshot(), { url });
+      try {
+        const [unifiedLine] = controllerAt(unified.app).lines;
+        assert.equal(unifiedLine.layout, "unified");
+        assert.equal(unifiedLine.marked, false);
+      } finally {
+        stopExtensions(unified);
+      }
+    } finally {
+      stopExtensions(split);
+    }
+  }
+});
 
 test("cached and cooperative discovery produce identical review identity", async () => {
   for (const fixture of [

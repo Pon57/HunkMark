@@ -390,7 +390,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
         this.constants.HUNK_ELEMENT_SELECTOR,
         "td.blob-code-addition",
         "td.blob-code-deletion",
-        ".diff-text-cell",
+        this.constants.DIFF_TEXT_CELL_SELECTOR,
         ".hunkmark-line-cell",
         "[data-line-anchor]",
         '[role="gridcell"]',
@@ -437,10 +437,7 @@ if (globalThis.HunkMarkContent?.extendApp) {
       ) {
         return false;
       }
-      if (
-        target.matches(".diff-text-cell") ||
-        target.closest(".diff-text-cell")
-      ) {
+      if (target.closest(this.constants.DIFF_TEXT_CELL_SELECTOR)) {
         return false;
       }
       if (
